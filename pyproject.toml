@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nanio-orchestrator"
+version = "0.1.0"
+description = "Nginx configuration manager and gateway orchestrator for nanio S3-compatible storage clusters"
+requires-python = ">=3.9"
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.29",
+  "aiosqlite>=0.20",
+  "jinja2>=3.1",
+  "python-multipart>=0.0.9",
+  "pydantic-settings>=2.2",
+  "click>=8.1",
+  "aiofiles>=23.2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "httpx>=0.27",
+  "ruff>=0.4",
+]
+
+[project.scripts]
+nanio-orchestrator = "nanio_orchestrator.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["nanio_orchestrator*"]
+
+[tool.setuptools.package-data]
+"nanio_orchestrator" = [
+    "web/templates/*.html",
+    "web/static/*.css",
+    "web/static/*.js",
+    "nginx/templates/*.j2",
+]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

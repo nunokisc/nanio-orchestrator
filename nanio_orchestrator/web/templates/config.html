@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Config — nanio-orchestrator{% endblock %}
+{% block content %}
+<h1>Config Files</h1>
+
+<div class="actions">
+    <button class="btn" onclick="validateConfig()">Validate (nginx -t)</button>
+    <button class="btn btn-primary" onclick="rebuildConfig()">Rebuild All</button>
+    <button class="btn" onclick="syncConfig()">Sync from Disk</button>
+    <button class="btn" onclick="reloadNginx()">Reload nginx</button>
+</div>
+
+<div id="config-result" class="hidden">
+    <div class="card" id="config-result-card">
+        <pre id="config-result-output" class="output"></pre>
+    </div>
+</div>
+
+<table>
+    <thead>
+        <tr>
+            <th>Path</th>
+            <th>Status</th>
+            <th>SHA256 (disk)</th>
+            <th>SHA256 (DB)</th>
+            <th>Last Synced</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for f in files %}
+        <tr>
+            <td><code>{{ f.path }}</code></td>
+            <td>
+                {% if f.drifted %}
+                <span class="badge warn">DRIFTED</span>
+                {% else %}
+                <span class="badge ok">OK</span>
+                {% endif %}
+            </td>
+            <td><code class="hash">{{ (f.sha256_disk or '—')[:12] }}</code></td>
+            <td><code class="hash">{{ (f.sha256_db or '—')[:12] }}</code></td>
+            <td>{{ f.last_synced_at or '—' }}</td>
+            <td>
+                <button class="btn btn-xs" onclick="viewFileContent('{{ f.path }}')">View</button>
+            </td>
+        </tr>
+    {% endfor %}
+    {% if not files %}
+        <tr><td colspan="6" class="empty">No config files tracked yet</td></tr>
+    {% endif %}
+    </tbody>
+</table>
+
+<!-- File Content Modal -->
+<div id="file-modal" class="modal hidden">
+    <div class="modal-content modal-wide">
+        <h3 id="file-modal-title">File Content</h3>
+        <pre id="file-modal-content" class="output"></pre>
+        <div class="modal-actions">
+            <button class="btn" onclick="hideModal('file-modal')">Close</button>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}nanio-orchestrator{% endblock %}</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-brand">
+            <a href="/">nanio-orchestrator</a>
+            <span class="version">v{{ version }}</span>
+            {% if dev_mode %}<span class="badge dev">DEV</span>{% endif %}
+        </div>
+        <div class="nav-links">
+            <a href="/" class="nav-link">Dashboard</a>
+            <a href="/web/pools" class="nav-link">Pools</a>
+            <a href="/web/vhosts" class="nav-link">Vhosts</a>
+            <a href="/web/config" class="nav-link">Config</a>
+            <a href="/web/audit" class="nav-link">Audit</a>
+            <a href="/api/docs" class="nav-link" target="_blank">API Docs</a>
+            <form action="/logout" method="post" style="display:inline;margin:0">
+                <button type="submit" class="btn btn-sm btn-logout">Logout</button>
+            </form>
+        </div>
+    </nav>
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+    <footer class="footer">
+        <p>nanio-orchestrator v{{ version }} &mdash; nginx config manager for nanio S3 clusters</p>
+    </footer>
+    <script src="/static/app.js"></script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

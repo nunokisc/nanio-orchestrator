@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Audit Log — nanio-orchestrator{% endblock %}
+{% block content %}
+<h1>Audit Log</h1>
+
+<table>
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Time</th>
+            <th>Actor</th>
+            <th>Action</th>
+            <th>Entity</th>
+            <th>Nginx</th>
+            <th>Details</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for e in entries %}
+        <tr>
+            <td>{{ e.id }}</td>
+            <td>{{ e.created_at }}</td>
+            <td>{{ e.actor }}</td>
+            <td><code>{{ e.action }}</code></td>
+            <td>{{ e.entity_type }}{% if e.entity_id %} #{{ e.entity_id }}{% endif %}</td>
+            <td>
+                {% if e.nginx_reload_ok is not none %}
+                    {% if e.nginx_reload_ok %}<span class="badge ok">OK</span>{% else %}<span class="badge error">FAIL</span>{% endif %}
+                {% else %}—{% endif %}
+            </td>
+            <td>
+                <button class="btn btn-xs" onclick="showAuditDetail({{ e.id }})">View</button>
+            </td>
+        </tr>
+    {% endfor %}
+    {% if not entries %}
+        <tr><td colspan="7" class="empty">No audit entries yet</td></tr>
+    {% endif %}
+    </tbody>
+</table>
+
+<!-- Audit Detail Modal -->
+<div id="audit-detail-modal" class="modal hidden">
+    <div class="modal-content modal-wide">
+        <h3>Audit Entry Detail</h3>
+        <div class="audit-detail-grid">
+            <div>
+                <h4>Before</h4>
+                <pre id="audit-before" class="output"></pre>
+            </div>
+            <div>
+                <h4>After</h4>
+                <pre id="audit-after" class="output"></pre>
+            </div>
+        </div>
+        {% for e in entries %}
+        <div id="audit-data-{{ e.id }}" class="hidden"
+             data-before="{{ e.before_json or '' }}"
+             data-after="{{ e.after_json or '' }}"
+             data-output="{{ e.nginx_reload_output or '' }}">
+        </div>
+        {% endfor %}
+        <h4>Nginx Output</h4>
+        <pre id="audit-nginx-output" class="output"></pre>
+        <div class="modal-actions">
+            <button class="btn" onclick="hideModal('audit-detail-modal')">Close</button>
+        </div>
+    </div>
+</div>
+{% endblock %}

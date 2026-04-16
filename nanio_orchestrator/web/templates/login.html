@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login — nanio-orchestrator</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        body {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            background: var(--bg);
+        }
+        .login-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 2.5rem 2rem;
+            width: 100%;
+            max-width: 380px;
+        }
+        .login-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 0.25rem;
+        }
+        .login-host {
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            margin-bottom: 1.75rem;
+            font-family: var(--mono);
+        }
+        .login-card form {
+            gap: 1rem;
+        }
+        .login-card input[type="password"] {
+            width: 100%;
+            font-size: 1rem;
+            padding: 0.6rem 0.75rem;
+        }
+        .login-error {
+            background: rgba(231, 76, 60, 0.12);
+            border: 1px solid rgba(231, 76, 60, 0.4);
+            border-radius: var(--radius);
+            padding: 0.5rem 0.75rem;
+            color: var(--error);
+            font-size: 0.9rem;
+        }
+        .login-submit {
+            width: 100%;
+            padding: 0.65rem;
+            font-size: 1rem;
+            margin-top: 0.25rem;
+        }
+        .login-footer {
+            text-align: center;
+            margin-top: 1.25rem;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+    </style>
+</head>
+<body>
+    <div class="login-card">
+        <div class="login-title">nanio-orchestrator</div>
+        <div class="login-host">{{ hostname }}</div>
+
+        {% if error %}
+        <div class="login-error">{{ error }}</div>
+        {% endif %}
+
+        <form method="post" action="/login" autocomplete="off">
+            <label>
+                API Key
+                <input
+                    type="password"
+                    name="key"
+                    id="key"
+                    autofocus
+                    autocomplete="current-password"
+                    placeholder="Enter your API key"
+                    required
+                >
+            </label>
+            <button type="submit" class="btn btn-primary login-submit">Sign in</button>
+        </form>
+
+        <div class="login-footer">nanio-orchestrator v{{ version }}</div>
+    </div>
+</body>
+</html>

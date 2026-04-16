@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}Vhosts — nanio-orchestrator{% endblock %}
+{% block content %}
+<h1>Virtual Hosts &amp; Routes</h1>
+
+<div class="actions">
+    <button class="btn btn-primary" onclick="showModal('create-vhost-modal')">+ New Vhost</button>
+</div>
+
+{% for vhost in vhosts %}
+<div class="card">
+    <div class="card-header">
+        <h3>{{ vhost.server_name }}</h3>
+        <div class="card-badges">
+            <span class="badge">:{{ vhost.listen_port }}</span>
+            {% if vhost.ssl %}<span class="badge ok">SSL</span>{% endif %}
+            {% if vhost.enabled %}<span class="badge ok">enabled</span>{% else %}<span class="badge warn">disabled</span>{% endif %}
+        </div>
+        <div class="card-actions">
+            <button class="btn btn-sm" onclick="previewVhost({{ vhost.id }})">Preview</button>
+            <button class="btn btn-sm btn-danger" onclick="deleteVhost({{ vhost.id }}, '{{ vhost.server_name }}')">Delete</button>
+        </div>
+    </div>
+
+    {% if vhost.ssl_cert_path %}
+    <p class="meta">Cert: <code>{{ vhost.ssl_cert_path }}</code></p>
+    {% endif %}
+
+    <h4>Routes</h4>
+    <table>
+        <thead>
+            <tr>
+                <th>Path Prefix</th>
+                <th>Pool</th>
+                <th>Status</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for r in vhost.routes %}
+            <tr>
+                <td><code>{{ r.path_prefix }}</code></td>
+                <td><a href="/web/pools">{{ r.pool_name }}</a></td>
+                <td>
+                    {% if r.enabled %}<span class="badge ok">enabled</span>{% else %}<span class="badge warn">disabled</span>{% endif %}
+                </td>
+                <td>
+                    <button class="btn btn-xs btn-danger" onclick="deleteRoute({{ vhost.id }}, {{ r.id }})">×</button>
+                </td>
+            </tr>
+        {% endfor %}
+        {% if not vhost.routes %}
+            <tr><td colspan="4" class="empty">No routes configured</td></tr>
+        {% endif %}
+        </tbody>
+    </table>
+    <button class="btn btn-sm" onclick="showAddRoute({{ vhost.id }})">+ Add Route</button>
+</div>
+{% endfor %}
+
+{% if not vhosts %}
+<div class="card empty-state">
+    <p>No virtual hosts configured. Create a vhost to define server blocks.</p>
+</div>
+{% endif %}
+
+<!-- Create Vhost Modal -->
+<div id="create-vhost-modal" class="modal hidden">
+    <div class="modal-content">
+        <h3>Create Vhost</h3>
+        <form id="create-vhost-form" onsubmit="createVhost(event)">
+            <label>Server Name <input type="text" name="server_name" required placeholder="s3.xpto.pt"></label>
+            <label>Listen Port <input type="number" name="listen_port" value="443" min="1" max="65535"></label>
+            <label><input type="checkbox" name="ssl" checked> SSL</label>
+            <label>SSL Certificate Path <input type="text" name="ssl_cert_path" placeholder="/etc/ssl/s3.xpto.pt/fullchain.pem"></label>
+            <label>SSL Key Path <input type="text" name="ssl_key_path" placeholder="/etc/ssl/s3.xpto.pt/privkey.pem"></label>
+            <label>Extra Directives <textarea name="extra_directives" rows="3" placeholder="Optional nginx directives"></textarea></label>
+            <div class="modal-actions">
+                <button type="submit" class="btn btn-primary">Create</button>
+                <button type="button" class="btn" onclick="hideModal('create-vhost-modal')">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Add Route Modal -->
+<div id="add-route-modal" class="modal hidden">
+    <div class="modal-content">
+        <h3>Add Route</h3>
+        <form id="add-route-form" onsubmit="addRoute(event)">
+            <input type="hidden" name="vhost_id" id="route-vhost-id">
+            <label>Path Prefix <input type="text" name="path_prefix" required placeholder="/2025/"></label>
+            <label>Pool
+                <select name="pool_id" id="route-pool-select">
+                    {% for p in pools %}
+                    <option value="{{ p.id }}">{{ p.name }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>Extra Directives <textarea name="extra_directives" rows="3" placeholder="Optional"></textarea></label>
+            <div class="modal-actions">
+                <button type="submit" class="btn btn-primary">Add</button>
+                <button type="button" class="btn" onclick="hideModal('add-route-modal')">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Preview Modal -->
+<div id="preview-modal" class="modal hidden">
+    <div class="modal-content modal-wide">
+        <h3>Config Preview</h3>
+        <pre id="preview-content" class="output"></pre>
+        <div class="modal-actions">
+            <button class="btn" onclick="hideModal('preview-modal')">Close</button>
+        </div>
+    </div>
+</div>
+{% endblock %}

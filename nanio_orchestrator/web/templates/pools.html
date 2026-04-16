@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% block title %}Pools — nanio-orchestrator{% endblock %}
+{% block content %}
+<h1>Upstream Pools</h1>
+
+<div class="actions">
+    <button class="btn btn-primary" onclick="showModal('create-pool-modal')">+ New Pool</button>
+</div>
+
+{% for pool in pools %}
+<div class="card">
+    <div class="card-header">
+        <h3>{{ pool.name }}</h3>
+        <div class="card-badges">
+            <span class="badge type-{{ pool.type }}">{{ pool.type }}</span>
+            <span class="badge">{{ pool.lb_method }}</span>
+            <span class="badge">keepalive={{ pool.keepalive }}</span>
+        </div>
+        <div class="card-actions">
+            <button class="btn btn-sm" onclick="previewPool({{ pool.id }})">Preview</button>
+            <button class="btn btn-sm btn-danger" onclick="deletePool({{ pool.id }}, '{{ pool.name }}')">Delete</button>
+        </div>
+    </div>
+    {% if pool.description %}
+    <p class="description">{{ pool.description }}</p>
+    {% endif %}
+
+    <h4>Members</h4>
+    <table>
+        <thead>
+            <tr>
+                <th>Address</th>
+                <th>Role</th>
+                <th>Weight</th>
+                <th>Max Fails</th>
+                <th>Fail Timeout</th>
+                <th>Status</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for m in pool.members %}
+            <tr>
+                <td><code>{{ m.address }}</code></td>
+                <td><span class="badge role-{{ m.role }}">{{ m.role }}</span></td>
+                <td>{{ m.weight }}</td>
+                <td>{{ m.max_fails }}</td>
+                <td>{{ m.fail_timeout_s }}s</td>
+                <td>
+                    {% if m.enabled %}<span class="badge ok">enabled</span>{% else %}<span class="badge warn">disabled</span>{% endif %}
+                </td>
+                <td>
+                    <button class="btn btn-xs" onclick="showNodeSetup({{ pool.id }}, {{ m.id }}, '{{ m.address }}', '{{ pool.type }}')">Node Setup</button>
+                    <button class="btn btn-xs btn-danger" onclick="deleteMember({{ pool.id }}, {{ m.id }})">×</button>
+                </td>
+            </tr>
+        {% endfor %}
+        {% if not pool.members %}
+            <tr><td colspan="7" class="empty">No members yet</td></tr>
+        {% endif %}
+        </tbody>
+    </table>
+    <button class="btn btn-sm" onclick="showAddMember({{ pool.id }}, '{{ pool.type }}')">+ Add Member</button>
+</div>
+{% endfor %}
+
+{% if not pools %}
+<div class="card empty-state">
+    <p>No pools configured yet. Create your first upstream pool to get started.</p>
+</div>
+{% endif %}
+
+<!-- Create Pool Modal -->
+<div id="create-pool-modal" class="modal hidden">
+    <div class="modal-content">
+        <h3>Create Pool</h3>
+        <form id="create-pool-form" onsubmit="createPool(event)">
+            <label>Name <input type="text" name="name" required pattern="[a-zA-Z0-9_-]+" placeholder="pool-2025"></label>
+            <label>Description <input type="text" name="description" placeholder="Optional"></label>
+            <label>Type
+                <select name="type">
+                    <option value="nanio">nanio (shared storage)</option>
+                    <option value="http">http (read-only serve)</option>
+                    <option value="cold">cold (archive)</option>
+                </select>
+            </label>
+            <label>LB Method
+                <select name="lb_method">
+                    <option value="least_conn">least_conn</option>
+                    <option value="round_robin">round_robin</option>
+                    <option value="ip_hash">ip_hash</option>
+                </select>
+            </label>
+            <label>Keepalive <input type="number" name="keepalive" value="32" min="0" max="1024"></label>
+            <div class="modal-actions">
+                <button type="submit" class="btn btn-primary">Create</button>
+                <button type="button" class="btn" onclick="hideModal('create-pool-modal')">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Add Member Modal -->
+<div id="add-member-modal" class="modal hidden">
+    <div class="modal-content">
+        <h3>Add Member</h3>
+        <form id="add-member-form" onsubmit="addMember(event)">
+            <input type="hidden" name="pool_id" id="member-pool-id">
+            <label>Address <input type="text" name="address" required placeholder="10.0.1.10:9000"></label>
+            <label id="member-role-label">Role
+                <select name="role" id="member-role-select">
+                    <option value="active">active</option>
+                    <option value="primary">primary</option>
+                    <option value="replica">replica</option>
+                </select>
+            </label>
+            <label>Weight <input type="number" name="weight" value="1" min="1" max="100"></label>
+            <label>Max Fails <input type="number" name="max_fails" value="3" min="0" max="100"></label>
+            <label>Fail Timeout (s) <input type="number" name="fail_timeout_s" value="30" min="0" max="600"></label>
+            <div class="modal-actions">
+                <button type="submit" class="btn btn-primary">Add</button>
+                <button type="button" class="btn" onclick="hideModal('add-member-modal')">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Node Setup Modal -->
+<div id="node-setup-modal" class="modal hidden">
+    <div class="modal-content modal-wide">
+        <h3>Node Setup — <span id="node-setup-address"></span></h3>
+        <form id="node-setup-form" onsubmit="generateNodeConfig(event)">
+            <input type="hidden" name="pool_id" id="node-pool-id">
+            <input type="hidden" name="member_id" id="node-member-id">
+            <label>Node Type
+                <select name="node_type" id="node-type-select" onchange="toggleNanioFields()">
+                    <option value="nanio-only">nanio-only</option>
+                    <option value="nginx-only">nginx-only</option>
+                    <option value="nginx-nanio">nginx + nanio</option>
+                </select>
+            </label>
+            <label>Data Directory <input type="text" name="data_dir" value="/data"></label>
+            <div id="nanio-fields">
+                <label>Nanio Port <input type="number" name="nanio_port" value="9000"></label>
+                <label>Nanio Host <input type="text" name="nanio_host" value="0.0.0.0"></label>
+                <label>Region <input type="text" name="nanio_region" value="us-east-1"></label>
+                <label>Access Key <input type="text" name="access_key" placeholder="Optional"></label>
+                <label>Secret Key <input type="text" name="secret_key" placeholder="Optional"></label>
+            </div>
+            <div class="modal-actions">
+                <button type="submit" class="btn btn-primary">Generate Config</button>
+                <button type="button" class="btn" onclick="hideModal('node-setup-modal')">Cancel</button>
+            </div>
+        </form>
+        <div id="node-config-output" class="hidden">
+            <h4>Generated Config Files</h4>
+            <div id="node-config-files"></div>
+            <p id="node-config-instructions" class="instructions"></p>
+        </div>
+    </div>
+</div>
+
+<!-- Preview Modal -->
+<div id="preview-modal" class="modal hidden">
+    <div class="modal-content modal-wide">
+        <h3>Config Preview</h3>
+        <pre id="preview-content" class="output"></pre>
+        <div class="modal-actions">
+            <button class="btn" onclick="hideModal('preview-modal')">Close</button>
+        </div>
+    </div>
+</div>
+{% endblock %}

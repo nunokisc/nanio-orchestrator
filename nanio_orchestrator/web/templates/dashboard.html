@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — nanio-orchestrator{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+
+<div class="grid grid-3">
+    <div class="card">
+        <h3>Pools</h3>
+        <div class="stat">{{ pools|length }}</div>
+        <a href="/web/pools">Manage →</a>
+    </div>
+    <div class="card">
+        <h3>Vhosts</h3>
+        <div class="stat">{{ vhosts|length }}</div>
+        <a href="/web/vhosts">Manage →</a>
+    </div>
+    <div class="card {% if drift_count > 0 %}card-warn{% endif %}">
+        <h3>Config Drift</h3>
+        <div class="stat">{{ drift_count }}</div>
+        {% if drift_count > 0 %}
+        <span class="badge warn">DRIFT DETECTED</span>
+        {% else %}
+        <span class="badge ok">IN SYNC</span>
+        {% endif %}
+        <a href="/web/config">View →</a>
+    </div>
+</div>
+
+{% if last_reload %}
+<div class="card {% if last_reload.nginx_reload_ok %}card-ok{% else %}card-error{% endif %}">
+    <h3>Last Nginx Reload</h3>
+    <p>
+        {% if last_reload.nginx_reload_ok %}
+        <span class="badge ok">OK</span>
+        {% else %}
+        <span class="badge error">FAILED</span>
+        {% endif %}
+        at {{ last_reload.created_at }}
+    </p>
+    {% if last_reload.nginx_reload_output %}
+    <pre class="output">{{ last_reload.nginx_reload_output }}</pre>
+    {% endif %}
+</div>
+{% endif %}
+
+<h2>Config Files</h2>
+<table>
+    <thead>
+        <tr>
+            <th>Path</th>
+            <th>Status</th>
+            <th>Last Synced</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for cf in config_files %}
+        <tr>
+            <td><code>{{ cf.path }}</code></td>
+            <td>
+                {% if cf.sha256_disk and cf.sha256_db and cf.sha256_disk != cf.sha256_db %}
+                <span class="badge warn">DRIFTED</span>
+                {% else %}
+                <span class="badge ok">OK</span>
+                {% endif %}
+            </td>
+            <td>{{ cf.last_synced_at or '—' }}</td>
+        </tr>
+    {% endfor %}
+    {% if not config_files %}
+        <tr><td colspan="3" class="empty">No config files tracked yet</td></tr>
+    {% endif %}
+    </tbody>
+</table>
+
+<h2>Recent Activity</h2>
+<table>
+    <thead>
+        <tr>
+            <th>Time</th>
+            <th>Action</th>
+            <th>Entity</th>
+            <th>Nginx</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for a in recent_audit %}
+        <tr>
+            <td>{{ a.created_at }}</td>
+            <td><code>{{ a.action }}</code></td>
+            <td>{{ a.entity_type }} {% if a.entity_id %}#{{ a.entity_id }}{% endif %}</td>
+            <td>
+                {% if a.nginx_reload_ok is not none %}
+                    {% if a.nginx_reload_ok %}<span class="badge ok">OK</span>{% else %}<span class="badge error">FAIL</span>{% endif %}
+                {% else %}—{% endif %}
+            </td>
+        </tr>
+    {% endfor %}
+    {% if not recent_audit %}
+        <tr><td colspan="4" class="empty">No activity yet</td></tr>
+    {% endif %}
+    </tbody>
+</table>
+{% endblock %}

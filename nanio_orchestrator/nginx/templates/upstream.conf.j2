@@ -1,0 +1,19 @@
+# managed by nanio-orchestrator
+# pool_id:{{ pool.id }} name:{{ pool.name }} type:{{ pool.type }} updated:{{ updated }}
+upstream {{ pool.name }} {
+{% if pool.lb_method == 'least_conn' %}
+    least_conn;
+{% elif pool.lb_method == 'ip_hash' %}
+    ip_hash;
+{% endif %}
+{% for member in members %}
+{% if member.enabled %}
+{% if member.role == 'replica' %}
+    server {{ member.address }} backup;
+{% else %}
+    server {{ member.address }} weight={{ member.weight }} max_fails={{ member.max_fails }} fail_timeout={{ member.fail_timeout_s }}s;
+{% endif %}
+{% endif %}
+{% endfor %}
+    keepalive {{ pool.keepalive }};
+}

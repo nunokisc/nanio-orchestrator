@@ -1,0 +1,16 @@
+[Unit]
+Description=nanio-orchestrator nginx config manager
+After=network.target
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=/etc/nanio-orchestrator/config.env
+ExecStart=/opt/nanio-orchestrator/venv/bin/python -m nanio_orchestrator
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,251 @@
+"""Pydantic request/response models for the REST API."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, Field, field_validator
+
+
+# ── Pool ──────────────────────────────────────────────────────────────────────
+
+
+class PoolCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_-]+$")
+    description: Optional[str] = None
+    type: str = Field("nanio", pattern=r"^(nanio|http|cold)$")
+    lb_method: str = Field("least_conn", pattern=r"^(round_robin|least_conn|ip_hash)$")
+    keepalive: int = Field(32, ge=0, le=1024)
+
+
+class PoolUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_-]+$")
+    description: Optional[str] = None
+    type: Optional[str] = Field(None, pattern=r"^(nanio|http|cold)$")
+    lb_method: Optional[str] = Field(None, pattern=r"^(round_robin|least_conn|ip_hash)$")
+    keepalive: Optional[int] = Field(None, ge=0, le=1024)
+
+
+class PoolOut(BaseModel):
+    id: int
+    name: str
+    description: Optional[str]
+    type: str
+    lb_method: str
+    keepalive: int
+    created_at: str
+    updated_at: str
+
+
+# ── Pool Member ───────────────────────────────────────────────────────────────
+
+
+class MemberCreate(BaseModel):
+    address: str = Field(..., min_length=1)
+    role: str = Field("active", pattern=r"^(active|primary|replica)$")
+    weight: int = Field(1, ge=1, le=100)
+    max_fails: int = Field(3, ge=0, le=100)
+    fail_timeout_s: int = Field(30, ge=0, le=600)
+    enabled: bool = True
+
+    @field_validator("address")
+    @classmethod
+    def validate_address(cls, v: str) -> str:
+        v = v.strip()
+        if v.startswith("unix:"):
+            return v
+        if ":" not in v:
+            raise ValueError("address must be host:port or unix:/path")
+        return v
+
+
+class MemberUpdate(BaseModel):
+    address: Optional[str] = None
+    role: Optional[str] = Field(None, pattern=r"^(active|primary|replica)$")
+    weight: Optional[int] = Field(None, ge=1, le=100)
+    max_fails: Optional[int] = Field(None, ge=0, le=100)
+    fail_timeout_s: Optional[int] = Field(None, ge=0, le=600)
+    enabled: Optional[bool] = None
+
+
+class MemberOut(BaseModel):
+    id: int
+    pool_id: int
+    address: str
+    role: str
+    weight: int
+    max_fails: int
+    fail_timeout_s: int
+    enabled: bool
+    created_at: str
+    updated_at: str
+
+
+# ── Vhost ─────────────────────────────────────────────────────────────────────
+
+
+class VhostCreate(BaseModel):
+    server_name: str = Field(..., min_length=1, max_length=253)
+    listen_port: int = Field(443, ge=1, le=65535)
+    ssl: bool = True
+    ssl_cert_path: Optional[str] = None
+    ssl_key_path: Optional[str] = None
+    extra_directives: Optional[str] = None
+    enabled: bool = True
+
+
+class VhostUpdate(BaseModel):
+    server_name: Optional[str] = Field(None, min_length=1, max_length=253)
+    listen_port: Optional[int] = Field(None, ge=1, le=65535)
+    ssl: Optional[bool] = None
+    ssl_cert_path: Optional[str] = None
+    ssl_key_path: Optional[str] = None
+    extra_directives: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+class VhostOut(BaseModel):
+    id: int
+    server_name: str
+    listen_port: int
+    ssl: bool
+    ssl_cert_path: Optional[str]
+    ssl_key_path: Optional[str]
+    extra_directives: Optional[str]
+    enabled: bool
+    created_at: str
+    updated_at: str
+
+
+# ── Route ─────────────────────────────────────────────────────────────────────
+
+
+class RouteCreate(BaseModel):
+    path_prefix: str = Field(..., min_length=1)
+    pool_id: int
+    extra_directives: Optional[str] = None
+    enabled: bool = True
+
+    @field_validator("path_prefix")
+    @classmethod
+    def validate_prefix(cls, v: str) -> str:
+        if not v.startswith("/"):
+            raise ValueError("path_prefix must start with /")
+        return v
+
+
+class RouteUpdate(BaseModel):
+    path_prefix: Optional[str] = None
+    pool_id: Optional[int] = None
+    extra_directives: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+class RouteOut(BaseModel):
+    id: int
+    vhost_id: int
+    path_prefix: str
+    pool_id: int
+    pool_name: Optional[str] = None
+    extra_directives: Optional[str]
+    enabled: bool
+    created_at: str
+    updated_at: str
+
+
+# ── Config Status ─────────────────────────────────────────────────────────────
+
+
+class ConfigFileStatus(BaseModel):
+    path: str
+    sha256_disk: Optional[str]
+    sha256_db: Optional[str]
+    drifted: bool
+    last_synced_at: Optional[str]
+
+
+class ConfigStatus(BaseModel):
+    files: List[ConfigFileStatus]
+    last_reload_ok: Optional[bool] = None
+    last_reload_at: Optional[str] = None
+
+
+class NginxResult(BaseModel):
+    ok: bool
+    output: str
+
+
+# ── Node Config ───────────────────────────────────────────────────────────────
+
+
+class NodeConfigFile(BaseModel):
+    path: str
+    content: str
+
+
+class NodeConfigRequest(BaseModel):
+    node_type: str = Field(..., pattern=r"^(nanio-only|nginx-only|nginx-nanio)$")
+    data_dir: str = Field("/data")
+    nanio_port: int = Field(9000, ge=1, le=65535)
+    nanio_host: str = Field("0.0.0.0")
+    nanio_region: str = Field("us-east-1")
+    access_key: Optional[str] = None
+    secret_key: Optional[str] = None
+
+
+class NodeConfigOut(BaseModel):
+    node_type: str
+    member_address: str
+    files: List[NodeConfigFile]
+    instructions: str
+
+
+class NodeConfigHistoryOut(BaseModel):
+    id: int
+    member_id: int
+    node_type: str
+    config_json: str
+    generated_at: str
+
+
+# ── Audit ─────────────────────────────────────────────────────────────────────
+
+
+class AuditEntry(BaseModel):
+    id: int
+    actor: str
+    action: str
+    entity_type: str
+    entity_id: Optional[int]
+    before_json: Optional[str]
+    after_json: Optional[str]
+    nginx_reload_ok: Optional[bool]
+    nginx_reload_output: Optional[str]
+    created_at: str
+
+
+# ── Health ────────────────────────────────────────────────────────────────────
+
+
+class HealthOut(BaseModel):
+    status: str = "ok"
+    version: str
+    dev_mode: bool
+    db_ok: bool
+    nginx_config_dir: str
+    drift_alerts: int = 0
+
+
+# ── Generic ───────────────────────────────────────────────────────────────────
+
+
+class ErrorOut(BaseModel):
+    detail: str
+
+
+class PaginatedResponse(BaseModel):
+    items: List[Dict[str, Any]]
+    total: int
+    page: int
+    per_page: int
