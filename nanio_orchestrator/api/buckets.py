@@ -19,6 +19,7 @@ from nanio_orchestrator.bucket_sync import sync_vhost_buckets_once
 from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.credentials import get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
+from nanio_orchestrator.migration_engine import start_migration as engine_start_migration
 from nanio_orchestrator.models import BucketListOut, BucketPromoteRequest, MigrationStatus
 from nanio_orchestrator.nginx.executor import reload_nginx, test_config
 from nanio_orchestrator.nginx.generator import generate_vhost_config, record_file_state
@@ -263,10 +264,10 @@ async def promote_bucket(vhost_id: int, bucket: str, body: BucketPromoteRequest)
         "migration_started": False,
     }
 
-    # ── Optionally start migration ─────────────────────────────────────────
+    # ── Optionally start migration (via rclone engine) ───────────────────────────
     if body.migrate:
-        migration_id = await _start_migration(
-            vhost_id, bucket, default_pool_id, body.pool_id, default_member, target_members[0], s
+        migration_id = await engine_start_migration(
+            vhost_id, bucket, default_pool_id, body.pool_id
         )
         result["migration_started"] = True
         result["migration_id"] = migration_id
@@ -295,7 +296,10 @@ async def ignore_bucket(vhost_id: int, bucket: str):
     return {"ok": True, "bucket": bucket, "status": "ignored"}
 
 
-# ── Migration ─────────────────────────────────────────────────────────────────
+# ── Migration (legacy in-memory path — kept for status endpoint compatibility) ──
+# _start_migration and _run_migration are no longer used for new migrations;
+# promote_bucket and the /migrate endpoint now delegate to migration_engine (rclone).
+# The object_migrations table and its status endpoint remain for historical records.
 
 
 async def _start_migration(
@@ -428,18 +432,13 @@ async def _run_migration(
 
 @router.post("/{vhost_id}/buckets/{bucket}/migrate")
 async def start_migration(vhost_id: int, bucket: str):
-    """Start (or restart) object migration for a routed bucket."""
+    """Start (or restart) object migration for a routed bucket via rclone engine."""
+    from nanio_orchestrator.migration_engine import get_active_count
     s = get_settings()
-
-    if (vhost_id, bucket) in _migration_tasks:
-        task = _migration_tasks[(vhost_id, bucket)]
-        if not task.done():
-            raise HTTPException(409, "Migration already running for this bucket")
 
     async with get_db_ctx() as db:
         vhost = await _require_vhost_with_default_pool(vhost_id, db)
 
-        # Find the route to get target pool
         route_rows = await db.execute_fetchall(
             "SELECT pool_id FROM routes WHERE vhost_id = ? AND path_prefix = ?",
             (vhost_id, f"/{bucket}/"),
@@ -450,12 +449,15 @@ async def start_migration(vhost_id: int, bucket: str):
         dst_pool_id = dict(route_rows[0])["pool_id"]
         src_pool_id = vhost["default_pool_id"]
 
-        src_member = await _first_enabled_member(src_pool_id, db)
-        dst_member = await _first_enabled_member(dst_pool_id, db)
+    # Check parallel limit
+    if get_active_count() >= s.migration_max_parallel:
+        raise HTTPException(
+            429,
+            f"Max parallel migrations reached ({s.migration_max_parallel}). "
+            "Wait for a running migration to finish or cancel one.",
+        )
 
-    migration_id = await _start_migration(
-        vhost_id, bucket, src_pool_id, dst_pool_id, src_member, dst_member, s
-    )
+    migration_id = await engine_start_migration(vhost_id, bucket, src_pool_id, dst_pool_id)
     return {"ok": True, "migration_id": migration_id, "bucket": bucket}
 
 
