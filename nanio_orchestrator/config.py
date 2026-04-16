@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     log_level: str = "info"
     drift_interval: int = 60
     session_ttl: int = 28800  # seconds; default 8 hours
+    bucket_sync_interval: int = 300  # seconds; default 5 minutes
+    s3_access_key: Optional[str] = None
+    s3_secret_key: Optional[str] = None
     dev: bool = DEV_MODE
 
     @property

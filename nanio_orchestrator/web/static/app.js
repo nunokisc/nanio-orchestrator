@@ -233,6 +233,7 @@ async function generateNodeConfig(e) {
 async function createVhost(e) {
     e.preventDefault();
     const form = e.target;
+    const rawPoolId = form.default_pool_id ? form.default_pool_id.value : '';
     const data = {
         server_name: form.server_name.value,
         listen_port: parseInt(form.listen_port.value),
@@ -240,6 +241,7 @@ async function createVhost(e) {
         ssl_cert_path: form.ssl_cert_path.value || null,
         ssl_key_path: form.ssl_key_path.value || null,
         extra_directives: form.extra_directives.value || null,
+        default_pool_id: rawPoolId ? parseInt(rawPoolId) : null,
     };
 
     try {
@@ -473,6 +475,80 @@ function showAuditDetail(id) {
     document.getElementById('audit-after').textContent = after ? JSON.stringify(JSON.parse(after), null, 2) : '—';
     document.getElementById('audit-nginx-output').textContent = output || '—';
     showModal('audit-detail-modal');
+}
+
+// ── Bucket sync ──────────────────────────────────────────────────────────────
+
+async function syncBuckets(vhostId) {
+    try {
+        const res = await fetch(`/api/vhosts/${vhostId}/buckets/sync`, {
+            method: 'POST',
+            headers: getHeaders(),
+            credentials: 'same-origin',
+        });
+        const data = await res.json();
+        if (data.error) {
+            alert('Sync error: ' + data.error);
+        } else if (data.skipped) {
+            alert('Skipped: ' + data.reason);
+        } else {
+            alert(`Synced ${data.buckets_found} buckets`);
+            location.reload();
+        }
+    } catch (err) {
+        alert('Error: ' + err.message);
+    }
+}
+
+function showRouteModal(vhostId, bucket) {
+    document.getElementById('route-bucket-vhost-id').value = vhostId;
+    document.getElementById('route-bucket-bucket').value = bucket;
+    document.getElementById('route-bucket-name').textContent = bucket;
+    showModal('route-bucket-modal');
+}
+
+async function promoteBucket(e) {
+    e.preventDefault();
+    const form = e.target;
+    const vhostId = form.vhost_id.value;
+    const bucket = form.bucket.value;
+    const poolId = parseInt(form.pool_id.value);
+    const migrate = form.migrate.checked;
+
+    try {
+        const res = await fetch(`/api/vhosts/${vhostId}/buckets/${encodeURIComponent(bucket)}/promote`, {
+            method: 'POST',
+            headers: getHeaders(),
+            credentials: 'same-origin',
+            body: JSON.stringify({ pool_id: poolId, migrate }),
+        });
+        const data = await res.json();
+        hideModal('route-bucket-modal');
+        if (data.ok) {
+            alert(`Bucket "${bucket}" routed to pool "${data.pool}".${migrate ? '\nMigration started.' : ''}`);
+            location.reload();
+        } else {
+            alert('Error: ' + (data.error || data.detail || JSON.stringify(data)));
+        }
+    } catch (err) {
+        alert('Error: ' + err.message);
+    }
+}
+
+async function ignoreBucket(vhostId, bucket) {
+    if (!confirm(`Ignore bucket "${bucket}"? It won't appear as unrouted.`)) return;
+    try {
+        const res = await fetch(`/api/vhosts/${vhostId}/buckets/${encodeURIComponent(bucket)}/ignore`, {
+            method: 'POST',
+            headers: getHeaders(),
+            credentials: 'same-origin',
+        });
+        const data = await res.json();
+        if (data.ok) location.reload();
+        else alert('Error: ' + (data.detail || JSON.stringify(data)));
+    } catch (err) {
+        alert('Error: ' + err.message);
+    }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

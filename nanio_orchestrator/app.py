@@ -15,6 +15,7 @@ from nanio_orchestrator import __version__
 from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.db import init_db
 from nanio_orchestrator.drift import drift_loop, stop_drift
+from nanio_orchestrator.bucket_sync import bucket_sync_loop, stop_bucket_sync
 
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,9 @@ async def lifespan(app: FastAPI):
     # Start drift detection
     drift_task = asyncio.create_task(drift_loop())
 
+    # Start bucket sync
+    bucket_sync_task = asyncio.create_task(bucket_sync_loop())
+
     if s.dev:
         logger.info(
             "nanio-orchestrator dev mode → http://localhost:%d  API key: dev",
@@ -52,6 +56,13 @@ async def lifespan(app: FastAPI):
     drift_task.cancel()
     try:
         await drift_task
+    except asyncio.CancelledError:
+        pass
+
+    stop_bucket_sync()
+    bucket_sync_task.cancel()
+    try:
+        await bucket_sync_task
     except asyncio.CancelledError:
         pass
     logger.info("nanio-orchestrator stopped")
@@ -107,12 +118,14 @@ def create_app() -> FastAPI:
     from nanio_orchestrator.api.config import router as config_router
     from nanio_orchestrator.api.health import router as health_router
     from nanio_orchestrator.api.audit import router as audit_router
+    from nanio_orchestrator.api.buckets import router as buckets_router
 
     app.include_router(pools_router)
     app.include_router(vhosts_router)
     app.include_router(config_router)
     app.include_router(health_router)
     app.include_router(audit_router)
+    app.include_router(buckets_router)
 
     # ── Web UI (includes /login, /logout, /, /web/*) ──────────────────────
     from nanio_orchestrator.web.routes import router as web_router

@@ -93,6 +93,7 @@ class VhostCreate(BaseModel):
     ssl_key_path: Optional[str] = None
     extra_directives: Optional[str] = None
     enabled: bool = True
+    default_pool_id: Optional[int] = None
 
 
 class VhostUpdate(BaseModel):
@@ -103,6 +104,7 @@ class VhostUpdate(BaseModel):
     ssl_key_path: Optional[str] = None
     extra_directives: Optional[str] = None
     enabled: Optional[bool] = None
+    default_pool_id: Optional[int] = None
 
 
 class VhostOut(BaseModel):
@@ -114,6 +116,7 @@ class VhostOut(BaseModel):
     ssl_key_path: Optional[str]
     extra_directives: Optional[str]
     enabled: bool
+    default_pool_id: Optional[int] = None
     created_at: str
     updated_at: str
 
@@ -153,6 +156,37 @@ class RouteOut(BaseModel):
     created_at: str
     updated_at: str
 
+# ── Bucket Sync ────────────────────────────────────────────────────────────────
+
+
+class BucketEntry(BaseModel):
+    name: str
+    status: str  # unrouted | routed | migrating | ignored
+    pool_name: Optional[str] = None
+    routed_pool_id: Optional[int] = None
+    object_count: Optional[int] = None
+    discovered_at: Optional[str] = None
+
+
+class BucketListOut(BaseModel):
+    vhost_id: int
+    buckets: List[BucketEntry]
+    last_synced_at: Optional[str] = None
+
+
+class BucketPromoteRequest(BaseModel):
+    pool_id: int
+    migrate: bool = False
+
+
+class MigrationStatus(BaseModel):
+    bucket: str
+    status: str
+    objects_total: int
+    objects_done: int
+    error_msg: Optional[str] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
 
 # ── Config Status ─────────────────────────────────────────────────────────────
 

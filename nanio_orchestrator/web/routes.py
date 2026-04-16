@@ -102,6 +102,30 @@ async def dashboard():
         )
         last_reload = dict(reload_row[0]) if reload_row else None
 
+        # Unrouted buckets per vhost (for dashboard widget)
+        unrouted_rows = await db.execute_fetchall(
+            """SELECT bs.vhost_id, bs.bucket, bs.discovered_at, v.server_name
+               FROM bucket_sync bs
+               JOIN vhosts v ON bs.vhost_id = v.id
+               WHERE bs.status = 'unrouted'
+               ORDER BY v.server_name, bs.bucket"""
+        )
+        # Group by vhost
+        unrouted_by_vhost: dict = {}
+        for r in unrouted_rows:
+            rd = dict(r)
+            vid = rd["vhost_id"]
+            if vid not in unrouted_by_vhost:
+                unrouted_by_vhost[vid] = {
+                    "vhost_id": vid,
+                    "server_name": rd["server_name"],
+                    "buckets": [],
+                }
+            unrouted_by_vhost[vid]["buckets"].append({
+                "name": rd["bucket"],
+                "discovered_at": rd["discovered_at"],
+            })
+
     return _render(
         "dashboard.html",
         pools=[dict(p) for p in pools],
@@ -110,6 +134,7 @@ async def dashboard():
         drift_count=drift_count,
         last_reload=last_reload,
         recent_audit=[dict(a) for a in recent_audit],
+        unrouted_by_vhost=list(unrouted_by_vhost.values()),
     )
 
 
@@ -139,6 +164,7 @@ async def vhosts_page():
     async with get_db_ctx() as db:
         vhosts = await db.execute_fetchall("SELECT * FROM vhosts ORDER BY server_name")
         pools = await db.execute_fetchall("SELECT id, name FROM pools ORDER BY name")
+        pool_names = {p["id"]: p["name"] for p in pools}
         result = []
         for v in vhosts:
             routes = await db.execute_fetchall(
@@ -150,6 +176,7 @@ async def vhosts_page():
             )
             vhost_dict = dict(v)
             vhost_dict["routes"] = [dict(r) for r in routes]
+            vhost_dict["default_pool_name"] = pool_names.get(v["default_pool_id"]) if v["default_pool_id"] else None
             result.append(vhost_dict)
     return _render("vhosts.html", vhosts=result, pools=[dict(p) for p in pools])
 

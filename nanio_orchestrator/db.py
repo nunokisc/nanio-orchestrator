@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS vhosts (
     ssl_key_path        TEXT,
     extra_directives    TEXT,
     enabled             INTEGER NOT NULL DEFAULT 1,
+    default_pool_id     INTEGER REFERENCES pools(id),
     created_at          TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -93,6 +94,33 @@ CREATE TABLE IF NOT EXISTS node_configs (
     config_json  TEXT NOT NULL,
     generated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS bucket_sync (
+    id              INTEGER PRIMARY KEY,
+    vhost_id        INTEGER NOT NULL REFERENCES vhosts(id) ON DELETE CASCADE,
+    bucket          TEXT NOT NULL,
+    discovered_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    status          TEXT NOT NULL DEFAULT 'unrouted'
+                    CHECK (status IN ('unrouted','routed','migrating','ignored')),
+    routed_pool_id  INTEGER REFERENCES pools(id),
+    UNIQUE(vhost_id, bucket)
+);
+
+CREATE TABLE IF NOT EXISTS object_migrations (
+    id              INTEGER PRIMARY KEY,
+    vhost_id        INTEGER NOT NULL REFERENCES vhosts(id) ON DELETE CASCADE,
+    bucket          TEXT NOT NULL,
+    src_pool_id     INTEGER NOT NULL REFERENCES pools(id),
+    dst_pool_id     INTEGER NOT NULL REFERENCES pools(id),
+    status          TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','running','done','error')),
+    objects_total   INTEGER NOT NULL DEFAULT 0,
+    objects_done    INTEGER NOT NULL DEFAULT 0,
+    error_msg       TEXT,
+    started_at      TEXT,
+    finished_at     TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -131,7 +159,19 @@ async def init_db() -> None:
     """Create all tables if they do not exist."""
     async with get_db_ctx() as db:
         await db.executescript(SCHEMA_SQL)
+        await _run_migrations_async(db)
         await db.commit()
+
+
+async def _run_migrations_async(db) -> None:
+    """Add columns/indexes that may be missing in existing databases."""
+    # vhosts.default_pool_id (added in bucket-sync feature)
+    info = await db.execute_fetchall("PRAGMA table_info(vhosts)")
+    col_names = {r['name'] for r in info}
+    if 'default_pool_id' not in col_names:
+        await db.execute(
+            "ALTER TABLE vhosts ADD COLUMN default_pool_id INTEGER REFERENCES pools(id)"
+        )
 
 
 def init_db_sync() -> None:
@@ -140,5 +180,12 @@ def init_db_sync() -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.executescript(SCHEMA_SQL)
+    # Migration: default_pool_id
+    info = conn.execute("PRAGMA table_info(vhosts)").fetchall()
+    col_names = {r[1] for r in info}
+    if 'default_pool_id' not in col_names:
+        conn.execute(
+            "ALTER TABLE vhosts ADD COLUMN default_pool_id INTEGER REFERENCES pools(id)"
+        )
     conn.commit()
     conn.close()

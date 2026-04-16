@@ -25,6 +25,9 @@
     {% if vhost.ssl_cert_path %}
     <p class="meta">Cert: <code>{{ vhost.ssl_cert_path }}</code></p>
     {% endif %}
+    {% if vhost.default_pool_id %}
+    <p class="meta">Default pool (namespace authority): <strong>{{ vhost.default_pool_name or vhost.default_pool_id }}</strong></p>
+    {% endif %}
 
     <h4>Routes</h4>
     <table>
@@ -74,6 +77,14 @@
             <label><input type="checkbox" name="ssl" checked> SSL</label>
             <label>SSL Certificate Path <input type="text" name="ssl_cert_path" placeholder="/etc/ssl/s3.xpto.pt/fullchain.pem"></label>
             <label>SSL Key Path <input type="text" name="ssl_key_path" placeholder="/etc/ssl/s3.xpto.pt/privkey.pem"></label>
+            <label>Default Pool (nanio-default — namespace authority)
+                <select name="default_pool_id">
+                    <option value="">— none —</option>
+                    {% for p in pools %}
+                    <option value="{{ p.id }}">{{ p.name }}</option>
+                    {% endfor %}
+                </select>
+            </label>
             <label>Extra Directives <textarea name="extra_directives" rows="3" placeholder="Optional nginx directives"></textarea></label>
             <div class="modal-actions">
                 <button type="submit" class="btn btn-primary">Create</button>

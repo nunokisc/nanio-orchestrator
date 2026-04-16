@@ -79,11 +79,11 @@ async def create_vhost(body: VhostCreate):
         try:
             cursor = await db.execute(
                 """INSERT INTO vhosts (server_name, listen_port, ssl, ssl_cert_path, ssl_key_path,
-                   extra_directives, enabled)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                   extra_directives, enabled, default_pool_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (body.server_name, body.listen_port, 1 if body.ssl else 0,
                  body.ssl_cert_path, body.ssl_key_path, body.extra_directives,
-                 1 if body.enabled else 0),
+                 1 if body.enabled else 0, body.default_pool_id),
             )
             await db.commit()
         except Exception as e:
