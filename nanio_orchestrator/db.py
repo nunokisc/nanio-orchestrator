@@ -264,6 +264,25 @@ async def _run_migrations_async(db) -> None:
     if 'mode' not in col_names:
         await db.execute("ALTER TABLE migrations ADD COLUMN mode TEXT NOT NULL DEFAULT 'copy'")
 
+    # node_configs: ensure ON DELETE CASCADE on member_id FK
+    row = await db.execute_fetchall(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='node_configs'"
+    )
+    if row and "ON DELETE CASCADE" not in (row[0]["sql"] or ""):
+        await db.execute("PRAGMA foreign_keys=OFF")
+        await db.execute("""CREATE TABLE node_configs_new (
+            id           INTEGER PRIMARY KEY,
+            member_id    INTEGER NOT NULL REFERENCES pool_members(id) ON DELETE CASCADE,
+            node_type    TEXT NOT NULL CHECK (node_type IN ('nanio-only','nginx-only','nginx-nanio')),
+            config_json  TEXT NOT NULL,
+            generated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )""")
+        await db.execute("INSERT INTO node_configs_new SELECT * FROM node_configs")
+        await db.execute("DROP TABLE node_configs")
+        await db.execute("ALTER TABLE node_configs_new RENAME TO node_configs")
+        await db.commit()
+        await db.execute("PRAGMA foreign_keys=ON")
+
 
 def init_db_sync() -> None:
     """Synchronous schema creation for CLI / install commands."""
@@ -317,5 +336,23 @@ def init_db_sync() -> None:
     col_names = {r[1] for r in info}
     if 'mode' not in col_names:
         conn.execute("ALTER TABLE migrations ADD COLUMN mode TEXT NOT NULL DEFAULT 'copy'")
+    # node_configs: ensure ON DELETE CASCADE on member_id FK
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='node_configs'"
+    ).fetchone()
+    if row and "ON DELETE CASCADE" not in (row[0] or ""):
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("""CREATE TABLE node_configs_new (
+            id           INTEGER PRIMARY KEY,
+            member_id    INTEGER NOT NULL REFERENCES pool_members(id) ON DELETE CASCADE,
+            node_type    TEXT NOT NULL CHECK (node_type IN ('nanio-only','nginx-only','nginx-nanio')),
+            config_json  TEXT NOT NULL,
+            generated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )""")
+        conn.execute("INSERT INTO node_configs_new SELECT * FROM node_configs")
+        conn.execute("DROP TABLE node_configs")
+        conn.execute("ALTER TABLE node_configs_new RENAME TO node_configs")
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys=ON")
     conn.commit()
     conn.close()

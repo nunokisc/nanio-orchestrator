@@ -146,7 +146,8 @@ def _do_request(
         )
         headers.update(auth_hdrs)
 
-    url = f"{path}?{query}" if query else path
+    encoded_path = urllib.parse.quote(path, safe="/-")
+    url = f"{encoded_path}?{query}" if query else encoded_path
     conn = http.client.HTTPConnection(host, port, timeout=get_settings().s3_request_timeout)
     try:
         conn.request(method, url, body=body, headers=headers)

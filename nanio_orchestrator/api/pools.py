@@ -216,6 +216,48 @@ async def delete_pool(pool_id: int):
                 "Change the vhost default_pool_id or remove the bucket routes first.",
             )
 
+        # Check if any vhost uses this pool as its default
+        vhost_refs = await db.execute_fetchall(
+            "SELECT server_name FROM vhosts WHERE default_pool_id = ?", (pool_id,)
+        )
+        if vhost_refs:
+            names = ", ".join(r["server_name"] for r in vhost_refs)
+            raise HTTPException(
+                409,
+                f"Cannot delete pool: it is the default pool for vhost(s): {names}. "
+                "Change the vhost default_pool_id first.",
+            )
+
+        # Block if active migrations reference this pool
+        active_mig = await db.execute_fetchall(
+            """SELECT id FROM migrations
+               WHERE (src_pool_id = ? OR dst_pool_id = ?)
+               AND phase IN ('pending','copying','verifying','switching')""",
+            (pool_id, pool_id),
+        )
+        if active_mig:
+            ids = ", ".join(str(r["id"]) for r in active_mig)
+            raise HTTPException(
+                409,
+                f"Cannot delete pool: active migration(s) {ids} reference this pool. "
+                "Cancel or wait for them to finish first.",
+            )
+
+        # Clean up finished migration records and object_migrations referencing this pool
+        await db.execute(
+            "DELETE FROM migrations WHERE src_pool_id = ? OR dst_pool_id = ?",
+            (pool_id, pool_id),
+        )
+        await db.execute(
+            "DELETE FROM object_migrations WHERE src_pool_id = ? OR dst_pool_id = ?",
+            (pool_id, pool_id),
+        )
+        # Null out bucket_sync references (nullable column)
+        await db.execute(
+            "UPDATE bucket_sync SET routed_pool_id = NULL WHERE routed_pool_id = ?",
+            (pool_id,),
+        )
+
         # Delete node_configs for all members first (FK chain)
         await db.execute(
             "DELETE FROM node_configs WHERE member_id IN (SELECT id FROM pool_members WHERE pool_id = ?)",

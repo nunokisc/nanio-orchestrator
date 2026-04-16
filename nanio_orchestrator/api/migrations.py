@@ -160,11 +160,11 @@ async def get_log(migration_id: int, limit: int = Query(100, ge=1, le=1000)):
             "SELECT * FROM migration_log WHERE migration_id = ? ORDER BY id DESC LIMIT ?",
             (migration_id, limit),
         )
-    if not rows:
-        # Check migration exists
-        m = await db.execute_fetchall("SELECT id FROM migrations WHERE id = ?", (migration_id,))
-        if not m:
-            raise HTTPException(404, "Migration not found")
+        if not rows:
+            # Check migration exists
+            m = await db.execute_fetchall("SELECT id FROM migrations WHERE id = ?", (migration_id,))
+            if not m:
+                raise HTTPException(404, "Migration not found")
     return [
         MigrationLogEntry(
             id=r["id"],
