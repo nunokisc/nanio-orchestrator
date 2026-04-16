@@ -24,6 +24,12 @@
                     {% endfor %}
                 </select>
             </label>
+            <label>Mode
+                <select name="mode">
+                    <option value="copy">Copy (additive — never deletes at destination)</option>
+                    <option value="sync">Sync (mirror — destination becomes identical to source)</option>
+                </select>
+            </label>
             <button type="submit" class="btn btn-primary">Start Migration</button>
         </div>
     </form>
@@ -37,6 +43,7 @@
             <th>ID</th>
             <th>Bucket</th>
             <th>Source → Dest</th>
+            <th>Mode</th>
             <th>Phase</th>
             <th>Progress</th>
             <th>Started</th>
@@ -50,6 +57,7 @@
         <td>#{{ m.id }}</td>
         <td><code>{{ m.bucket }}</code></td>
         <td>{{ m.src_pool_name or m.src_pool_id }} → {{ m.dst_pool_name or m.dst_pool_id }}</td>
+        <td><code>{{ m.mode or 'copy' }}</code></td>
         <td>
             {% if m.phase == 'done' %}
             <span class="badge ok">{{ m.phase }}</span>

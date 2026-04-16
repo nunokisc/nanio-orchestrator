@@ -140,6 +140,8 @@ CREATE TABLE IF NOT EXISTS migrations (
     bucket          TEXT NOT NULL,
     src_pool_id     INTEGER NOT NULL REFERENCES pools(id),
     dst_pool_id     INTEGER NOT NULL REFERENCES pools(id),
+    mode            TEXT NOT NULL DEFAULT 'copy'
+                    CHECK (mode IN ('copy','sync')),
     phase           TEXT NOT NULL DEFAULT 'pending'
                     CHECK (phase IN ('pending','copying','verifying','switching','purge_source','done','error','cancelled')),
     rclone_pid      INTEGER,
@@ -256,6 +258,12 @@ async def _run_migrations_async(db) -> None:
         await db.commit()
         await db.execute("PRAGMA foreign_keys=ON")
 
+    # migrations.mode (copy vs sync)
+    info = await db.execute_fetchall("PRAGMA table_info(migrations)")
+    col_names = {r['name'] for r in info}
+    if 'mode' not in col_names:
+        await db.execute("ALTER TABLE migrations ADD COLUMN mode TEXT NOT NULL DEFAULT 'copy'")
+
 
 def init_db_sync() -> None:
     """Synchronous schema creation for CLI / install commands."""
@@ -304,5 +312,10 @@ def init_db_sync() -> None:
         conn.execute("ALTER TABLE migrations_new RENAME TO migrations")
         conn.commit()
         conn.execute("PRAGMA foreign_keys=ON")
+    # migrations.mode (copy vs sync)
+    info = conn.execute("PRAGMA table_info(migrations)").fetchall()
+    col_names = {r[1] for r in info}
+    if 'mode' not in col_names:
+        conn.execute("ALTER TABLE migrations ADD COLUMN mode TEXT NOT NULL DEFAULT 'copy'")
     conn.commit()
     conn.close()

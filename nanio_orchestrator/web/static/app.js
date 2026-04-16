@@ -631,6 +631,7 @@ async function createMigration(event) {
         bucket: form.bucket.value,
         src_pool_id: parseInt(form.src_pool_id.value),
         dst_pool_id: parseInt(form.dst_pool_id.value),
+        mode: form.mode.value,
     };
     try {
         const res = await fetch('/api/migrations', {

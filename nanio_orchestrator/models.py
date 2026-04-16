@@ -219,6 +219,7 @@ class RcloneMigrationCreate(BaseModel):
     bucket: str = Field(..., min_length=1)
     src_pool_id: int
     dst_pool_id: int
+    mode: str = Field("copy", pattern=r"^(copy|sync)$")
 
 
 class RcloneMigrationOut(BaseModel):
@@ -227,6 +228,7 @@ class RcloneMigrationOut(BaseModel):
     bucket: str
     src_pool_id: int
     dst_pool_id: int
+    mode: str = "copy"
     phase: str
     objects_total: int
     objects_done: int

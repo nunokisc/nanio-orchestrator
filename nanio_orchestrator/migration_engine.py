@@ -204,6 +204,7 @@ async def _run_rclone(
     dst_remote: str,
     phase: str,
     check_only: bool = False,
+    mode: str = "copy",
 ) -> bool:
     """Run rclone copy or check. Returns True on success."""
     s = get_settings()
@@ -211,6 +212,8 @@ async def _run_rclone(
 
     if check_only:
         cmd += ["check", src_remote, dst_remote]
+    elif mode == "sync":
+        cmd += ["sync", src_remote, dst_remote]
     else:
         cmd += ["copy", src_remote, dst_remote]
 
@@ -377,6 +380,7 @@ async def run_migration(migration_id: int) -> None:
         bucket = m["bucket"]
         src_pool_id = m["src_pool_id"]
         dst_pool_id = m["dst_pool_id"]
+        mode = m.get("mode", "copy")
 
         # Generate rclone config
         config_content = await _build_rclone_config(src_pool_id, dst_pool_id)
@@ -407,11 +411,11 @@ async def run_migration(migration_id: int) -> None:
 
         # ── Phase: copying ────────────────────────────────────────────────
         await _set_phase(migration_id, "copying")
-        await _log(migration_id, "copying", f"Starting rclone copy: {src_remote} → {dst_remote}")
+        await _log(migration_id, "copying", f"Starting rclone {mode}: {src_remote} \u2192 {dst_remote}")
 
-        ok = await _run_rclone(migration_id, config_path, src_remote, dst_remote, "copying")
+        ok = await _run_rclone(migration_id, config_path, src_remote, dst_remote, "copying", mode=mode)
         if not ok:
-            await _set_phase(migration_id, "error", "rclone copy failed")
+            await _set_phase(migration_id, "error", f"rclone {mode} failed")
             return
 
         # ── Phase: verifying ──────────────────────────────────────────────
@@ -496,15 +500,15 @@ async def run_migration(migration_id: int) -> None:
 
 
 async def start_migration(
-    vhost_id: int, bucket: str, src_pool_id: int, dst_pool_id: int
+    vhost_id: int, bucket: str, src_pool_id: int, dst_pool_id: int, mode: str = "copy"
 ) -> int:
     """Create a migration record and launch the background task. Returns migration id."""
     async with get_db_ctx() as db:
         cursor = await db.execute(
             """INSERT INTO migrations
-               (vhost_id, bucket, src_pool_id, dst_pool_id, phase)
-               VALUES (?, ?, ?, ?, 'pending')""",
-            (vhost_id, bucket, src_pool_id, dst_pool_id),
+               (vhost_id, bucket, src_pool_id, dst_pool_id, phase, mode)
+               VALUES (?, ?, ?, ?, 'pending', ?)""",
+            (vhost_id, bucket, src_pool_id, dst_pool_id, mode),
         )
         migration_id = cursor.lastrowid
         await db.commit()

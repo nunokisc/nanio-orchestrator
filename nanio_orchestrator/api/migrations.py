@@ -94,7 +94,7 @@ async def create_migration(body: RcloneMigrationCreate):
             )
         vhost_id = vh_rows[0]["id"]
 
-    migration_id = await start_migration(vhost_id, body.bucket, body.src_pool_id, body.dst_pool_id)
+    migration_id = await start_migration(vhost_id, body.bucket, body.src_pool_id, body.dst_pool_id, body.mode)
 
     # Return the created migration
     async with get_db_ctx() as db:
@@ -184,6 +184,7 @@ def _to_out(m: dict) -> RcloneMigrationOut:
         bucket=m["bucket"],
         src_pool_id=m["src_pool_id"],
         dst_pool_id=m["dst_pool_id"],
+        mode=m.get("mode", "copy"),
         phase=m["phase"],
         objects_total=m["objects_total"],
         objects_done=m["objects_done"],

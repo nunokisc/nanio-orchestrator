@@ -239,7 +239,7 @@ async def promote_bucket(vhost_id: int, bucket: str, body: BucketPromoteRequest)
 
         ok, output = await _apply_vhost_config(vhost_id, db)
         await _audit(db, "promote_bucket", "route", route_id,
-                     after={"bucket": bucket, "pool_id": body.pool_id},
+                     after={"bucket": bucket, "pool_id": body.pool_id, "migrate": body.migrate},
                      reload_ok=ok, reload_output=output)
 
         # Update bucket_sync status
@@ -347,6 +347,14 @@ async def _run_migration(
         )
         await db.commit()
 
+    logger.info("Object migration started: vhost=%d bucket=%s migration_id=%d src=%s dst=%s",
+                vhost_id, bucket, migration_id, src_member, dst_member)
+    async with get_db_ctx() as db:
+        await _audit(db, "object_migration_started", "bucket", vhost_id,
+                     after={"bucket": bucket, "migration_id": migration_id,
+                            "src_member": src_member, "dst_member": dst_member})
+        await db.commit()
+
     try:
         async with get_db_ctx() as db:
             rows = await db.execute_fetchall(
@@ -395,15 +403,24 @@ async def _run_migration(
             )
             await db.commit()
 
-        logger.info("Migration done: vhost=%d bucket=%s (%d/%d objects)", vhost_id, bucket, done, total)
+        logger.info("Object migration done: vhost=%d bucket=%s migration_id=%d (%d/%d objects)",
+                    vhost_id, bucket, migration_id, done, total)
+        async with get_db_ctx() as db:
+            await _audit(db, "object_migration_done", "bucket", vhost_id,
+                         after={"bucket": bucket, "migration_id": migration_id,
+                                "objects_done": done, "objects_total": total})
+            await db.commit()
 
     except Exception as e:
-        logger.error("Migration error: vhost=%d bucket=%s: %s", vhost_id, bucket, e)
+        logger.error("Object migration error: vhost=%d bucket=%s migration_id=%d: %s",
+                     vhost_id, bucket, migration_id, e)
         async with get_db_ctx() as db:
             await db.execute(
                 "UPDATE object_migrations SET status='error', error_msg=?, finished_at=? WHERE id=?",
                 (str(e), _now(), migration_id),
             )
+            await _audit(db, "object_migration_error", "bucket", vhost_id,
+                         after={"bucket": bucket, "migration_id": migration_id, "error": str(e)})
             await db.commit()
     finally:
         _migration_tasks.pop((vhost_id, bucket), None)
