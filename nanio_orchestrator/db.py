@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
 
 CREATE TABLE IF NOT EXISTS node_configs (
     id           INTEGER PRIMARY KEY,
-    member_id    INTEGER NOT NULL REFERENCES pool_members(id),
+    member_id    INTEGER NOT NULL REFERENCES pool_members(id) ON DELETE CASCADE,
     node_type    TEXT NOT NULL CHECK (node_type IN ('nanio-only','nginx-only','nginx-nanio')),
     config_json  TEXT NOT NULL,
     generated_at TEXT NOT NULL DEFAULT (datetime('now'))

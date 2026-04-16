@@ -159,15 +159,23 @@ async def vhosts_page():
 
 @router.get("/web/config", response_class=HTMLResponse)
 async def config_page():
+    import hashlib
     async with get_db_ctx() as db:
         files = await db.execute_fetchall("SELECT * FROM config_files ORDER BY path")
         file_list = []
         for f in files:
             fd = dict(f)
+            # Compute live disk hash so the page always reflects current state
+            try:
+                content = Path(fd["path"]).read_text()
+                live_hash = hashlib.sha256(content.encode()).hexdigest()
+            except (FileNotFoundError, PermissionError):
+                live_hash = None
+            fd["sha256_disk"] = live_hash
             fd["drifted"] = (
-                fd["sha256_disk"] is not None
+                live_hash is not None
                 and fd["sha256_db"] is not None
-                and fd["sha256_disk"] != fd["sha256_db"]
+                and live_hash != fd["sha256_db"]
             )
             file_list.append(fd)
     return _render("config.html", files=file_list)

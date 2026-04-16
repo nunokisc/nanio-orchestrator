@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import List
 
 import aiofiles
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Body, HTTPException
 
 from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.db import get_db_ctx
@@ -142,8 +142,24 @@ async def rebuild_all():
     configs = await generate_all_configs()
     errors = []
     written = []
+    removed = []
 
-    for filepath, content in configs:
+    # Separate empty-pool entries (content=None) from real configs
+    to_write = [(fp, ct) for fp, ct in configs if ct is not None]
+    to_remove = [fp for fp, ct in configs if ct is None]
+
+    # Remove files for empty pools
+    async with get_db_ctx() as db:
+        for filepath in to_remove:
+            p = Path(filepath)
+            if p.exists():
+                p.unlink()
+                removed.append(filepath)
+            await db.execute("DELETE FROM config_files WHERE path = ?", (filepath,))
+        await db.commit()
+
+    # Write .tmp for real configs
+    for filepath, content in to_write:
         tmp = filepath + ".tmp"
         async with aiofiles.open(tmp, "w") as f:
             await f.write(content)
@@ -152,16 +168,16 @@ async def rebuild_all():
     test_result = await test_config()
     if not test_result.ok:
         # Clean up .tmp files
-        for filepath, _ in configs:
+        for filepath, _ in to_write:
             tmp = filepath + ".tmp"
             try:
                 os.unlink(tmp)
             except OSError:
                 pass
-        return {"ok": False, "output": test_result.output, "written": []}
+        return {"ok": False, "output": test_result.output, "written": [], "removed": removed}
 
     # Atomic rename all
-    for filepath, content in configs:
+    for filepath, content in to_write:
         tmp = filepath + ".tmp"
         try:
             os.rename(tmp, filepath)
@@ -173,7 +189,7 @@ async def rebuild_all():
 
     # Record all in DB
     async with get_db_ctx() as db:
-        for filepath, content in configs:
+        for filepath, content in to_write:
             if filepath in written:
                 await record_file_state(db, filepath, content)
         await db.execute(
@@ -187,8 +203,106 @@ async def rebuild_all():
         "ok": reload_result.ok and not errors,
         "output": reload_result.output,
         "written": written,
+        "removed": removed,
         "errors": errors,
     }
+
+
+# ── Per-file drift resolution ────────────────────────────────────────────────
+
+
+@router.post("/absorb-file")
+async def absorb_file(path: str = Body(..., embed=True)):
+    """Accept a drifted file: read current disk state into the DB (sha256_db = sha256_disk)."""
+    try:
+        async with aiofiles.open(path, "r") as f:
+            content = await f.read()
+    except FileNotFoundError:
+        raise HTTPException(404, f"File not found on disk: {path}")
+
+    h = sha256_str(content)
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    async with get_db_ctx() as db:
+        await db.execute(
+            """INSERT INTO config_files (path, sha256_disk, sha256_db, content_snapshot, last_synced_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(path) DO UPDATE SET
+                 sha256_disk = excluded.sha256_disk,
+                 sha256_db   = excluded.sha256_db,
+                 content_snapshot = excluded.content_snapshot,
+                 last_synced_at   = excluded.last_synced_at""",
+            (path, h, h, content, now),
+        )
+        await db.execute(
+            """INSERT INTO audit_log (action, entity_type, entity_id, nginx_reload_ok, nginx_reload_output)
+               VALUES ('absorb_drift', 'config', NULL, NULL, ?)""",
+            (f"Absorbed drift for {path}",),
+        )
+        await db.commit()
+    return {"ok": True, "path": path, "sha256": h}
+
+
+@router.post("/rewrite-file")
+async def rewrite_file(path: str = Body(..., embed=True)):
+    """Rewrite a single config file from DB state, validate, and reload."""
+    import os
+    s = get_settings()
+
+    # Determine if this is a pool or vhost config by matching against DB entries
+    async with get_db_ctx() as db:
+        pools = await db.execute_fetchall("SELECT id, name FROM pools")
+        vhosts = await db.execute_fetchall("SELECT id, server_name FROM vhosts")
+
+    pool_match = next(
+        (p for p in pools if str(s.pools_dir / f"{p['name']}.conf") == path), None
+    )
+    vhost_match = next(
+        (v for v in vhosts if str(s.vhosts_dir / f"{v['server_name']}.conf") == path), None
+    )
+
+    if pool_match:
+        filepath, content = await generate_pool_config(pool_match["id"])
+        if content is None:
+            # Pool is now empty — remove
+            p = Path(filepath)
+            if p.exists():
+                p.unlink()
+            async with get_db_ctx() as db:
+                await db.execute("DELETE FROM config_files WHERE path = ?", (filepath,))
+                await db.commit()
+            return {"ok": True, "action": "removed", "path": filepath, "reason": "Pool has no members"}
+    elif vhost_match:
+        filepath, content = await generate_vhost_config(vhost_match["id"])
+    else:
+        raise HTTPException(404, f"No pool or vhost found matching path: {path}")
+
+    # Write .tmp, test, rename, reload
+    tmp = filepath + ".tmp"
+    async with aiofiles.open(tmp, "w") as f:
+        await f.write(content)
+
+    test_result = await test_config()
+    if not test_result.ok:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return {"ok": False, "output": test_result.output}
+
+    os.rename(tmp, filepath)
+    reload_result = await reload_nginx()
+
+    async with get_db_ctx() as db:
+        await record_file_state(db, filepath, content)
+        await db.execute(
+            """INSERT INTO audit_log (action, entity_type, entity_id, nginx_reload_ok, nginx_reload_output)
+               VALUES ('rewrite_file', 'config', NULL, ?, ?)""",
+            (1 if reload_result.ok else 0, reload_result.output),
+        )
+        await db.commit()
+
+    return {"ok": reload_result.ok, "output": reload_result.output, "path": filepath}
 
 
 # ── Preview ───────────────────────────────────────────────────────────────────

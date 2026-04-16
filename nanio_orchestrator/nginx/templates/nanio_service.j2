@@ -5,7 +5,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/nanio --options /etc/nanio/options.toml
+ExecStart=/usr/local/bin/nanio serve --options /etc/nanio/options.toml
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

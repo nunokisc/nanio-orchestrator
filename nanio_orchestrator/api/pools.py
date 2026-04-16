@@ -45,11 +45,22 @@ async def _audit(db, action: str, entity_type: str, entity_id: int,
 
 
 async def _apply_pool_config(pool_id: int, db) -> tuple:
-    """Generate, test, write, reload, record. Returns (ok, output)."""
+    """Generate, test, write, reload, record. Returns (ok, output).
+    If the pool has no members the config file is removed instead of written.
+    """
     filepath, content = await generate_pool_config(pool_id)
+    import aiofiles, os
+    from nanio_orchestrator.nginx.generator import remove_config_file
+
+    # Empty pool — remove file so nginx doesn't see an invalid upstream block
+    if content is None:
+        await remove_config_file(filepath)
+        await db.execute("DELETE FROM config_files WHERE path = ?", (filepath,))
+        reload_result = await reload_nginx()
+        return reload_result.ok, f"Pool has no members — config file removed.\nnginx -s reload: {reload_result.output}"
+
     # Write to .tmp
     tmp_path = filepath + ".tmp"
-    import aiofiles, os
     async with aiofiles.open(tmp_path, "w") as f:
         await f.write(content)
 
@@ -181,7 +192,12 @@ async def delete_pool(pool_id: int):
         if refs:
             raise HTTPException(409, "Cannot delete pool: routes still reference it")
 
-        # Delete members first
+        # Delete node_configs for all members first (FK chain)
+        await db.execute(
+            "DELETE FROM node_configs WHERE member_id IN (SELECT id FROM pool_members WHERE pool_id = ?)",
+            (pool_id,),
+        )
+        # Delete members, then the pool itself
         await db.execute("DELETE FROM pool_members WHERE pool_id = ?", (pool_id,))
         await db.execute("DELETE FROM pools WHERE id = ?", (pool_id,))
 
@@ -301,6 +317,8 @@ async def delete_member(pool_id: int, member_id: int):
             raise HTTPException(404, "Member not found")
         before = dict(mrows[0])
 
+        # Remove saved node config before deleting the member (FK constraint)
+        await db.execute("DELETE FROM node_configs WHERE member_id = ?", (member_id,))
         await db.execute("DELETE FROM pool_members WHERE id = ?", (member_id,))
         await db.commit()
 

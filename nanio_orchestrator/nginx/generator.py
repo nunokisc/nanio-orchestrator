@@ -102,7 +102,10 @@ async def record_file_state(db, filepath: str, content: str) -> None:
 
 
 async def generate_pool_config(pool_id: int) -> tuple:
-    """Generate upstream config for a pool. Returns (filepath, content)."""
+    """Generate upstream config for a pool.
+    Returns (filepath, content) where content is None when the pool has no members
+    (caller must remove the file rather than write an empty upstream block).
+    """
     s = get_settings()
     async with get_db_ctx() as db:
         row = await db.execute_fetchall("SELECT * FROM pools WHERE id = ?", (pool_id,))
@@ -114,8 +117,11 @@ async def generate_pool_config(pool_id: int) -> tuple:
         )
         members = [dict(m) for m in members_rows]
 
-    content = render_upstream(pool, members)
     filepath = str(s.pools_dir / f"{pool['name']}.conf")
+    if not members:
+        return filepath, None  # empty pool — caller should remove the file
+
+    content = render_upstream(pool, members)
     return filepath, content
 
 

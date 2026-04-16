@@ -43,6 +43,10 @@
             <td>{{ f.last_synced_at or '—' }}</td>
             <td>
                 <button class="btn btn-xs" onclick="viewFileContent('{{ f.path }}')">View</button>
+                {% if f.drifted %}
+                <button class="btn btn-xs btn-primary" onclick="rewriteFile('{{ f.path }}')">Rewrite from DB</button>
+                <button class="btn btn-xs" onclick="absorbFile('{{ f.path }}')">Absorb</button>
+                {% endif %}
             </td>
         </tr>
     {% endfor %}

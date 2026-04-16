@@ -372,8 +372,46 @@ async function rebuildConfig() {
             headers: getHeaders(),
         });
         const data = await res.json();
-        const msg = `OK: ${data.ok}\nWritten: ${(data.written || []).join(', ')}\n${data.output || ''}`;
+        let msg = `OK: ${data.ok}\nWritten: ${(data.written || []).join(', ')}`;
+        if (data.removed && data.removed.length) msg += `\nRemoved (empty pools): ${data.removed.join(', ')}`;
+        msg += `\n${data.output || ''}`;
         showConfigResult(data.ok, msg);
+        if (data.ok) setTimeout(() => location.reload(), 1200);
+    } catch (err) {
+        showConfigResult(false, 'Error: ' + err.message);
+    }
+}
+
+async function absorbFile(path) {
+    if (!confirm(`Absorb drift for:\n${path}\n\nThis will update the DB to match the current file on disk.`)) return;
+    try {
+        const res = await fetch('/api/config/absorb-file', {
+            method: 'POST',
+            headers: getHeaders(),
+            body: JSON.stringify({ path }),
+        });
+        const data = await res.json();
+        showConfigResult(data.ok, data.ok ? `Absorbed ${path}` : (data.detail || 'Error'));
+        if (data.ok) setTimeout(() => location.reload(), 800);
+    } catch (err) {
+        showConfigResult(false, 'Error: ' + err.message);
+    }
+}
+
+async function rewriteFile(path) {
+    if (!confirm(`Rewrite from DB:\n${path}\n\nThis will overwrite the file on disk with the DB state.`)) return;
+    try {
+        const res = await fetch('/api/config/rewrite-file', {
+            method: 'POST',
+            headers: getHeaders(),
+            body: JSON.stringify({ path }),
+        });
+        const data = await res.json();
+        const msg = data.ok
+            ? `Rewritten: ${path}\n${data.output || ''}`
+            : (data.output || data.detail || 'Error');
+        showConfigResult(data.ok, msg);
+        if (data.ok) setTimeout(() => location.reload(), 1000);
     } catch (err) {
         showConfigResult(false, 'Error: ' + err.message);
     }
