@@ -204,6 +204,41 @@ async def create_bucket(
     return False, f"HTTP {status}: {body[:200].decode(errors='replace')}"
 
 
+async def delete_bucket(
+    address: str,
+    bucket: str,
+    access_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+    region: str = "us-east-1",
+) -> Tuple[bool, str]:
+    """Delete an empty bucket. Returns (ok, message). 404 = already gone (treated as ok)."""
+    status, body = await asyncio.to_thread(
+        _do_request, "DELETE", address, f"/{bucket}", "", b"", access_key, secret_key, region
+    )
+    if status in (200, 204, 404):
+        return True, "deleted" if status != 404 else "already gone"
+    return False, f"HTTP {status}: {body[:200].decode(errors='replace')}"
+
+
+async def bucket_exists(
+    address: str,
+    bucket: str,
+    access_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+    region: str = "us-east-1",
+) -> bool:
+    """Return True if bucket exists. Raises RuntimeError on unexpected status codes."""
+    status, body = await asyncio.to_thread(
+        _do_request, "GET", address, f"/{bucket}", "list-type=2&max-keys=1",
+        b"", access_key, secret_key, region
+    )
+    if status == 200:
+        return True
+    if status == 404:
+        return False
+    raise RuntimeError(f"Unexpected HTTP {status} checking bucket {bucket}: {body[:200].decode(errors='replace')}")
+
+
 async def count_objects(
     address: str,
     bucket: str,

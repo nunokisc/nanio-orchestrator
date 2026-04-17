@@ -31,6 +31,28 @@ from nanio_orchestrator.nginx.generator import (
 router = APIRouter(prefix="/api/vhosts", tags=["vhosts"])
 
 
+async def _sync_default_route(vhost_id: int, pool_id: int | None, db) -> None:
+    """Keep the auto-managed '/' route in sync with vhost.default_pool_id."""
+    existing = await db.execute_fetchall(
+        "SELECT id FROM routes WHERE vhost_id = ? AND path_prefix = '/'", (vhost_id,)
+    )
+    if pool_id:
+        if existing:
+            await db.execute(
+                "UPDATE routes SET pool_id = ?, updated_at = datetime('now') WHERE id = ?",
+                (pool_id, existing[0]["id"]),
+            )
+        else:
+            await db.execute(
+                "INSERT INTO routes (vhost_id, path_prefix, pool_id, enabled) VALUES (?, '/', ?, 1)",
+                (vhost_id, pool_id),
+            )
+    else:
+        if existing:
+            await db.execute("DELETE FROM routes WHERE id = ?", (existing[0]["id"],))
+    await db.commit()
+
+
 async def _get_pool_name(db, pool_id: int | None) -> str | None:
     if not pool_id:
         return None
@@ -107,10 +129,24 @@ async def create_vhost(body: VhostCreate):
         rows = await db.execute_fetchall("SELECT * FROM vhosts WHERE id = ?", (cursor.lastrowid,))
         vhost = dict(rows[0])
         await _audit(db, "create", "vhost", vhost["id"], after=vhost)
-        await db.commit()
 
         default_pool_name = await _get_pool_name(db, vhost.get("default_pool_id"))
         write_vhost_sidecar(vhost["id"], vhost["server_name"], vhost.get("default_pool_id"), default_pool_name)
+
+        # Auto-create the immutable '/' catch-all route pointing to the default pool
+        if body.default_pool_id:
+            await db.execute(
+                "INSERT INTO routes (vhost_id, path_prefix, pool_id, enabled) VALUES (?, '/', ?, 1)",
+                (vhost["id"], body.default_pool_id),
+            )
+        await db.commit()
+
+        if body.default_pool_id:
+            ok, output = await _apply_vhost_config(vhost["id"], db)
+            await _audit(db, "create", "route", None,
+                         after={"path_prefix": "/", "pool_id": body.default_pool_id, "vhost_id": vhost["id"]},
+                         reload_ok=ok, reload_output=output)
+            await db.commit()
 
         return vhost
 
@@ -148,6 +184,10 @@ async def update_vhost(vhost_id: int, body: VhostUpdate):
             values,
         )
         await db.commit()
+
+        # Keep the auto-managed '/' route in sync when default_pool_id changes
+        if "default_pool_id" in updates:
+            await _sync_default_route(vhost_id, updates["default_pool_id"], db)
 
         rows = await db.execute_fetchall("SELECT * FROM vhosts WHERE id = ?", (vhost_id,))
         after = dict(rows[0])
@@ -213,6 +253,11 @@ async def list_routes(vhost_id: int):
 
 @router.post("/{vhost_id}/routes", response_model=RouteOut, status_code=201)
 async def create_route(vhost_id: int, body: RouteCreate):
+    if body.path_prefix == "/":
+        raise HTTPException(
+            400,
+            "The '/' route is managed automatically via the vhost's default_pool_id and cannot be created manually",
+        )
     async with get_db_ctx() as db:
         rows = await db.execute_fetchall("SELECT * FROM vhosts WHERE id = ?", (vhost_id,))
         if not rows:
@@ -261,6 +306,12 @@ async def update_route(vhost_id: int, route_id: int, body: RouteUpdate):
         before = dict(rrows[0])
 
         updates = body.model_dump(exclude_none=True)
+
+        if before["path_prefix"] == "/" and "pool_id" in updates:
+            raise HTTPException(
+                400,
+                "The '/' route pool is controlled by the vhost's default_pool_id; update the vhost to change it",
+            )
         if not updates:
             rrows2 = await db.execute_fetchall(
                 """SELECT r.*, p.name as pool_name
@@ -310,6 +361,12 @@ async def delete_route(vhost_id: int, route_id: int):
         if not rrows:
             raise HTTPException(404, "Route not found")
         before = dict(rrows[0])
+
+        if before["path_prefix"] == "/":
+            raise HTTPException(
+                400,
+                "The '/' catch-all route cannot be deleted; set default_pool_id to null on the vhost to remove it",
+            )
 
         await db.execute("DELETE FROM routes WHERE id = ?", (route_id,))
         await db.commit()

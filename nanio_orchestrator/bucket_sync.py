@@ -2,18 +2,28 @@
 
 Polls the nanio-default pool member for each vhost at a configurable interval.
 Compares discovered buckets against known routes and upserts into bucket_sync.
+
+After syncing, reconciles routed buckets: if a bucket no longer exists on its
+target pool, the route is removed and the bucket reverts to 'unrouted' so it
+falls back to the default pool.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import datetime, timezone
 from typing import List
 
+import aiofiles
+
 from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.db import get_db_ctx
-from nanio_orchestrator.s3client import list_buckets
+from nanio_orchestrator.credentials import get_pool_s3_params
+from nanio_orchestrator.nginx.executor import reload_nginx, test_config
+from nanio_orchestrator.nginx.generator import generate_vhost_config, record_file_state
+from nanio_orchestrator.s3client import bucket_exists, list_buckets
 
 logger = logging.getLogger(__name__)
 
@@ -56,13 +66,9 @@ async def sync_vhost_buckets_once(vhost_id: int) -> dict:
                 routed[seg] = r["pool_id"]
 
     # ── S3 call outside DB context ─────────────────────────────────────────
-    s = get_settings()
+    access_key, secret_key, _ = await get_pool_s3_params(vhost["default_pool_id"])
     try:
-        buckets = await list_buckets(
-            member_address,
-            access_key=s.s3_access_key,
-            secret_key=s.s3_secret_key,
-        )
+        buckets = await list_buckets(member_address, access_key=access_key, secret_key=secret_key)
     except Exception as e:
         logger.warning("Bucket sync failed for vhost %d (%s): %s", vhost_id, member_address, e)
         return {"vhost_id": vhost_id, "error": str(e)}
@@ -101,11 +107,95 @@ async def sync_vhost_buckets_once(vhost_id: int) -> dict:
             )
         await db.commit()
 
-    return {
-        "vhost_id": vhost_id,
-        "buckets_found": len(buckets),
-        "synced_at": now,
-    }
+    reconciled = await _reconcile_routed_buckets(vhost_id)
+    result: dict = {"vhost_id": vhost_id, "buckets_found": len(buckets), "synced_at": now}
+    if reconciled:
+        result["auto_unrouted"] = reconciled
+    return result
+
+
+async def _reconcile_routed_buckets(vhost_id: int) -> List[dict]:
+    """Verify that routed buckets still exist on their target pool.
+
+    If a bucket has been deleted from the target pool (e.g. via the S3 API),
+    its nginx route is removed and the bucket_sync status is reverted to
+    'unrouted' so the bucket falls back to the default pool. This keeps
+    ListBuckets consistent with what is actually accessible.
+    """
+    actions: List[dict] = []
+
+    async with get_db_ctx() as db:
+        rows = await db.execute_fetchall(
+            """SELECT bs.bucket, bs.routed_pool_id,
+                      (SELECT pm.address FROM pool_members pm
+                       WHERE pm.pool_id = bs.routed_pool_id AND pm.enabled = 1
+                       ORDER BY pm.id LIMIT 1) AS target_member,
+                      r.id AS route_id
+               FROM bucket_sync bs
+               JOIN routes r ON r.vhost_id = bs.vhost_id
+                            AND r.path_prefix = ('/' || bs.bucket || '/')
+               WHERE bs.vhost_id = ?
+                 AND bs.status = 'routed'
+                 AND bs.routed_pool_id IS NOT NULL""",
+            (vhost_id,),
+        )
+        routed = [dict(r) for r in rows]
+
+    for entry in routed:
+        target_member = entry.get("target_member")
+        if not target_member:
+            continue
+
+        try:
+            ak, sk, _ = await get_pool_s3_params(entry["routed_pool_id"])
+            exists = await bucket_exists(target_member, entry["bucket"], access_key=ak, secret_key=sk)
+        except Exception as exc:
+            # Target pool unreachable or returned an unexpected status — skip,
+            # don't remove the route based on a potentially transient error.
+            logger.warning(
+                "Could not verify bucket %s on %s (vhost %d): %s",
+                entry["bucket"], target_member, vhost_id, exc,
+            )
+            continue
+
+        if not exists:
+            logger.info(
+                "Bucket '%s' not found on target member %s (vhost %d) — removing route and reverting to unrouted",
+                entry["bucket"], target_member, vhost_id,
+            )
+            async with get_db_ctx() as db:
+                await db.execute("DELETE FROM routes WHERE id = ?", (entry["route_id"],))
+                await db.execute(
+                    """UPDATE bucket_sync SET status='unrouted', routed_pool_id=NULL
+                       WHERE vhost_id=? AND bucket=?""",
+                    (vhost_id, entry["bucket"]),
+                )
+                await db.commit()
+
+                filepath, content = await generate_vhost_config(vhost_id)
+                tmp = filepath + ".tmp"
+                async with aiofiles.open(tmp, "w") as f:
+                    await f.write(content)
+                test_result = await test_config()
+                if test_result.ok:
+                    os.rename(tmp, filepath)
+                    await reload_nginx()
+                    await record_file_state(db, filepath, content)
+                    await db.commit()
+                else:
+                    os.unlink(tmp)
+                    logger.error(
+                        "nginx -t failed after auto-unrouting bucket %s: %s",
+                        entry["bucket"], test_result.output,
+                    )
+
+            actions.append({
+                "bucket": entry["bucket"],
+                "action": "auto_unrouted",
+                "target_member": target_member,
+            })
+
+    return actions
 
 
 async def sync_all_vhosts() -> List[dict]:

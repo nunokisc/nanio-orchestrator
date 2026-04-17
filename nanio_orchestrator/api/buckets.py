@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException
 
 from nanio_orchestrator.bucket_sync import sync_vhost_buckets_once
 from nanio_orchestrator.config import get_settings
+from nanio_orchestrator.credentials import get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator.models import BucketListOut, BucketPromoteRequest, MigrationStatus
 from nanio_orchestrator.nginx.executor import reload_nginx, test_config
@@ -203,13 +204,20 @@ async def promote_bucket(vhost_id: int, bucket: str, body: BucketPromoteRequest)
         default_pool_id = vhost["default_pool_id"]
         default_member = await _first_enabled_member(default_pool_id, db)
 
+    default_ak, default_sk, _ = await get_pool_s3_params(default_pool_id)
+    target_ak, target_sk, _ = await get_pool_s3_params(body.pool_id)
+
+    # ── Ensure bucket stub exists on default pool (required for ListBuckets) ─
+    ok_default, msg_default = await create_bucket(
+        default_member, bucket, access_key=default_ak, secret_key=default_sk,
+    )
+    if not ok_default:
+        return {"ok": False, "error": f"Failed to create bucket stub on default pool: {msg_default}"}
+
     # ── Create bucket on all target pool members ──────────────────────────
     provision_results = []
     for member in target_members:
-        ok, msg = await create_bucket(
-            member, bucket,
-            access_key=s.s3_access_key, secret_key=s.s3_secret_key,
-        )
+        ok, msg = await create_bucket(member, bucket, access_key=target_ak, secret_key=target_sk)
         provision_results.append({"member": member, "ok": ok, "msg": msg})
         if not ok:
             return {
@@ -339,10 +347,18 @@ async def _run_migration(
         await db.commit()
 
     try:
-        keys = await list_objects(
-            src_member, bucket,
-            access_key=s.s3_access_key, secret_key=s.s3_secret_key,
-        )
+        async with get_db_ctx() as db:
+            rows = await db.execute_fetchall(
+                "SELECT src_pool_id, dst_pool_id FROM object_migrations WHERE id = ?",
+                (migration_id,),
+            )
+        if rows:
+            src_ak, src_sk, _ = await get_pool_s3_params(rows[0]["src_pool_id"])
+            dst_ak, dst_sk, _ = await get_pool_s3_params(rows[0]["dst_pool_id"])
+        else:
+            src_ak = src_sk = dst_ak = dst_sk = None
+
+        keys = await list_objects(src_member, bucket, access_key=src_ak, secret_key=src_sk)
         total = len(keys)
 
         async with get_db_ctx() as db:
@@ -354,14 +370,10 @@ async def _run_migration(
 
         done = 0
         for key in keys:
-            data = await get_object(
-                src_member, bucket, key,
-                access_key=s.s3_access_key, secret_key=s.s3_secret_key,
-            )
+            data = await get_object(src_member, bucket, key, access_key=src_ak, secret_key=src_sk)
             if data is not None:
                 ok = await put_object(
-                    dst_member, bucket, key, data,
-                    access_key=s.s3_access_key, secret_key=s.s3_secret_key,
+                    dst_member, bucket, key, data, access_key=dst_ak, secret_key=dst_sk,
                 )
                 if ok:
                     done += 1
