@@ -141,7 +141,7 @@ CREATE TABLE IF NOT EXISTS migrations (
     src_pool_id     INTEGER NOT NULL REFERENCES pools(id),
     dst_pool_id     INTEGER NOT NULL REFERENCES pools(id),
     phase           TEXT NOT NULL DEFAULT 'pending'
-                    CHECK (phase IN ('pending','copying','verifying','switching','done','error','cancelled')),
+                    CHECK (phase IN ('pending','copying','verifying','switching','purge_source','done','error','cancelled')),
     rclone_pid      INTEGER,
     objects_total   INTEGER NOT NULL DEFAULT 0,
     objects_done    INTEGER NOT NULL DEFAULT 0,
@@ -226,6 +226,36 @@ async def _run_migrations_async(db) -> None:
     if 'key_prefix' not in col_names:
         await db.execute("ALTER TABLE routes ADD COLUMN key_prefix TEXT")
 
+    # migrations.phase: add purge_source (CHECK constraint requires table recreation)
+    row = await db.execute_fetchall(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='migrations'"
+    )
+    if row and "purge_source" not in (row[0]["sql"] or ""):
+        await db.execute("PRAGMA foreign_keys=OFF")
+        await db.execute("""CREATE TABLE migrations_new (
+            id              INTEGER PRIMARY KEY,
+            vhost_id        INTEGER NOT NULL REFERENCES vhosts(id) ON DELETE CASCADE,
+            bucket          TEXT NOT NULL,
+            src_pool_id     INTEGER NOT NULL REFERENCES pools(id),
+            dst_pool_id     INTEGER NOT NULL REFERENCES pools(id),
+            phase           TEXT NOT NULL DEFAULT 'pending'
+                            CHECK (phase IN ('pending','copying','verifying','switching','purge_source','done','error','cancelled')),
+            rclone_pid      INTEGER,
+            objects_total   INTEGER NOT NULL DEFAULT 0,
+            objects_done    INTEGER NOT NULL DEFAULT 0,
+            bytes_total     INTEGER NOT NULL DEFAULT 0,
+            bytes_done      INTEGER NOT NULL DEFAULT 0,
+            error_msg       TEXT,
+            started_at      TEXT,
+            finished_at     TEXT,
+            created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+        )""")
+        await db.execute("INSERT INTO migrations_new SELECT * FROM migrations")
+        await db.execute("DROP TABLE migrations")
+        await db.execute("ALTER TABLE migrations_new RENAME TO migrations")
+        await db.commit()
+        await db.execute("PRAGMA foreign_keys=ON")
+
 
 def init_db_sync() -> None:
     """Synchronous schema creation for CLI / install commands."""
@@ -245,5 +275,34 @@ def init_db_sync() -> None:
     col_names = {r[1] for r in info}
     if 'key_prefix' not in col_names:
         conn.execute("ALTER TABLE routes ADD COLUMN key_prefix TEXT")
+    # migrations.phase: add purge_source (CHECK constraint requires table recreation)
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='migrations'"
+    ).fetchone()
+    if row and "purge_source" not in (row[0] or ""):
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("""CREATE TABLE migrations_new (
+            id              INTEGER PRIMARY KEY,
+            vhost_id        INTEGER NOT NULL REFERENCES vhosts(id) ON DELETE CASCADE,
+            bucket          TEXT NOT NULL,
+            src_pool_id     INTEGER NOT NULL REFERENCES pools(id),
+            dst_pool_id     INTEGER NOT NULL REFERENCES pools(id),
+            phase           TEXT NOT NULL DEFAULT 'pending'
+                            CHECK (phase IN ('pending','copying','verifying','switching','purge_source','done','error','cancelled')),
+            rclone_pid      INTEGER,
+            objects_total   INTEGER NOT NULL DEFAULT 0,
+            objects_done    INTEGER NOT NULL DEFAULT 0,
+            bytes_total     INTEGER NOT NULL DEFAULT 0,
+            bytes_done      INTEGER NOT NULL DEFAULT 0,
+            error_msg       TEXT,
+            started_at      TEXT,
+            finished_at     TEXT,
+            created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+        )""")
+        conn.execute("INSERT INTO migrations_new SELECT * FROM migrations")
+        conn.execute("DROP TABLE migrations")
+        conn.execute("ALTER TABLE migrations_new RENAME TO migrations")
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys=ON")
     conn.commit()
     conn.close()
