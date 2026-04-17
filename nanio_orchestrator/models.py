@@ -127,6 +127,7 @@ class VhostOut(BaseModel):
 class RouteCreate(BaseModel):
     path_prefix: str = Field(..., min_length=1)
     pool_id: int
+    key_prefix: Optional[str] = None
     extra_directives: Optional[str] = None
     enabled: bool = True
 
@@ -141,6 +142,7 @@ class RouteCreate(BaseModel):
 class RouteUpdate(BaseModel):
     path_prefix: Optional[str] = None
     pool_id: Optional[int] = None
+    key_prefix: Optional[str] = None
     extra_directives: Optional[str] = None
     enabled: Optional[bool] = None
 
@@ -151,6 +153,7 @@ class RouteOut(BaseModel):
     path_prefix: str
     pool_id: int
     pool_name: Optional[str] = None
+    key_prefix: Optional[str] = None
     extra_directives: Optional[str]
     enabled: bool
     created_at: str
@@ -187,6 +190,59 @@ class MigrationStatus(BaseModel):
     error_msg: Optional[str] = None
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
+
+
+# ── Pool Credentials ───────────────────────────────────────────────────────────
+
+
+class CredentialSet(BaseModel):
+    access_key: str = Field(..., min_length=1)
+    secret_key: str = Field(..., min_length=1)
+    endpoint_url: Optional[str] = None
+    region: str = Field("us-east-1")
+
+
+class CredentialOut(BaseModel):
+    pool_id: int
+    access_key_masked: str
+    endpoint_url: Optional[str]
+    region: str
+    created_at: str
+    updated_at: str
+
+
+# ── rclone Migration ──────────────────────────────────────────────────────────
+
+
+class RcloneMigrationCreate(BaseModel):
+    bucket: str = Field(..., min_length=1)
+    src_pool_id: int
+    dst_pool_id: int
+
+
+class RcloneMigrationOut(BaseModel):
+    id: int
+    vhost_id: int
+    bucket: str
+    src_pool_id: int
+    dst_pool_id: int
+    phase: str
+    objects_total: int
+    objects_done: int
+    bytes_total: int
+    bytes_done: int
+    error_msg: Optional[str] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    created_at: str
+
+
+class MigrationLogEntry(BaseModel):
+    id: int
+    migration_id: int
+    phase: str
+    message: str
+    created_at: str
 
 # ── Config Status ─────────────────────────────────────────────────────────────
 

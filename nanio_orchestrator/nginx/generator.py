@@ -140,6 +140,9 @@ async def generate_vhost_config(vhost_id: int) -> tuple:
             (vhost_id,),
         )
         routes = [dict(r) for r in routes_rows]
+        # Ensure key_prefix is present (may be NULL in older rows)
+        for route in routes:
+            route.setdefault("key_prefix", None)
 
     content = render_vhost(vhost, routes)
     filepath = str(s.vhosts_dir / f"{vhost['server_name']}.conf")

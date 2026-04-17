@@ -16,6 +16,8 @@ from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.db import init_db
 from nanio_orchestrator.drift import drift_loop, stop_drift
 from nanio_orchestrator.bucket_sync import bucket_sync_loop, stop_bucket_sync
+from nanio_orchestrator.migration_engine import recover_interrupted_migrations
+from nanio_orchestrator.s3_proxy import start_proxy_server, stop_proxy_server
 
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,12 @@ async def lifespan(app: FastAPI):
     # Start bucket sync
     bucket_sync_task = asyncio.create_task(bucket_sync_loop())
 
+    # Recover interrupted migrations
+    await recover_interrupted_migrations()
+
+    # Start S3 listing proxy
+    proxy_task = asyncio.create_task(start_proxy_server())
+
     if s.dev:
         logger.info(
             "nanio-orchestrator dev mode → http://localhost:%d  API key: dev",
@@ -65,6 +73,14 @@ async def lifespan(app: FastAPI):
         await bucket_sync_task
     except asyncio.CancelledError:
         pass
+
+    await stop_proxy_server()
+    proxy_task.cancel()
+    try:
+        await proxy_task
+    except asyncio.CancelledError:
+        pass
+
     logger.info("nanio-orchestrator stopped")
 
 
@@ -119,6 +135,8 @@ def create_app() -> FastAPI:
     from nanio_orchestrator.api.health import router as health_router
     from nanio_orchestrator.api.audit import router as audit_router
     from nanio_orchestrator.api.buckets import router as buckets_router
+    from nanio_orchestrator.api.credentials import router as credentials_router
+    from nanio_orchestrator.api.migrations import router as migrations_router
 
     app.include_router(pools_router)
     app.include_router(vhosts_router)
@@ -126,6 +144,8 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(audit_router)
     app.include_router(buckets_router)
+    app.include_router(credentials_router)
+    app.include_router(migrations_router)
 
     # ── Web UI (includes /login, /logout, /, /web/*) ──────────────────────
     from nanio_orchestrator.web.routes import router as web_router

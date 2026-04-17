@@ -25,6 +25,18 @@ NANIO_ORCHESTRATOR_LOG_LEVEL=info
 NANIO_ORCHESTRATOR_DRIFT_INTERVAL=60
 NANIO_ORCHESTRATOR_SESSION_TTL=28800
 NANIO_ORCHESTRATOR_BUCKET_SYNC_INTERVAL=300
+# Fernet key for encrypting pool credentials (required for credential storage).
+# Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# NANIO_ORCHESTRATOR_SECRET=
+# S3 listing proxy port
+NANIO_ORCHESTRATOR_S3_PROXY_PORT=8081
+# rclone binary path (for migrations)
+NANIO_ORCHESTRATOR_RCLONE_PATH=rclone
+# Migration limits
+NANIO_ORCHESTRATOR_MIGRATION_MAX_PARALLEL=2
+NANIO_ORCHESTRATOR_MIGRATION_BANDWIDTH_LIMIT=
+NANIO_ORCHESTRATOR_MIGRATION_CHECKERS=8
+NANIO_ORCHESTRATOR_MIGRATION_TRANSFERS=4
 # S3 credentials for polling nanio-default (optional; leave empty if no auth)
 # NANIO_ORCHESTRATOR_S3_ACCESS_KEY=
 # NANIO_ORCHESTRATOR_S3_SECRET_KEY=

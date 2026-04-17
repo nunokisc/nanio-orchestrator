@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS routes (
     vhost_id        INTEGER NOT NULL REFERENCES vhosts(id),
     path_prefix     TEXT NOT NULL,
     pool_id         INTEGER NOT NULL REFERENCES pools(id),
+    key_prefix      TEXT,
     extra_directives TEXT,
     enabled         INTEGER NOT NULL DEFAULT 1,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
@@ -121,6 +122,44 @@ CREATE TABLE IF NOT EXISTS object_migrations (
     finished_at     TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS pool_credentials (
+    id              INTEGER PRIMARY KEY,
+    pool_id         INTEGER NOT NULL UNIQUE REFERENCES pools(id) ON DELETE CASCADE,
+    access_key_enc  TEXT NOT NULL,
+    secret_key_enc  TEXT NOT NULL,
+    endpoint_url    TEXT,
+    region          TEXT NOT NULL DEFAULT 'us-east-1',
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS migrations (
+    id              INTEGER PRIMARY KEY,
+    vhost_id        INTEGER NOT NULL REFERENCES vhosts(id) ON DELETE CASCADE,
+    bucket          TEXT NOT NULL,
+    src_pool_id     INTEGER NOT NULL REFERENCES pools(id),
+    dst_pool_id     INTEGER NOT NULL REFERENCES pools(id),
+    phase           TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (phase IN ('pending','copying','verifying','switching','done','error','cancelled')),
+    rclone_pid      INTEGER,
+    objects_total   INTEGER NOT NULL DEFAULT 0,
+    objects_done    INTEGER NOT NULL DEFAULT 0,
+    bytes_total     INTEGER NOT NULL DEFAULT 0,
+    bytes_done      INTEGER NOT NULL DEFAULT 0,
+    error_msg       TEXT,
+    started_at      TEXT,
+    finished_at     TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS migration_log (
+    id              INTEGER PRIMARY KEY,
+    migration_id    INTEGER NOT NULL REFERENCES migrations(id) ON DELETE CASCADE,
+    phase           TEXT NOT NULL,
+    message         TEXT NOT NULL,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -172,6 +211,11 @@ async def _run_migrations_async(db) -> None:
         await db.execute(
             "ALTER TABLE vhosts ADD COLUMN default_pool_id INTEGER REFERENCES pools(id)"
         )
+    # routes.key_prefix (added for sub-folder routing)
+    info = await db.execute_fetchall("PRAGMA table_info(routes)")
+    col_names = {r['name'] for r in info}
+    if 'key_prefix' not in col_names:
+        await db.execute("ALTER TABLE routes ADD COLUMN key_prefix TEXT")
 
 
 def init_db_sync() -> None:
@@ -187,5 +231,10 @@ def init_db_sync() -> None:
         conn.execute(
             "ALTER TABLE vhosts ADD COLUMN default_pool_id INTEGER REFERENCES pools(id)"
         )
+    # Migration: routes.key_prefix
+    info = conn.execute("PRAGMA table_info(routes)").fetchall()
+    col_names = {r[1] for r in info}
+    if 'key_prefix' not in col_names:
+        conn.execute("ALTER TABLE routes ADD COLUMN key_prefix TEXT")
     conn.commit()
     conn.close()

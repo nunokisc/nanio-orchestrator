@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     bucket_sync_interval: int = 300  # seconds; default 5 minutes
     s3_access_key: Optional[str] = None
     s3_secret_key: Optional[str] = None
+    secret: Optional[str] = None  # Fernet key for credential encryption
+    s3_proxy_port: int = 8081
+    rclone_path: str = "rclone"
+    migration_max_parallel: int = 2
+    migration_bandwidth_limit: str = ""  # rclone --bwlimit value, e.g. "50M"
+    migration_checkers: int = 8
+    migration_transfers: int = 4
     dev: bool = DEV_MODE
 
     @property

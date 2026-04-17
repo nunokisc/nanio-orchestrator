@@ -96,6 +96,33 @@
 </div>
 {% endif %}
 
+{% if active_migrations %}
+<div class="card card-warn">
+    <h3>Active Migrations</h3>
+    <table>
+        <thead>
+            <tr><th>ID</th><th>Bucket</th><th>Phase</th><th>Progress</th><th>Actions</th></tr>
+        </thead>
+        <tbody>
+        {% for m in active_migrations %}
+        <tr>
+            <td>#{{ m.id }}</td>
+            <td><code>{{ m.bucket }}</code></td>
+            <td><span class="badge">{{ m.phase }}</span></td>
+            <td>{{ m.bytes_done|filesizeformat if m.bytes_done else '—' }}</td>
+            <td>
+                {% if m.phase not in ('done', 'error', 'cancelled') %}
+                <button class="btn btn-xs btn-danger" onclick="cancelMigration({{ m.id }})">Cancel</button>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    <a href="/web/migrations">View all →</a>
+</div>
+{% endif %}
+
 <h2>Config Files</h2>
 <table>
     <thead>

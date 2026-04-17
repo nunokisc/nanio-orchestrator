@@ -200,10 +200,10 @@ async def create_route(vhost_id: int, body: RouteCreate):
 
         try:
             cursor = await db.execute(
-                """INSERT INTO routes (vhost_id, path_prefix, pool_id, extra_directives, enabled)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (vhost_id, body.path_prefix, body.pool_id, body.extra_directives,
-                 1 if body.enabled else 0),
+                """INSERT INTO routes (vhost_id, path_prefix, pool_id, key_prefix, extra_directives, enabled)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (vhost_id, body.path_prefix, body.pool_id, body.key_prefix,
+                 body.extra_directives, 1 if body.enabled else 0),
             )
             await db.commit()
         except Exception as e:

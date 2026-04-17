@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}Migrations — nanio-orchestrator{% endblock %}
+{% block content %}
+<h1>Migrations</h1>
+
+<div class="card">
+    <div class="card-header">
+        <h3>Start New Migration</h3>
+    </div>
+    <form id="new-migration-form" onsubmit="createMigration(event)">
+        <div class="form-row">
+            <label>Bucket <input type="text" name="bucket" required placeholder="my-bucket"></label>
+            <label>Source Pool
+                <select name="src_pool_id">
+                    {% for p in pools %}
+                    <option value="{{ p.id }}">{{ p.name }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>Destination Pool
+                <select name="dst_pool_id">
+                    {% for p in pools %}
+                    <option value="{{ p.id }}">{{ p.name }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <button type="submit" class="btn btn-primary">Start Migration</button>
+        </div>
+    </form>
+</div>
+
+{% if migrations %}
+<h2>Migration History</h2>
+<table>
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Bucket</th>
+            <th>Source → Dest</th>
+            <th>Phase</th>
+            <th>Progress</th>
+            <th>Started</th>
+            <th>Finished</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for m in migrations %}
+    <tr>
+        <td>#{{ m.id }}</td>
+        <td><code>{{ m.bucket }}</code></td>
+        <td>{{ m.src_pool_name or m.src_pool_id }} → {{ m.dst_pool_name or m.dst_pool_id }}</td>
+        <td>
+            {% if m.phase == 'done' %}
+            <span class="badge ok">{{ m.phase }}</span>
+            {% elif m.phase == 'error' %}
+            <span class="badge error">{{ m.phase }}</span>
+            {% elif m.phase == 'cancelled' %}
+            <span class="badge warn">{{ m.phase }}</span>
+            {% else %}
+            <span class="badge">{{ m.phase }}</span>
+            {% endif %}
+        </td>
+        <td>
+            {% if m.objects_done or m.objects_total %}
+                {{ m.objects_done }}/{{ m.objects_total }} objects
+            {% else %}
+                —
+            {% endif %}
+        </td>
+        <td>{{ m.started_at or '—' }}</td>
+        <td>{{ m.finished_at or '—' }}</td>
+        <td>
+            {% if m.phase not in ('done', 'error', 'cancelled') %}
+            <button class="btn btn-xs btn-danger" onclick="cancelMigration({{ m.id }})">Cancel</button>
+            {% endif %}
+            <button class="btn btn-xs" onclick="showMigrationLog({{ m.id }})">Log</button>
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p class="empty">No migrations yet</p>
+{% endif %}
+
+<!-- Migration Log Modal -->
+<div id="migration-log-modal" class="modal hidden">
+    <div class="modal-content modal-lg">
+        <h3>Migration Log <span id="migration-log-id"></span></h3>
+        <div id="migration-log-content">
+            <p>Loading...</p>
+        </div>
+        <div class="modal-actions">
+            <button type="button" class="btn" onclick="hideModal('migration-log-modal')">Close</button>
+        </div>
+    </div>
+</div>
+{% endblock %}

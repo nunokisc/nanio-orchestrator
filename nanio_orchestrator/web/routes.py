@@ -102,6 +102,17 @@ async def dashboard():
         )
         last_reload = dict(reload_row[0]) if reload_row else None
 
+        # Active rclone migrations
+        active_mig_rows = await db.execute_fetchall(
+            """SELECT m.*, sp.name as src_pool_name, dp.name as dst_pool_name
+               FROM migrations m
+               LEFT JOIN pools sp ON m.src_pool_id = sp.id
+               LEFT JOIN pools dp ON m.dst_pool_id = dp.id
+               WHERE m.phase IN ('pending','copying','verifying','switching')
+               ORDER BY m.id DESC"""
+        )
+        active_migrations = [dict(r) for r in active_mig_rows]
+
         # Unrouted buckets per vhost (for dashboard widget)
         unrouted_rows = await db.execute_fetchall(
             """SELECT bs.vhost_id, bs.bucket, bs.discovered_at, v.server_name
@@ -135,6 +146,7 @@ async def dashboard():
         last_reload=last_reload,
         recent_audit=[dict(a) for a in recent_audit],
         unrouted_by_vhost=list(unrouted_by_vhost.values()),
+        active_migrations=active_migrations,
     )
 
 
@@ -218,3 +230,23 @@ async def audit_page():
             "SELECT * FROM audit_log ORDER BY id DESC LIMIT 100"
         )
     return _render("audit.html", entries=[dict(r) for r in rows])
+
+# ── Migrations ────────────────────────────────────────────────────────────
+
+
+@router.get("/web/migrations", response_class=HTMLResponse)
+async def migrations_page():
+    async with get_db_ctx() as db:
+        rows = await db.execute_fetchall(
+            """SELECT m.*, sp.name as src_pool_name, dp.name as dst_pool_name
+               FROM migrations m
+               LEFT JOIN pools sp ON m.src_pool_id = sp.id
+               LEFT JOIN pools dp ON m.dst_pool_id = dp.id
+               ORDER BY m.id DESC LIMIT 100"""
+        )
+        pools = await db.execute_fetchall("SELECT id, name FROM pools ORDER BY name")
+    return _render(
+        "migrations.html",
+        migrations=[dict(r) for r in rows],
+        pools=[dict(p) for p in pools],
+    )

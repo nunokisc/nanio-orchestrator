@@ -61,6 +61,13 @@
         </tbody>
     </table>
     <button class="btn btn-sm" onclick="showAddMember({{ pool.id }}, '{{ pool.type }}')">+ Add Member</button>
+
+    <div style="margin-top:0.5rem">
+        <strong>S3 Credentials:</strong>
+        <button class="btn btn-xs" onclick="showCredentials({{ pool.id }})">View</button>
+        <button class="btn btn-xs" onclick="setCredentials({{ pool.id }})">Set</button>
+        <button class="btn btn-xs btn-danger" onclick="deleteCredentials({{ pool.id }})">Delete</button>
+    </div>
 </div>
 {% endfor %}
 

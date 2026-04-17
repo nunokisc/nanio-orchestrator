@@ -1,0 +1,78 @@
+"""Tests for bucket sync functionality."""
+
+import pytest
+from unittest.mock import AsyncMock, patch
+from tests.conftest import create_pool, create_member, create_vhost
+
+
+class TestBucketSync:
+    async def test_sync_vhost_no_default_pool(self, client):
+        vh = await create_vhost(client, "nosync.example.com")
+        resp = await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
+        data = resp.json()
+        assert data.get("skipped") is True
+
+    async def test_sync_vhost_with_buckets(self, client, mock_s3, mock_nginx):
+        pool = await create_pool(client, "sync-pool")
+        await create_member(client, pool["id"], "10.0.0.1:9000")
+        vh = await create_vhost(client, "sync.example.com", default_pool_id=pool["id"])
+
+        mock_s3["list_buckets"].return_value = [
+            {"name": "photos", "created": "2025-01-01"},
+            {"name": "videos", "created": "2025-01-02"},
+        ]
+
+        resp = await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
+        data = resp.json()
+        assert data["buckets_found"] == 2
+
+    async def test_list_buckets(self, client, mock_s3, mock_nginx):
+        pool = await create_pool(client, "list-bk-pool")
+        await create_member(client, pool["id"], "10.0.0.1:9000")
+        vh = await create_vhost(client, "listbk.example.com", default_pool_id=pool["id"])
+
+        mock_s3["list_buckets"].return_value = [
+            {"name": "bucket1", "created": "2025-01-01"},
+        ]
+        await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
+
+        resp = await client.get(f"/api/vhosts/{vh['id']}/buckets")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["buckets"]) == 1
+        assert data["buckets"][0]["name"] == "bucket1"
+        assert data["buckets"][0]["status"] == "unrouted"
+
+    async def test_ignore_bucket(self, client, mock_s3, mock_nginx):
+        pool = await create_pool(client, "ign-pool")
+        await create_member(client, pool["id"], "10.0.0.1:9000")
+        vh = await create_vhost(client, "ign.example.com", default_pool_id=pool["id"])
+
+        mock_s3["list_buckets"].return_value = [
+            {"name": "ignore-me", "created": "2025-01-01"},
+        ]
+        await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
+
+        resp = await client.post(f"/api/vhosts/{vh['id']}/buckets/ignore-me/ignore")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ignored"
+
+    async def test_promote_bucket(self, client, mock_s3, mock_nginx):
+        src_pool = await create_pool(client, "prom-src")
+        await create_member(client, src_pool["id"], "10.0.0.1:9000")
+        dst_pool = await create_pool(client, "prom-dst")
+        await create_member(client, dst_pool["id"], "10.0.0.2:9000")
+        vh = await create_vhost(client, "prom.example.com", default_pool_id=src_pool["id"])
+
+        mock_s3["list_buckets"].return_value = [
+            {"name": "promoted", "created": "2025-01-01"},
+        ]
+        await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
+
+        resp = await client.post(f"/api/vhosts/{vh['id']}/buckets/promoted/promote", json={
+            "pool_id": dst_pool["id"],
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["route"] == "/promoted/"

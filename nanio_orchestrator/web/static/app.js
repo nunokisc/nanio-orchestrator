@@ -558,3 +558,134 @@ function escapeHtml(text) {
     div.textContent = text;
     return div.innerHTML;
 }
+
+// ── Migrations ───────────────────────────────────────────────────────────────
+
+async function cancelMigration(id) {
+    if (!confirm(`Cancel migration #${id}?`)) return;
+    try {
+        const res = await fetch(`/api/migrations/${id}/cancel`, {
+            method: 'POST',
+            headers: getHeaders(),
+            credentials: 'same-origin',
+        });
+        const data = await res.json();
+        if (data.ok) location.reload();
+        else alert('Error: ' + (data.detail || JSON.stringify(data)));
+    } catch (err) {
+        alert('Error: ' + err.message);
+    }
+}
+
+async function createMigration(event) {
+    event.preventDefault();
+    const form = event.target;
+    const body = {
+        bucket: form.bucket.value,
+        src_pool_id: parseInt(form.src_pool_id.value),
+        dst_pool_id: parseInt(form.dst_pool_id.value),
+    };
+    try {
+        const res = await fetch('/api/migrations', {
+            method: 'POST',
+            headers: { ...getHeaders(), 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (res.ok) location.reload();
+        else alert('Error: ' + (data.detail || JSON.stringify(data)));
+    } catch (err) {
+        alert('Error: ' + err.message);
+    }
+}
+
+async function showMigrationLog(id) {
+    document.getElementById('migration-log-id').textContent = `#${id}`;
+    const content = document.getElementById('migration-log-content');
+    content.innerHTML = '<p>Loading...</p>';
+    showModal('migration-log-modal');
+    try {
+        const res = await fetch(`/api/migrations/${id}/log`, {
+            headers: getHeaders(),
+            credentials: 'same-origin',
+        });
+        const entries = await res.json();
+        if (entries.length === 0) {
+            content.innerHTML = '<p>No log entries</p>';
+        } else {
+            content.innerHTML = '<table><thead><tr><th>Time</th><th>Phase</th><th>Message</th></tr></thead><tbody>' +
+                entries.map(e =>
+                    `<tr><td>${escapeHtml(e.created_at)}</td><td><code>${escapeHtml(e.phase)}</code></td><td>${escapeHtml(e.message)}</td></tr>`
+                ).join('') + '</tbody></table>';
+        }
+    } catch (err) {
+        content.innerHTML = `<p class="error">Error: ${escapeHtml(err.message)}</p>`;
+    }
+}
+
+// ── Pool Credentials ─────────────────────────────────────────────────────────
+
+async function showCredentials(poolId) {
+    try {
+        const res = await fetch(`/api/pools/${poolId}/credentials`, {
+            headers: getHeaders(),
+            credentials: 'same-origin',
+        });
+        if (res.status === 404) {
+            alert('No credentials stored for this pool. Use the Set Credentials form.');
+            return;
+        }
+        const data = await res.json();
+        alert(`Pool #${poolId} credentials:\n\nAccess Key: ${data.access_key_masked}\nRegion: ${data.region}\nEndpoint: ${data.endpoint_url || '(default)'}`);
+    } catch (err) {
+        alert('Error: ' + err.message);
+    }
+}
+
+async function setCredentials(poolId) {
+    const access = prompt('S3 Access Key:');
+    if (!access) return;
+    const secret = prompt('S3 Secret Key:');
+    if (!secret) return;
+    const endpoint = prompt('Endpoint URL (leave empty for default):') || null;
+    const region = prompt('Region:', 'us-east-1') || 'us-east-1';
+
+    try {
+        const res = await fetch(`/api/pools/${poolId}/credentials`, {
+            method: 'PUT',
+            headers: { ...getHeaders(), 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ access_key: access, secret_key: secret, endpoint_url: endpoint, region }),
+        });
+        const data = await res.json();
+        if (res.ok) {
+            alert('Credentials saved (encrypted).');
+            location.reload();
+        } else {
+            alert('Error: ' + (data.detail || JSON.stringify(data)));
+        }
+    } catch (err) {
+        alert('Error: ' + err.message);
+    }
+}
+
+async function deleteCredentials(poolId) {
+    if (!confirm(`Delete credentials for pool #${poolId}?`)) return;
+    try {
+        const res = await fetch(`/api/pools/${poolId}/credentials`, {
+            method: 'DELETE',
+            headers: getHeaders(),
+            credentials: 'same-origin',
+        });
+        const data = await res.json();
+        if (data.ok) {
+            alert('Credentials deleted.');
+            location.reload();
+        } else {
+            alert('Error: ' + (data.detail || JSON.stringify(data)));
+        }
+    } catch (err) {
+        alert('Error: ' + err.message);
+    }
+}

@@ -25,6 +25,9 @@ run:
 test:
 	.venv/bin/python -m pytest -v
 
+test-cov:
+	.venv/bin/python -m pytest -v --cov=nanio_orchestrator --cov-report=term-missing --cov-report=html
+
 lint:
 	.venv/bin/ruff check nanio_orchestrator/
 
