@@ -221,10 +221,13 @@ Full bucket migrations using rclone. Phases: `pending → copying → verifying 
 | POST | `/api/config/reload` | Run `nginx -s reload` |
 | POST | `/api/config/sync` | Re-import disk state → DB |
 | POST | `/api/config/rebuild` | Rebuild all files from DB → disk → reload |
-| GET | `/api/config/preview/pool/:id` | Preview upstream config |
-| GET | `/api/config/preview/vhost/:id` | Preview server block config |
+| POST | `/api/config/absorb-file` | Accept a drifted file: import disk state into DB |
+| POST | `/api/config/rewrite-file` | Rewrite a single file from DB state + reload |
+| GET | `/api/config/preview/pool/:id` | Preview upstream config (no apply) |
+| GET | `/api/config/preview/vhost/:id` | Preview server block config (no apply) |
 | POST | `/api/config/rebuild-from-disk` | Reconstruct DB from nginx configs + sidecar files (see [DB Resilience](#db-resilience)) |
 | POST | `/api/config/backup` | Trigger an immediate database backup |
+| GET | `/api/config/settings` | Current effective settings (secrets masked) |
 
 ### Health + Audit
 
@@ -354,18 +357,67 @@ After rebuild, restart the service so migrations resume:
 systemctl restart nanio-orchestrator
 ```
 
+## Web UI
+
+The web UI is served at `/` and requires a session cookie obtained via `/login`.
+
+| Page | URL | Description |
+|------|-----|-------------|
+| Dashboard | `/` | Overview: pools, vhosts, drift count, active migrations, unrouted buckets |
+| Pools | `/web/pools` | Manage pools and members |
+| Vhosts | `/web/vhosts` | Manage vhosts and routes |
+| Config | `/web/config` | Config file drift status, per-file actions |
+| Migrations | `/web/migrations` | Start and monitor rclone migrations |
+| Audit | `/web/audit` | Last 100 audit log entries |
+| Settings | `/web/settings` | View all current settings (secrets masked) |
+
 ## CLI Reference
 
 ```
-nanio-orchestrator [serve]            Start the server (default command)
-nanio-orchestrator install            Production install (run as root)
-nanio-orchestrator rebuild-db         Rebuild DB from disk
-  --dry-run                             Preview without writing
-  --force                               Overwrite existing DB data
-nanio-orchestrator config validate    Run nginx -t
-nanio-orchestrator config reload      Run nginx -s reload
-nanio-orchestrator config rebuild     Regenerate all config files from DB + reload
+nanio-orchestrator [serve]                  Start the server (default command)
+nanio-orchestrator install                  Production install (run as root)
+nanio-orchestrator rebuild-db               Rebuild DB from disk
+  --dry-run                                   Preview without writing
+  --force                                     Overwrite existing DB data
+
+nanio-orchestrator config show              Print all settings grouped by category
+nanio-orchestrator config get <key>         Print the value of a single setting
+nanio-orchestrator config set <key> <val>   Write a setting to the config file
+nanio-orchestrator config generate-secret   Generate a Fernet key for SECRET
+  --set                                       Also write it to the config file
+nanio-orchestrator config edit              Open the config file in $EDITOR
+nanio-orchestrator config validate          Run nginx -t
+nanio-orchestrator config reload            Run nginx -s reload
+nanio-orchestrator config rebuild           Regenerate all config files from DB + reload
 ```
+
+### `config show` example
+
+```
+Core
+  host                         0.0.0.0                       Bind address
+  port                         8080                          Listen port
+  api_key                      chan****                       API authentication key
+  log_level                    info                          Log level (debug/info/warning/error)
+  session_ttl                  28800                         Web UI session duration (seconds)
+
+Database
+  db_path                      /opt/.../orchestrator.db      SQLite database file path
+  db_backup_path               /opt/.../orchestrator.db.bak  Backup path (default: db_path + .bak)
+  ...
+
+Config file (production): /etc/nanio-orchestrator/config.env
+```
+
+### `config set` example
+
+```bash
+nanio-orchestrator config set api_key mysecretkey
+nanio-orchestrator config set log_level debug
+nanio-orchestrator config set migration_max_parallel 4
+```
+
+Accepts the short key name (without `NANIO_ORCHESTRATOR_` prefix). Updates the active config file in place, handling commented-out lines.
 
 ## Offline / Air-gapped Deployment
 
@@ -411,13 +463,20 @@ Common causes:
 
 ### Credentials API returns 500
 
-`SECRET` is not set or is not a valid Fernet key. Generate one:
+`SECRET` is not set or is not a valid Fernet key. Generate and set one:
+
+```bash
+nanio-orchestrator config generate-secret --set
+```
+
+Or manually:
 
 ```bash
 python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# Then: nanio-orchestrator config set secret <generated-key>
 ```
 
-Set `NANIO_ORCHESTRATOR_SECRET=<generated-key>` in config.env and restart.
+Restart the service after setting the key.
 
 ### API returns 401
 
