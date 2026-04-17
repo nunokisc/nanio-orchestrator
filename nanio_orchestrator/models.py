@@ -207,8 +207,9 @@ class CredentialOut(BaseModel):
     access_key_masked: str
     endpoint_url: Optional[str]
     region: str
-    created_at: str
-    updated_at: str
+    source: str = "pool"  # "pool" | "global"
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
 
 
 # ── rclone Migration ──────────────────────────────────────────────────────────

@@ -217,7 +217,6 @@ async def _run_rclone(
         "--stats", "5s",
         "--stats-one-line",
         "--log-level", "INFO",
-        "-v",
     ]
 
     if s.migration_bandwidth_limit and not check_only:

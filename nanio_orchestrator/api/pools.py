@@ -201,10 +201,20 @@ async def delete_pool(pool_id: int):
             raise HTTPException(404, "Pool not found")
         pool = dict(rows[0])
 
-        # Check for referencing routes
-        refs = await db.execute_fetchall("SELECT id FROM routes WHERE pool_id = ?", (pool_id,))
+        # Check for referencing routes — include which vhosts use this pool as default
+        refs = await db.execute_fetchall(
+            """SELECT r.id, v.server_name FROM routes r
+               JOIN vhosts v ON r.vhost_id = v.id
+               WHERE r.pool_id = ?""",
+            (pool_id,),
+        )
         if refs:
-            raise HTTPException(409, "Cannot delete pool: routes still reference it")
+            vhost_names = ", ".join(sorted({r["server_name"] for r in refs}))
+            raise HTTPException(
+                409,
+                f"Cannot delete pool: it is referenced by routes on vhost(s): {vhost_names}. "
+                "Change the vhost default_pool_id or remove the bucket routes first.",
+            )
 
         # Delete node_configs for all members first (FK chain)
         await db.execute(

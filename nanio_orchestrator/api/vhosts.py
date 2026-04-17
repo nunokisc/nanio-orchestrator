@@ -211,10 +211,9 @@ async def delete_vhost(vhost_id: int):
             raise HTTPException(404, "Vhost not found")
         vhost = dict(rows[0])
 
-        refs = await db.execute_fetchall("SELECT id FROM routes WHERE vhost_id = ?", (vhost_id,))
-        if refs:
-            raise HTTPException(409, "Cannot delete vhost: routes still reference it")
-
+        # Cascade: routes and bucket_sync are children of the vhost
+        await db.execute("DELETE FROM routes WHERE vhost_id = ?", (vhost_id,))
+        await db.execute("DELETE FROM bucket_sync WHERE vhost_id = ?", (vhost_id,))
         await db.execute("DELETE FROM vhosts WHERE id = ?", (vhost_id,))
 
         from nanio_orchestrator.config import get_settings

@@ -42,13 +42,18 @@
         <tbody>
         {% for r in vhost.routes %}
             <tr>
-                <td><code>{{ r.path_prefix }}</code></td>
+                <td>
+                    <code>{{ r.path_prefix }}</code>
+                    {% if r.path_prefix == '/' %}<span class="badge" style="font-size:0.7em;margin-left:4px;vertical-align:middle">auto</span>{% endif %}
+                </td>
                 <td><a href="/web/pools">{{ r.pool_name }}</a></td>
                 <td>
                     {% if r.enabled %}<span class="badge ok">enabled</span>{% else %}<span class="badge warn">disabled</span>{% endif %}
                 </td>
                 <td>
+                    {% if r.path_prefix != '/' %}
                     <button class="btn btn-xs btn-danger" onclick="deleteRoute({{ vhost.id }}, {{ r.id }})">×</button>
+                    {% endif %}
                 </td>
             </tr>
         {% endfor %}

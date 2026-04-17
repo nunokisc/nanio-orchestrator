@@ -632,12 +632,22 @@ async function showCredentials(poolId) {
             headers: getHeaders(),
             credentials: 'same-origin',
         });
-        if (res.status === 404) {
-            alert('No credentials stored for this pool. Use the Set Credentials form.');
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            alert('Error: ' + (err.detail || res.statusText));
             return;
         }
         const data = await res.json();
-        alert(`Pool #${poolId} credentials:\n\nAccess Key: ${data.access_key_masked}\nRegion: ${data.region}\nEndpoint: ${data.endpoint_url || '(default)'}`);
+        const sourceLabel = data.source === 'global'
+            ? '⚠ global fallback (no pool-specific credentials set)'
+            : '✓ pool-specific';
+        alert(
+            `Pool #${poolId} — effective S3 credentials\n\n` +
+            `Source:     ${sourceLabel}\n` +
+            `Access Key: ${data.access_key_masked}\n` +
+            `Region:     ${data.region}\n` +
+            `Endpoint:   ${data.endpoint_url || '(default)'}`
+        );
     } catch (err) {
         alert('Error: ' + err.message);
     }
