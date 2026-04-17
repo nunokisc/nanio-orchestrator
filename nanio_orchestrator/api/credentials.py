@@ -19,6 +19,10 @@ from nanio_orchestrator.credentials import (
 )
 from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator.models import CredentialOut, CredentialSet
+from nanio_orchestrator.sidecar import (
+    write_pool_credentials_sidecar,
+    delete_pool_credentials_sidecar,
+)
 
 router = APIRouter(prefix="/api/pools", tags=["credentials"])
 logger = logging.getLogger(__name__)
@@ -59,7 +63,7 @@ async def get_credentials(pool_id: int):
 @router.put("/{pool_id}/credentials", response_model=CredentialOut)
 async def set_credentials(pool_id: int, body: CredentialSet):
     """Store (or replace) encrypted S3 credentials for a pool."""
-    await _require_pool(pool_id)
+    pool = await _require_pool(pool_id)
     try:
         await store_pool_credentials(
             pool_id,
@@ -70,6 +74,19 @@ async def set_credentials(pool_id: int, body: CredentialSet):
         )
     except RuntimeError as e:
         raise HTTPException(500, str(e))
+
+    # Update sidecar with encrypted credentials
+    async with get_db_ctx() as db:
+        rows = await db.execute_fetchall(
+            "SELECT access_key_enc, secret_key_enc FROM pool_credentials WHERE pool_id = ?",
+            (pool_id,),
+        )
+    if rows:
+        row = dict(rows[0])
+        write_pool_credentials_sidecar(
+            pool["name"], row["access_key_enc"], row["secret_key_enc"],
+            body.endpoint_url, body.region,
+        )
 
     creds = await get_pool_credentials(pool_id)
     return CredentialOut(
@@ -85,8 +102,12 @@ async def set_credentials(pool_id: int, body: CredentialSet):
 @router.delete("/{pool_id}/credentials")
 async def remove_credentials(pool_id: int):
     """Delete stored credentials for a pool."""
-    await _require_pool(pool_id)
+    pool = await _require_pool(pool_id)
     deleted = await delete_pool_credentials(pool_id)
     if not deleted:
         raise HTTPException(404, "No credentials stored for this pool")
+
+    # Remove credentials from sidecar
+    delete_pool_credentials_sidecar(pool["name"])
+
     return {"ok": True, "pool_id": pool_id}

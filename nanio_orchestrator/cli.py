@@ -66,6 +66,82 @@ def install():
     run_install()
 
 
+@main.command("rebuild-db")
+@click.option("--dry-run", is_flag=True, default=False, help="Show what would be imported without writing")
+@click.option("--force", is_flag=True, default=False, help="Proceed even if DB already exists (overwrites)")
+def rebuild_db(dry_run, force):
+    """Rebuild the database from nginx config files and sidecar files.
+
+    Use after DB loss or corruption. Reconstructs pools, vhosts, routes,
+    credentials (from sidecars), and in-progress migrations (from state files).
+    """
+    import asyncio
+
+    async def _rebuild():
+        from nanio_orchestrator.config import get_settings
+        from nanio_orchestrator.db import init_db, get_db_ctx
+
+        s = get_settings()
+        s.ensure_dirs()
+
+        if not dry_run and not force:
+            await init_db()
+            async with get_db_ctx() as db:
+                pools = await db.execute_fetchall("SELECT COUNT(*) as cnt FROM pools")
+                if pools[0]["cnt"] > 0:
+                    print("✗ Database already contains data.")
+                    print("  Use --force to overwrite, or --dry-run to preview.")
+                    return False
+
+        if not dry_run and force:
+            await init_db()
+            async with get_db_ctx() as db:
+                for table in [
+                    "migration_log", "migrations", "object_migrations",
+                    "node_configs", "bucket_sync", "pool_credentials",
+                    "routes", "pool_members", "audit_log", "config_files",
+                    "vhosts", "pools",
+                ]:
+                    await db.execute(f"DELETE FROM {table}")
+                await db.commit()
+
+        from nanio_orchestrator.rebuild import rebuild_from_disk
+        print("Rebuilding database from disk...\n")
+        result = await rebuild_from_disk(dry_run=dry_run)
+
+        if dry_run:
+            print("DRY RUN — no changes written\n")
+            for p in result.get("pools", []):
+                creds = "credentials recovered" if p.get("has_credentials") else "no credentials"
+                sidecar = "sidecar ✓" if p.get("has_sidecar") else "no sidecar"
+                print(f"  ✓ {p['name']:30s} ({p['type']}, {p['members']} members, {creds}, {sidecar})")
+            for v in result.get("vhosts", []):
+                dp = "default_pool recovered" if v.get("has_default_pool") else "no default_pool"
+                sidecar = "sidecar ✓" if v.get("has_sidecar") else "no sidecar"
+                print(f"  ✓ {v['server_name']:30s} ({v['routes']} routes, {dp}, {sidecar})")
+            mig = result.get("migrations", 0)
+            if mig:
+                print(f"  ✓ {mig} migration(s) in progress")
+            print(f"\n  ⚠ audit_log: not recoverable — historical data only")
+        else:
+            print(f"  Pools:       {result['pools_imported']}")
+            print(f"  Members:     {result['members_imported']}")
+            print(f"  Vhosts:      {result['vhosts_imported']}")
+            print(f"  Routes:      {result['routes_imported']}")
+            print(f"  Migrations:  {result['migrations_imported']} (in progress — will auto-resume)")
+            print(f"  Credentials: {result['credentials_recovered']} recovered")
+            for w in result.get("warnings", []):
+                print(f"  ⚠ {w}")
+            print(f"\n  ⚠ audit_log: not recoverable — historical data only")
+            print(f"\nDatabase rebuilt successfully.")
+            print(f"Next: systemctl restart nanio-orchestrator")
+
+        return True
+
+    ok = asyncio.run(_rebuild())
+    sys.exit(0 if ok else 1)
+
+
 @main.group()
 def config():
     """Config management subcommands."""

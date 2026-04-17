@@ -24,6 +24,7 @@ from typing import Dict, Optional
 from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.credentials import get_pool_credentials
 from nanio_orchestrator.db import get_db_ctx
+from nanio_orchestrator.sidecar import write_migration_state, delete_migration_state
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +106,7 @@ async def _log(migration_id: int, phase: str, message: str) -> None:
 
 
 async def _set_phase(migration_id: int, phase: str, error_msg: Optional[str] = None) -> None:
-    """Update migration phase in DB."""
+    """Update migration phase in DB and write state sidecar."""
     async with get_db_ctx() as db:
         if phase == "error":
             await db.execute(
@@ -127,6 +128,45 @@ async def _set_phase(migration_id: int, phase: str, error_msg: Optional[str] = N
                 "UPDATE migrations SET phase=? WHERE id=?", (phase, migration_id)
             )
         await db.commit()
+
+        # Write migration state sidecar (for rebuild recovery)
+        if phase not in ("done", "cancelled"):
+            await _write_state_sidecar(migration_id, db)
+        else:
+            # Delete state file for terminal states
+            delete_migration_state(migration_id)
+
+
+async def _write_state_sidecar(migration_id: int, db) -> None:
+    """Write migration state to sidecar file from current DB state."""
+    rows = await db.execute_fetchall(
+        """SELECT m.*, sp.name as source_pool_name, dp.name as target_pool_name
+           FROM migrations m
+           LEFT JOIN pools sp ON m.src_pool_id = sp.id
+           LEFT JOIN pools dp ON m.dst_pool_id = dp.id
+           WHERE m.id = ?""",
+        (migration_id,),
+    )
+    if not rows:
+        return
+    m = dict(rows[0])
+    state = {
+        "migration_id": m["id"],
+        "vhost_id": m["vhost_id"],
+        "bucket": m["bucket"],
+        "source_pool_id": m["src_pool_id"],
+        "source_pool_name": m.get("source_pool_name"),
+        "target_pool_id": m["dst_pool_id"],
+        "target_pool_name": m.get("target_pool_name"),
+        "status": m["phase"],
+        "copied_objects": m["objects_done"],
+        "total_objects": m["objects_total"],
+        "bytes_transferred": m["bytes_done"],
+        "started_at": m.get("started_at"),
+        "finished_at": m.get("finished_at"),
+        "nginx_state": "source" if m["phase"] in ("pending", "copying", "verifying") else "target",
+    }
+    write_migration_state(state)
 
 
 async def _update_progress(

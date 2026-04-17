@@ -40,6 +40,10 @@ NANIO_ORCHESTRATOR_MIGRATION_TRANSFERS=4
 # S3 credentials for polling nanio-default (optional; leave empty if no auth)
 # NANIO_ORCHESTRATOR_S3_ACCESS_KEY=
 # NANIO_ORCHESTRATOR_S3_SECRET_KEY=
+# Database backup settings
+NANIO_ORCHESTRATOR_DB_BACKUP_PATH=/opt/nanio-orchestrator/data/orchestrator.db.bak
+NANIO_ORCHESTRATOR_DB_BACKUP_INTERVAL=60   # seconds
+NANIO_ORCHESTRATOR_DB_BACKUP_ROTATE=3      # keep N backup copies
 """
 
 SYSTEMD_UNIT = """\
@@ -127,9 +131,11 @@ def run_install() -> None:
     # 5. Create nginx config directories
     pools_dir = Path("/etc/nginx/nanio/pools")
     vhosts_dir = Path("/etc/nginx/nanio/vhosts")
+    migrations_dir = Path("/etc/nginx/nanio/migrations")
     pools_dir.mkdir(parents=True, exist_ok=True)
     vhosts_dir.mkdir(parents=True, exist_ok=True)
-    _step(f"Created {pools_dir.parent}/{{pools,vhosts}}")
+    migrations_dir.mkdir(parents=True, exist_ok=True)
+    _step(f"Created {pools_dir.parent}/{{pools,vhosts,migrations}}")
 
     # 6. Install systemd unit
     unit_path = Path("/etc/systemd/system/nanio-orchestrator.service")

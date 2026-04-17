@@ -196,6 +196,13 @@ def parse_vhost_block(content: str) -> Optional[Dict[str, Any]]:
                 "pool_name": pool_name,
                 "metadata": route_metas.get(prefix, {}),
             }
+            # Extract key_prefix from rewrite directive
+            rewrite_match = re.search(
+                r"rewrite\s+\^" + re.escape(prefix) + r"\(.*?\)\$\s+/(\S+?)\$1\s+break;",
+                loc_block,
+            )
+            if rewrite_match:
+                route["key_prefix"] = rewrite_match.group(1)
             result["routes"].append(route)
 
     return result

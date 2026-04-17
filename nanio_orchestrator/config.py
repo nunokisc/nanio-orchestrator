@@ -53,7 +53,17 @@ class Settings(BaseSettings):
     migration_bandwidth_limit: str = ""  # rclone --bwlimit value, e.g. "50M"
     migration_checkers: int = 8
     migration_transfers: int = 4
+    db_backup_path: Optional[str] = None  # auto-derived from db_path if None
+    db_backup_interval: int = 60  # seconds between timed backups
+    db_backup_rotate: int = 3  # keep N backup copies
     dev: bool = DEV_MODE
+
+    @property
+    def effective_db_backup_path(self) -> str:
+        """Return the backup path, defaulting to db_path + '.bak'."""
+        if self.db_backup_path:
+            return self.db_backup_path
+        return self.db_path + ".bak"
 
     @property
     def pools_dir(self) -> Path:
@@ -63,11 +73,16 @@ class Settings(BaseSettings):
     def vhosts_dir(self) -> Path:
         return Path(self.nginx_config_dir) / "vhosts"
 
+    @property
+    def migrations_dir(self) -> Path:
+        return Path(self.nginx_config_dir) / "migrations"
+
     def ensure_dirs(self) -> None:
         """Create all required directories."""
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self.pools_dir.mkdir(parents=True, exist_ok=True)
         self.vhosts_dir.mkdir(parents=True, exist_ok=True)
+        self.migrations_dir.mkdir(parents=True, exist_ok=True)
 
 
 # Singleton — import this everywhere

@@ -7,7 +7,9 @@ from typing import List
 
 from fastapi import APIRouter, HTTPException, status
 
+from nanio_orchestrator.backup import trigger_backup
 from nanio_orchestrator.db import get_db_ctx
+from nanio_orchestrator.sidecar import write_pool_sidecar, delete_pool_sidecar
 from nanio_orchestrator.models import (
     MemberCreate,
     MemberOut,
@@ -81,6 +83,10 @@ async def _apply_pool_config(pool_id: int, db) -> tuple:
     await db.commit()
 
     combined = f"nginx -t: {test_result.output}\nnginx -s reload: {reload_result.output}"
+
+    # Trigger DB backup after successful write
+    await trigger_backup()
+
     return reload_result.ok, combined
 
 
@@ -127,6 +133,10 @@ async def create_pool(body: PoolCreate):
         pool = dict(row[0])
         await _audit(db, "create", "pool", pool["id"], after=pool)
         await db.commit()
+
+        # Write sidecar
+        write_pool_sidecar(pool["id"], pool["name"], pool["type"], pool.get("description"))
+
         return pool
 
 
@@ -176,6 +186,10 @@ async def update_pool(pool_id: int, body: PoolUpdate):
         await _audit(db, "update", "pool", pool_id, before=before, after=after,
                      reload_ok=ok, reload_output=output)
         await db.commit()
+
+        # Update sidecar
+        write_pool_sidecar(after["id"], after["name"], after["type"], after.get("description"))
+
         return after
 
 
@@ -217,6 +231,9 @@ async def delete_pool(pool_id: int):
         await _audit(db, "delete", "pool", pool_id, before=pool,
                      reload_ok=reload_result.ok, reload_output=reload_result.output)
         await db.commit()
+
+        # Delete sidecar
+        delete_pool_sidecar(pool["name"])
 
 
 # ── Pool Members ──────────────────────────────────────────────────────────────

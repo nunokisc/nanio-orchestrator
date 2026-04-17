@@ -34,6 +34,7 @@ async def tmp_dirs(tmp_path):
     nginx_dir = str(tmp_path / "nginx")
     os.makedirs(os.path.join(nginx_dir, "pools"), exist_ok=True)
     os.makedirs(os.path.join(nginx_dir, "vhosts"), exist_ok=True)
+    os.makedirs(os.path.join(nginx_dir, "migrations"), exist_ok=True)
     return {"db_path": db_path, "nginx_dir": nginx_dir, "tmp_path": tmp_path}
 
 
@@ -63,7 +64,9 @@ async def app(tmp_dirs):
          patch("nanio_orchestrator.app.stop_bucket_sync") as _sbs, \
          patch("nanio_orchestrator.app.recover_interrupted_migrations", new_callable=AsyncMock, return_value=0) as _rim, \
          patch("nanio_orchestrator.app.start_proxy_server", new_callable=AsyncMock) as _sps, \
-         patch("nanio_orchestrator.app.stop_proxy_server", new_callable=AsyncMock) as _stps:
+         patch("nanio_orchestrator.app.stop_proxy_server", new_callable=AsyncMock) as _stps, \
+         patch("nanio_orchestrator.app.backup_loop", new_callable=AsyncMock) as _bkl, \
+         patch("nanio_orchestrator.app.stop_backup") as _sbk:
         from nanio_orchestrator.app import create_app
         application = create_app()
         yield application
@@ -107,6 +110,7 @@ def mock_nginx():
 
     test_mock = AsyncMock(return_value=test_result)
     reload_mock = AsyncMock(return_value=reload_result)
+    backup_mock = AsyncMock()
 
     # Patch at all sites that import test_config / reload_nginx
     test_targets = [
@@ -117,6 +121,11 @@ def mock_nginx():
         "nanio_orchestrator.nginx.executor.reload_nginx",
         "nanio_orchestrator.api.buckets.reload_nginx",
     ]
+    backup_targets = [
+        "nanio_orchestrator.backup.backup_database",
+        "nanio_orchestrator.api.pools.trigger_backup",
+        "nanio_orchestrator.api.vhosts.trigger_backup",
+    ]
 
     active = []
     for t in test_targets:
@@ -125,11 +134,14 @@ def mock_nginx():
     for t in reload_targets:
         p = patch(t, reload_mock)
         active.append(p)
+    for t in backup_targets:
+        p = patch(t, backup_mock)
+        active.append(p)
 
     for p in active:
         p.start()
 
-    yield {"test_config": test_mock, "reload_nginx": reload_mock}
+    yield {"test_config": test_mock, "reload_nginx": reload_mock, "trigger_backup": backup_mock}
 
     for p in active:
         p.stop()

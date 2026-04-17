@@ -18,6 +18,7 @@ from nanio_orchestrator.drift import drift_loop, stop_drift
 from nanio_orchestrator.bucket_sync import bucket_sync_loop, stop_bucket_sync
 from nanio_orchestrator.migration_engine import recover_interrupted_migrations
 from nanio_orchestrator.s3_proxy import start_proxy_server, stop_proxy_server
+from nanio_orchestrator.backup import backup_loop, stop_backup
 
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,9 @@ async def lifespan(app: FastAPI):
     # Start S3 listing proxy
     proxy_task = asyncio.create_task(start_proxy_server())
 
+    # Start DB backup loop
+    backup_task = asyncio.create_task(backup_loop())
+
     if s.dev:
         logger.info(
             "nanio-orchestrator dev mode → http://localhost:%d  API key: dev",
@@ -78,6 +82,13 @@ async def lifespan(app: FastAPI):
     proxy_task.cancel()
     try:
         await proxy_task
+    except asyncio.CancelledError:
+        pass
+
+    stop_backup()
+    backup_task.cancel()
+    try:
+        await backup_task
     except asyncio.CancelledError:
         pass
 

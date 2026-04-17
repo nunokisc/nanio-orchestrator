@@ -9,7 +9,9 @@ from typing import List
 import aiofiles
 from fastapi import APIRouter, HTTPException
 
+from nanio_orchestrator.backup import trigger_backup
 from nanio_orchestrator.db import get_db_ctx
+from nanio_orchestrator.sidecar import write_vhost_sidecar, delete_vhost_sidecar
 from nanio_orchestrator.models import (
     RouteCreate,
     RouteOut,
@@ -60,6 +62,10 @@ async def _apply_vhost_config(vhost_id: int, db) -> tuple:
     await db.commit()
 
     combined = f"nginx -t: {test_result.output}\nnginx -s reload: {reload_result.output}"
+
+    # Trigger DB backup after successful write
+    await trigger_backup()
+
     return reload_result.ok, combined
 
 
@@ -95,6 +101,15 @@ async def create_vhost(body: VhostCreate):
         vhost = dict(rows[0])
         await _audit(db, "create", "vhost", vhost["id"], after=vhost)
         await db.commit()
+
+        # Write sidecar
+        default_pool_name = None
+        if vhost.get("default_pool_id"):
+            pr = await db.execute_fetchall("SELECT name FROM pools WHERE id = ?", (vhost["default_pool_id"],))
+            if pr:
+                default_pool_name = pr[0]["name"]
+        write_vhost_sidecar(vhost["id"], vhost["server_name"], vhost.get("default_pool_id"), default_pool_name)
+
         return vhost
 
 
@@ -139,6 +154,15 @@ async def update_vhost(vhost_id: int, body: VhostUpdate):
         await _audit(db, "update", "vhost", vhost_id, before=before, after=after,
                      reload_ok=ok, reload_output=output)
         await db.commit()
+
+        # Update sidecar
+        default_pool_name = None
+        if after.get("default_pool_id"):
+            pr = await db.execute_fetchall("SELECT name FROM pools WHERE id = ?", (after["default_pool_id"],))
+            if pr:
+                default_pool_name = pr[0]["name"]
+        write_vhost_sidecar(after["id"], after["server_name"], after.get("default_pool_id"), default_pool_name)
+
         return after
 
 
@@ -166,6 +190,9 @@ async def delete_vhost(vhost_id: int):
         await _audit(db, "delete", "vhost", vhost_id, before=vhost,
                      reload_ok=reload_result.ok, reload_output=reload_result.output)
         await db.commit()
+
+        # Delete sidecar
+        delete_vhost_sidecar(vhost["server_name"])
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────

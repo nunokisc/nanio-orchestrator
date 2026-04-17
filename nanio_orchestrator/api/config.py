@@ -326,3 +326,57 @@ async def preview_vhost_config(vhost_id: int):
     except ValueError:
         raise HTTPException(404, "Vhost not found")
     return {"filepath": filepath, "content": content}
+
+
+# ── Rebuild from disk ─────────────────────────────────────────────────────────
+
+
+@router.post("/rebuild-from-disk")
+async def rebuild_from_disk_endpoint(dry_run: bool = False, force: bool = False):
+    """Reconstruct the entire database from nginx configs + sidecar files.
+
+    Query params:
+      - dry_run: report what would be imported, write nothing
+      - force: proceed even if DB has existing data (clears first)
+    """
+    from nanio_orchestrator.rebuild import rebuild_from_disk
+    from nanio_orchestrator.db import get_db_ctx
+
+    if not dry_run and not force:
+        # Check if DB already has data
+        async with get_db_ctx() as db:
+            pools = await db.execute_fetchall("SELECT COUNT(*) as cnt FROM pools")
+            if pools[0]["cnt"] > 0:
+                raise HTTPException(
+                    409,
+                    "Database already contains data. Use force=true to overwrite, "
+                    "or dry_run=true to preview."
+                )
+
+    if not dry_run and force:
+        # Clear all data tables (preserve schema)
+        async with get_db_ctx() as db:
+            for table in [
+                "migration_log", "migrations", "object_migrations",
+                "node_configs", "bucket_sync", "pool_credentials",
+                "routes", "pool_members", "audit_log", "config_files",
+                "vhosts", "pools",
+            ]:
+                await db.execute(f"DELETE FROM {table}")
+            await db.commit()
+
+    result = await rebuild_from_disk(dry_run=dry_run)
+    return result
+
+
+# ── DB backup trigger ─────────────────────────────────────────────────────────
+
+
+@router.post("/backup")
+async def trigger_backup_endpoint():
+    """Trigger an immediate database backup."""
+    from nanio_orchestrator.backup import backup_database
+    path = await backup_database()
+    if path:
+        return {"ok": True, "backup_path": path}
+    return {"ok": False, "detail": "Backup failed"}
