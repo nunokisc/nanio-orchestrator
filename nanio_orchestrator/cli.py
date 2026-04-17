@@ -4,8 +4,72 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 import click
+
+# ── Config metadata ───────────────────────────────────────────────────────────
+# (field_name, category, description, is_secret)
+
+_SETTINGS_META = {
+    "host":                      ("Core",        "Bind address",                           False),
+    "port":                      ("Core",        "Listen port",                            False),
+    "api_key":                   ("Core",        "API authentication key",                 True),
+    "log_level":                 ("Core",        "Log level (debug/info/warning/error)",   False),
+    "session_ttl":               ("Core",        "Web UI session duration (seconds)",      False),
+    "db_path":                   ("Database",    "SQLite database file path",              False),
+    "db_backup_path":            ("Database",    "Backup path (default: db_path + .bak)",  False),
+    "db_backup_interval":        ("Database",    "Seconds between timed backups",          False),
+    "db_backup_rotate":          ("Database",    "Number of backup copies to keep",        False),
+    "secret":                    ("Security",    "Fernet key for credential encryption",   True),
+    "s3_access_key":             ("S3",          "Global S3 access key",                   True),
+    "s3_secret_key":             ("S3",          "Global S3 secret key",                   True),
+    "s3_proxy_port":             ("S3",          "Internal S3 listing proxy port",         False),
+    "bucket_sync_interval":      ("S3",          "Seconds between bucket syncs",           False),
+    "nginx_config_dir":          ("Nginx",       "Root directory for generated configs",   False),
+    "drift_interval":            ("Nginx",       "Seconds between drift checks",           False),
+    "rclone_path":               ("Migrations",  "Path to rclone binary",                  False),
+    "migration_max_parallel":    ("Migrations",  "Max concurrent migrations",              False),
+    "migration_bandwidth_limit": ("Migrations",  "rclone --bwlimit value (e.g. 50M)",     False),
+    "migration_checkers":        ("Migrations",  "rclone --checkers value",                False),
+    "migration_transfers":       ("Migrations",  "rclone --transfers value",               False),
+}
+
+_CATEGORY_ORDER = ["Core", "Database", "Security", "S3", "Nginx", "Migrations"]
+
+
+def _get_config_path() -> str:
+    from nanio_orchestrator.config import DEV_MODE
+    return "dev.env" if DEV_MODE else "/etc/nanio-orchestrator/config.env"
+
+
+def _mask(value, is_secret: bool) -> str:
+    if not is_secret:
+        return str(value) if value is not None else "(unset)"
+    if not value:
+        return "(not set)"
+    s = str(value)
+    return s[:4] + "****" if len(s) > 4 else "****"
+
+
+def _set_config_value(short_key: str, value: str, config_path: str) -> None:
+    """Update or add NANIO_ORCHESTRATOR_<KEY>=<value> in the config file."""
+    env_key = f"NANIO_ORCHESTRATOR_{short_key.upper()}"
+    lines = Path(config_path).read_text().splitlines() if Path(config_path).exists() else []
+
+    replaced = False
+    for i, line in enumerate(lines):
+        stripped = line.lstrip("# ").strip()
+        if stripped.startswith(env_key + "="):
+            lines[i] = f"{env_key}={value}"
+            replaced = True
+            break
+
+    if not replaced:
+        lines.append(f"{env_key}={value}")
+
+    Path(config_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(config_path).write_text("\n".join(lines) + "\n")
 
 
 @click.group(invoke_without_command=True)
@@ -142,6 +206,121 @@ def rebuild_db(dry_run, force):
 def config():
     """Config management subcommands."""
     pass
+
+
+@config.command("show")
+def config_show():
+    """Show all current settings, grouped by category."""
+    from nanio_orchestrator.config import get_settings, DEV_MODE
+    s = get_settings()
+    config_path = _get_config_path()
+
+    by_category: dict[str, list] = {cat: [] for cat in _CATEGORY_ORDER}
+    for field, (cat, desc, is_secret) in _SETTINGS_META.items():
+        raw = getattr(s, field, None)
+        # db_backup_path: show effective value, not the raw (possibly None) setting
+        if field == "db_backup_path":
+            raw = s.effective_db_backup_path
+        by_category.setdefault(cat, []).append((field, raw, desc, is_secret))
+
+    for cat in _CATEGORY_ORDER:
+        entries = by_category.get(cat, [])
+        if not entries:
+            continue
+        print(f"\n{cat}")
+        for field, raw, desc, is_secret in entries:
+            value_str = _mask(raw, is_secret)
+            print(f"  {field:<28} {value_str:<30}  {desc}")
+
+    mode = "dev" if DEV_MODE else "production"
+    print(f"\nConfig file ({mode}): {config_path}")
+
+
+@config.command("get")
+@click.argument("key")
+def config_get(key):
+    """Print the current value of a single setting (for scripting)."""
+    from nanio_orchestrator.config import get_settings
+    s = get_settings()
+    normalized = key.lower().removeprefix("nanio_orchestrator_")
+    if normalized == "db_backup_path":
+        print(s.effective_db_backup_path)
+    elif hasattr(s, normalized):
+        value = getattr(s, normalized)
+        print("" if value is None else value)
+    else:
+        print(f"Unknown setting: {key}", file=sys.stderr)
+        sys.exit(1)
+
+
+@config.command("set")
+@click.argument("key")
+@click.argument("value")
+def config_set(key, value):
+    """Set a configuration value in the active config file.
+
+    KEY is the short name without the NANIO_ORCHESTRATOR_ prefix.
+
+    Examples:
+
+    \b
+      nanio-orchestrator config set api_key mysecret
+      nanio-orchestrator config set log_level debug
+      nanio-orchestrator config set migration_max_parallel 4
+    """
+    normalized = key.lower().removeprefix("nanio_orchestrator_")
+    if normalized not in _SETTINGS_META:
+        print(f"Unknown setting: '{key}'", file=sys.stderr)
+        print(f"Known settings: {', '.join(sorted(_SETTINGS_META))}", file=sys.stderr)
+        sys.exit(1)
+
+    config_path = _get_config_path()
+    _set_config_value(normalized, value, config_path)
+    env_key = f"NANIO_ORCHESTRATOR_{normalized.upper()}"
+    _, _, is_secret = _SETTINGS_META[normalized]
+    display = _mask(value, is_secret)
+    print(f"✓ {env_key}={display}  →  {config_path}")
+
+
+@config.command("generate-secret")
+@click.option("--set", "do_set", is_flag=True, default=False,
+              help="Also write the generated key to the config file.")
+def config_generate_secret(do_set):
+    """Generate a Fernet encryption key for NANIO_ORCHESTRATOR_SECRET.
+
+    Run with --set to write it directly to the config file.
+    """
+    from cryptography.fernet import Fernet
+    key = Fernet.generate_key().decode()
+    print(key)
+    if do_set:
+        config_path = _get_config_path()
+        _set_config_value("secret", key, config_path)
+        print(f"✓ NANIO_ORCHESTRATOR_SECRET written to {config_path}", file=sys.stderr)
+
+
+@config.command("edit")
+def config_edit():
+    """Open the config file in $EDITOR (falls back to nano, then vi)."""
+    config_path = _get_config_path()
+    if not Path(config_path).exists():
+        print(f"Config file not found: {config_path}", file=sys.stderr)
+        print("Run 'nanio-orchestrator install' first, or create the file manually.", file=sys.stderr)
+        sys.exit(1)
+
+    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL")
+    if not editor:
+        for fallback in ("nano", "vi"):
+            import shutil
+            if shutil.which(fallback):
+                editor = fallback
+                break
+
+    if not editor:
+        print(f"No editor found. Edit manually: {config_path}", file=sys.stderr)
+        sys.exit(1)
+
+    os.execvp(editor, [editor, config_path])
 
 
 @config.command("validate")

@@ -234,6 +234,11 @@ async def audit_page():
 # ── Migrations ────────────────────────────────────────────────────────────
 
 
+@router.get("/web/settings", response_class=HTMLResponse)
+async def settings_page():
+    return _render("settings.html")
+
+
 @router.get("/web/migrations", response_class=HTMLResponse)
 async def migrations_page():
     async with get_db_ctx() as db:

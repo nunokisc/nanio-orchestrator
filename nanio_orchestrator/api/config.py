@@ -376,3 +376,38 @@ async def trigger_backup_endpoint():
     if path:
         return {"ok": True, "backup_path": path}
     return {"ok": False, "detail": "Backup failed"}
+
+
+# ── Settings introspection ────────────────────────────────────────────────────
+
+_SECRET_FIELDS = {"api_key", "secret", "s3_access_key", "s3_secret_key"}
+
+
+def _mask(value, is_secret: bool) -> str | None:
+    if not is_secret:
+        return value
+    if not value:
+        return None
+    s = str(value)
+    return (s[:4] + "****") if len(s) > 4 else "****"
+
+
+@router.get("/settings")
+async def get_settings_endpoint():
+    """Return all current settings with secrets masked."""
+    from nanio_orchestrator.config import DEV_MODE
+    s = get_settings()
+
+    result = {}
+    for field in s.model_fields:
+        value = getattr(s, field)
+        result[field] = _mask(value, field in _SECRET_FIELDS)
+
+    # Replace db_backup_path with the effective (derived) value
+    result["db_backup_path"] = s.effective_db_backup_path
+
+    from nanio_orchestrator.cli import _get_config_path
+    result["config_file"] = _get_config_path()
+    result["dev_mode"] = DEV_MODE
+
+    return result

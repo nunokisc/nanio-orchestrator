@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}Settings — nanio-orchestrator{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+
+<div id="settings-loading" class="empty">Loading…</div>
+<div id="settings-error" class="hidden">
+    <div class="card">
+        <span class="badge warn">Error</span>
+        <span id="settings-error-msg"></span>
+    </div>
+</div>
+
+<div id="settings-body" class="hidden"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const CATEGORIES = [
+    ["Core",       ["host","port","api_key","log_level","session_ttl"]],
+    ["Database",   ["db_path","db_backup_path","db_backup_interval","db_backup_rotate"]],
+    ["Security",   ["secret"]],
+    ["S3",         ["s3_access_key","s3_secret_key","s3_proxy_port","bucket_sync_interval"]],
+    ["Nginx",      ["nginx_config_dir","drift_interval"]],
+    ["Migrations", ["rclone_path","migration_max_parallel","migration_bandwidth_limit","migration_checkers","migration_transfers"]],
+];
+
+const DESCRIPTIONS = {
+    host:                      "Bind address",
+    port:                      "Listen port",
+    api_key:                   "API authentication key",
+    log_level:                 "Log level (debug/info/warning/error)",
+    session_ttl:               "Web UI session duration (seconds)",
+    db_path:                   "SQLite database file path",
+    db_backup_path:            "Backup path (default: db_path + .bak)",
+    db_backup_interval:        "Seconds between timed backups",
+    db_backup_rotate:          "Number of backup copies to keep",
+    secret:                    "Fernet key for credential encryption",
+    s3_access_key:             "Global S3 access key",
+    s3_secret_key:             "Global S3 secret key",
+    s3_proxy_port:             "Internal S3 listing proxy port",
+    bucket_sync_interval:      "Seconds between bucket syncs",
+    nginx_config_dir:          "Root directory for generated configs",
+    drift_interval:            "Seconds between drift checks",
+    rclone_path:               "Path to rclone binary",
+    migration_max_parallel:    "Max concurrent migrations",
+    migration_bandwidth_limit: "rclone --bwlimit value (e.g. 50M)",
+    migration_checkers:        "rclone --checkers value",
+    migration_transfers:       "rclone --transfers value",
+};
+
+function isSecret(key) {
+    return ["api_key","secret","s3_access_key","s3_secret_key"].includes(key);
+}
+
+function renderValue(key, val) {
+    if (val === null || val === undefined || val === "") {
+        return `<span class="badge warn">unset</span>`;
+    }
+    const s = String(val);
+    if (isSecret(key)) {
+        return `<code class="hash">${escapeHtml(s)}</code>`;
+    }
+    return `<code>${escapeHtml(s)}</code>`;
+}
+
+async function loadSettings() {
+    const loadingEl = document.getElementById("settings-loading");
+    const errorEl   = document.getElementById("settings-error");
+    const bodyEl    = document.getElementById("settings-body");
+
+    try {
+        const res = await fetch("/api/config/settings", fetchOpts("GET"));
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        let html = "";
+
+        for (const [cat, keys] of CATEGORIES) {
+            html += `<div class="card" style="margin-bottom:1.2rem">`;
+            html += `<h3 style="margin-top:0;margin-bottom:0.8rem">${escapeHtml(cat)}</h3>`;
+            html += `<table><thead><tr><th style="width:220px">Setting</th><th>Value</th><th>Description</th></tr></thead><tbody>`;
+            for (const key of keys) {
+                if (!(key in data)) continue;
+                const desc = DESCRIPTIONS[key] || "";
+                html += `<tr>
+                    <td><code>${escapeHtml(key)}</code></td>
+                    <td>${renderValue(key, data[key])}</td>
+                    <td style="color:var(--text-muted)">${escapeHtml(desc)}</td>
+                </tr>`;
+            }
+            html += `</tbody></table></div>`;
+        }
+
+        // Meta row
+        html += `<div class="card" style="margin-bottom:1.2rem">`;
+        html += `<h3 style="margin-top:0;margin-bottom:0.8rem">Meta</h3>`;
+        html += `<table><tbody>`;
+        html += `<tr><td style="width:220px"><code>config_file</code></td><td><code>${escapeHtml(String(data.config_file ?? ""))}</code></td><td style="color:var(--text-muted)">Active config file path</td></tr>`;
+        html += `<tr><td><code>dev_mode</code></td><td>${data.dev_mode ? '<span class="badge dev">DEV</span>' : '<span class="badge ok">production</span>'}</td><td style="color:var(--text-muted)">Runtime mode</td></tr>`;
+        html += `</tbody></table></div>`;
+
+        bodyEl.innerHTML = html;
+        loadingEl.classList.add("hidden");
+        bodyEl.classList.remove("hidden");
+
+    } catch (err) {
+        loadingEl.classList.add("hidden");
+        document.getElementById("settings-error-msg").textContent = err.message;
+        errorEl.classList.remove("hidden");
+    }
+}
+
+loadSettings();
+</script>
+{% endblock %}
