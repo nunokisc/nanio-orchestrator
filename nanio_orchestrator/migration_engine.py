@@ -132,9 +132,12 @@ async def _set_phase(migration_id: int, phase: str, error_msg: Optional[str] = N
         # Write migration state sidecar (for rebuild recovery)
         if phase not in ("done", "cancelled"):
             await _write_state_sidecar(migration_id, db)
-        else:
-            # Delete state file for terminal states
-            delete_migration_state(migration_id)
+
+    # Delete outside the DB context: the commit is durable at this point.
+    # A crash between commit and here leaves a stale state file, which rebuild
+    # will re-import as pending — safe because the migration is terminal in the DB.
+    if phase in ("done", "cancelled"):
+        delete_migration_state(migration_id)
 
 
 async def _write_state_sidecar(migration_id: int, db) -> None:
@@ -162,6 +165,7 @@ async def _write_state_sidecar(migration_id: int, db) -> None:
         "copied_objects": m["objects_done"],
         "total_objects": m["objects_total"],
         "bytes_transferred": m["bytes_done"],
+        "bytes_total": m["bytes_total"],
         "started_at": m.get("started_at"),
         "finished_at": m.get("finished_at"),
         "nginx_state": "source" if m["phase"] in ("pending", "copying", "verifying") else "target",

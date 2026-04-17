@@ -4,7 +4,7 @@ Uses SQLite's online backup API (safe while DB is in use).
 Backup triggers:
 - After every successful write operation (via trigger_backup())
 - On a timed schedule (via backup_loop())
-- Before every nginx reload (caller invokes trigger_backup())
+- After every nginx reload (caller invokes trigger_backup())
 """
 
 from __future__ import annotations
@@ -68,8 +68,8 @@ def _rotate_backups(base_path: str, max_copies: int) -> None:
         if os.path.exists(src):
             shutil.move(src, dst)
 
-    # .bak → .bak.2
-    if os.path.exists(base_path):
+    # .bak → .bak.2 (only when keeping more than one copy)
+    if max_copies >= 2 and os.path.exists(base_path):
         shutil.move(base_path, f"{base_path}.2")
 
 

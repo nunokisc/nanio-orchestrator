@@ -796,3 +796,65 @@ class TestMigrationStateSidecar:
 
         cfg_mod.settings = None
         db_mod._db_path = None
+
+
+class TestBackupRotation:
+    """Edge-case tests for backup file rotation."""
+
+    @pytest.mark.asyncio
+    async def test_backup_rotation_max_copies_1(self, tmp_dirs):
+        """max_copies=1 keeps only the single .bak slot and never creates .bak.2."""
+        import nanio_orchestrator.config as cfg_mod
+        cfg_mod.settings = None
+
+        os.environ["NANIO_ORCHESTRATOR_DB_PATH"] = tmp_dirs["db_path"]
+        os.environ["NANIO_ORCHESTRATOR_DB_BACKUP_ROTATE"] = "1"
+
+        from nanio_orchestrator.db import set_db_path, init_db
+        set_db_path(tmp_dirs["db_path"])
+        await init_db()
+
+        from nanio_orchestrator.backup import backup_database
+        bak_path = await backup_database()
+        assert bak_path is not None
+        assert os.path.exists(bak_path)
+        assert not os.path.exists(bak_path + ".2"), ".bak.2 must not be created with max_copies=1"
+
+        # A second backup must overwrite .bak, still no .bak.2
+        await backup_database()
+        assert os.path.exists(bak_path)
+        assert not os.path.exists(bak_path + ".2"), ".bak.2 accumulated on second backup"
+
+        cfg_mod.settings = None
+
+
+class TestRebuildAPIEdgeCases:
+    """Edge-case tests for the rebuild API endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_rebuild_api_works_when_db_file_missing(self, client, app, mock_nginx, tmp_dirs, setup_nginx_configs):
+        """POST /api/config/rebuild-from-disk succeeds even when DB file is absent."""
+        # Remove the DB so the endpoint must create it via init_db()
+        if os.path.exists(tmp_dirs["db_path"]):
+            os.unlink(tmp_dirs["db_path"])
+
+        with patch("nanio_orchestrator.s3client.list_buckets", new_callable=AsyncMock, return_value=[]):
+            resp = await client.post("/api/config/rebuild-from-disk?force=true")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["pools_imported"] >= 1
+
+    @pytest.fixture
+    def setup_nginx_configs(self, tmp_dirs):
+        """Minimal nginx config for edge-case tests."""
+        pools_dir = os.path.join(tmp_dirs["nginx_dir"], "pools")
+        pool_conf = """# managed by nanio-orchestrator
+# pool_id:1 name:edge-pool type:nanio updated:2026-04-16T10:00:00Z
+upstream edge-pool {
+    least_conn;
+    server 10.0.0.1:9000 weight=1 max_fails=3 fail_timeout=30s;
+    keepalive 32;
+}
+"""
+        Path(os.path.join(pools_dir, "edge-pool.conf")).write_text(pool_conf)
+        return tmp_dirs

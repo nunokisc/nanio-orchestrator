@@ -17,7 +17,6 @@ from nanio_orchestrator.credentials import (
     get_pool_credentials,
     store_pool_credentials,
 )
-from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator.models import CredentialOut, CredentialSet
 from nanio_orchestrator.sidecar import (
     write_pool_credentials_sidecar,
@@ -36,6 +35,7 @@ def _mask(key: str) -> str:
 
 
 async def _require_pool(pool_id: int) -> dict:
+    from nanio_orchestrator.db import get_db_ctx
     async with get_db_ctx() as db:
         rows = await db.execute_fetchall("SELECT * FROM pools WHERE id = ?", (pool_id,))
     if not rows:
@@ -65,7 +65,7 @@ async def set_credentials(pool_id: int, body: CredentialSet):
     """Store (or replace) encrypted S3 credentials for a pool."""
     pool = await _require_pool(pool_id)
     try:
-        await store_pool_credentials(
+        access_key_enc, secret_key_enc = await store_pool_credentials(
             pool_id,
             access_key=body.access_key,
             secret_key=body.secret_key,
@@ -75,18 +75,10 @@ async def set_credentials(pool_id: int, body: CredentialSet):
     except RuntimeError as e:
         raise HTTPException(500, str(e))
 
-    # Update sidecar with encrypted credentials
-    async with get_db_ctx() as db:
-        rows = await db.execute_fetchall(
-            "SELECT access_key_enc, secret_key_enc FROM pool_credentials WHERE pool_id = ?",
-            (pool_id,),
-        )
-    if rows:
-        row = dict(rows[0])
-        write_pool_credentials_sidecar(
-            pool["name"], row["access_key_enc"], row["secret_key_enc"],
-            body.endpoint_url, body.region,
-        )
+    write_pool_credentials_sidecar(
+        pool["name"], access_key_enc, secret_key_enc,
+        body.endpoint_url, body.region,
+    )
 
     creds = await get_pool_credentials(pool_id)
     return CredentialOut(

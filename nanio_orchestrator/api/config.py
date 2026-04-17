@@ -340,10 +340,12 @@ async def rebuild_from_disk_endpoint(dry_run: bool = False, force: bool = False)
       - force: proceed even if DB has existing data (clears first)
     """
     from nanio_orchestrator.rebuild import rebuild_from_disk
-    from nanio_orchestrator.db import get_db_ctx, CLEAR_TABLES
+    from nanio_orchestrator.db import get_db_ctx, init_db, CLEAR_TABLES
+
+    if not dry_run:
+        await init_db()
 
     if not dry_run and not force:
-        # Check if DB already has data
         async with get_db_ctx() as db:
             pools = await db.execute_fetchall("SELECT COUNT(*) as cnt FROM pools")
             if pools[0]["cnt"] > 0:

@@ -59,8 +59,12 @@ async def store_pool_credentials(
     secret_key: str,
     endpoint_url: Optional[str] = None,
     region: str = "us-east-1",
-) -> None:
-    """Encrypt and store credentials for a pool."""
+) -> Tuple[str, str]:
+    """Encrypt and store credentials for a pool.
+
+    Returns (access_key_enc, secret_key_enc) so callers can use the encrypted
+    values directly (e.g. for sidecar writes) without a second DB round-trip.
+    """
     access_enc = encrypt(access_key)
     secret_enc = encrypt(secret_key)
 
@@ -78,6 +82,8 @@ async def store_pool_credentials(
             (pool_id, access_enc, secret_enc, endpoint_url, region),
         )
         await db.commit()
+
+    return access_enc, secret_enc
 
 
 async def get_pool_credentials(pool_id: int) -> Optional[dict]:

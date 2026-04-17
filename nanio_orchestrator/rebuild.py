@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.nginx.generator import sha256_str
@@ -244,7 +244,7 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
                 (vhost_id_for_migration, state.get("bucket", ""),
                  src_id, dst_id, phase,
                  state.get("total_objects", 0), state.get("copied_objects", 0),
-                 state.get("bytes_transferred", 0), 0),
+                 state.get("bytes_total", 0), state.get("bytes_transferred", 0)),
             )
             migration_count += 1
 
