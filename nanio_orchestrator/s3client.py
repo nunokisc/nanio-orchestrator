@@ -17,6 +17,8 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
+from nanio_orchestrator.config import get_settings
+
 
 # ── SigV4 helpers ─────────────────────────────────────────────────────────────
 
@@ -145,7 +147,7 @@ def _do_request(
         headers.update(auth_hdrs)
 
     url = f"{path}?{query}" if query else path
-    conn = http.client.HTTPConnection(host, port, timeout=15)
+    conn = http.client.HTTPConnection(host, port, timeout=get_settings().s3_request_timeout)
     try:
         conn.request(method, url, body=body, headers=headers)
         resp = conn.getresponse()

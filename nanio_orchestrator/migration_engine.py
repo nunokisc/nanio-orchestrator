@@ -27,6 +27,7 @@ from typing import Dict, Optional
 from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.credentials import get_pool_credentials
 from nanio_orchestrator.db import get_db_ctx
+from nanio_orchestrator.s3client import count_objects
 from nanio_orchestrator.sidecar import write_migration_state, delete_migration_state
 
 logger = logging.getLogger(__name__)
@@ -211,7 +212,7 @@ async def _run_rclone(
     if check_only:
         cmd += ["check", src_remote, dst_remote]
     else:
-        cmd += ["sync", src_remote, dst_remote]
+        cmd += ["copy", src_remote, dst_remote]
 
     cmd += [
         "--config", config_path,
@@ -389,13 +390,28 @@ async def run_migration(migration_id: int) -> None:
         src_remote = f"src:{bucket}"
         dst_remote = f"dst:{bucket}"
 
+        # ── Pre-flight: refuse to copy from an empty source ───────────────
+        src_address = await _first_member_endpoint(src_pool_id)
+        if src_address:
+            src_creds = await get_pool_credentials(src_pool_id)
+            ak = src_creds["access_key"] if src_creds else None
+            sk = src_creds["secret_key"] if src_creds else None
+            src_count = await count_objects(src_address, bucket, access_key=ak, secret_key=sk)
+            if src_count == 0:
+                msg = (f"Refusing to migrate: source bucket '{bucket}' is empty. "
+                       "Copying from an empty source would erase any content already "
+                       "present at the destination. Verify the source bucket and retry.")
+                logger.error("Migration %d aborted: %s", migration_id, msg)
+                await _set_phase(migration_id, "error", msg)
+                return
+
         # ── Phase: copying ────────────────────────────────────────────────
         await _set_phase(migration_id, "copying")
-        await _log(migration_id, "copying", f"Starting rclone sync: {src_remote} → {dst_remote}")
+        await _log(migration_id, "copying", f"Starting rclone copy: {src_remote} → {dst_remote}")
 
         ok = await _run_rclone(migration_id, config_path, src_remote, dst_remote, "copying")
         if not ok:
-            await _set_phase(migration_id, "error", "rclone sync failed")
+            await _set_phase(migration_id, "error", "rclone copy failed")
             return
 
         # ── Phase: verifying ──────────────────────────────────────────────
