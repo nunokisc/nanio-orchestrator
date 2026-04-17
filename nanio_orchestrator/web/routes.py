@@ -113,29 +113,11 @@ async def dashboard():
         )
         active_migrations = [dict(r) for r in active_mig_rows]
 
-        # Unrouted buckets per vhost (for dashboard widget)
-        unrouted_rows = await db.execute_fetchall(
-            """SELECT bs.vhost_id, bs.bucket, bs.discovered_at, v.server_name
-               FROM bucket_sync bs
-               JOIN vhosts v ON bs.vhost_id = v.id
-               WHERE bs.status = 'unrouted'
-               ORDER BY v.server_name, bs.bucket"""
+        # Unrouted buckets count for dashboard widget
+        unrouted_row = await db.execute_fetchall(
+            "SELECT COUNT(*) as cnt FROM bucket_sync WHERE status = 'unrouted'"
         )
-        # Group by vhost
-        unrouted_by_vhost: dict = {}
-        for r in unrouted_rows:
-            rd = dict(r)
-            vid = rd["vhost_id"]
-            if vid not in unrouted_by_vhost:
-                unrouted_by_vhost[vid] = {
-                    "vhost_id": vid,
-                    "server_name": rd["server_name"],
-                    "buckets": [],
-                }
-            unrouted_by_vhost[vid]["buckets"].append({
-                "name": rd["bucket"],
-                "discovered_at": rd["discovered_at"],
-            })
+        unrouted_count = unrouted_row[0]["cnt"] if unrouted_row else 0
 
     return _render(
         "dashboard.html",
@@ -145,7 +127,7 @@ async def dashboard():
         drift_count=drift_count,
         last_reload=last_reload,
         recent_audit=[dict(a) for a in recent_audit],
-        unrouted_by_vhost=list(unrouted_by_vhost.values()),
+        unrouted_count=unrouted_count,
         active_migrations=active_migrations,
     )
 
@@ -232,6 +214,32 @@ async def audit_page():
     return _render("audit.html", entries=[dict(r) for r in rows])
 
 # ── Migrations ────────────────────────────────────────────────────────────
+
+
+@router.get("/web/buckets", response_class=HTMLResponse)
+async def buckets_page():
+    async with get_db_ctx() as db:
+        vhost_rows = await db.execute_fetchall(
+            "SELECT id, server_name FROM vhosts WHERE default_pool_id IS NOT NULL ORDER BY server_name"
+        )
+        pools = await db.execute_fetchall("SELECT id, name FROM pools ORDER BY name")
+        vhosts = []
+        for v in vhost_rows:
+            buckets = await db.execute_fetchall(
+                """SELECT bs.bucket, bs.status, bs.discovered_at, bs.routed_pool_id,
+                          p.name as pool_name
+                   FROM bucket_sync bs
+                   LEFT JOIN pools p ON bs.routed_pool_id = p.id
+                   WHERE bs.vhost_id = ?
+                   ORDER BY bs.status, bs.bucket""",
+                (v["id"],),
+            )
+            vhosts.append({
+                "id": v["id"],
+                "server_name": v["server_name"],
+                "buckets": [dict(b) for b in buckets],
+            })
+    return _render("buckets.html", vhosts=vhosts, pools=[dict(p) for p in pools])
 
 
 @router.get("/web/settings", response_class=HTMLResponse)

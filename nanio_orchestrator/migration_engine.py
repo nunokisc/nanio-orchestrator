@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 from datetime import datetime, timezone
@@ -223,15 +224,16 @@ async def _run_rclone(
         cmd += ["--bwlimit", s.migration_bandwidth_limit]
 
     await _log(migration_id, phase, f"Running: {' '.join(cmd)}")
+    logger.info("migration %d [%s]: starting rclone %s → %s",
+                migration_id, phase, src_remote, dst_remote)
 
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,  # merge stderr into stdout for unified log
         )
 
-        # Store PID for potential cancellation
         async with get_db_ctx() as db:
             await db.execute(
                 "UPDATE migrations SET rclone_pid=? WHERE id=?",
@@ -239,23 +241,31 @@ async def _run_rclone(
             )
             await db.commit()
 
-        stdout, stderr = await proc.communicate()
+        # Stream output line by line — gives live progress in migration_log
+        async for raw in proc.stdout:
+            line = raw.decode(errors="replace").rstrip()
+            if not line:
+                continue
+            logger.debug("rclone [%d]: %s", migration_id, line)
+            await _log(migration_id, phase, line)
+            # Parse progress from rclone stats lines and update DB
+            progress = _parse_rclone_stats(line)
+            if progress:
+                await _update_progress(migration_id, **progress)
 
-        # Clear PID
+        await proc.wait()
+
         async with get_db_ctx() as db:
-            await db.execute(
-                "UPDATE migrations SET rclone_pid=NULL WHERE id=?",
-                (migration_id,),
-            )
+            await db.execute("UPDATE migrations SET rclone_pid=NULL WHERE id=?", (migration_id,))
             await db.commit()
 
-        output = (stdout.decode(errors="replace") + "\n" + stderr.decode(errors="replace")).strip()
-
         if proc.returncode == 0:
-            await _log(migration_id, phase, f"rclone completed successfully")
+            logger.info("migration %d [%s]: rclone finished OK", migration_id, phase)
+            await _log(migration_id, phase, "rclone completed successfully")
             return True
         else:
-            await _log(migration_id, phase, f"rclone exit code {proc.returncode}: {output[-500:]}")
+            logger.warning("migration %d [%s]: rclone exit code %d", migration_id, phase, proc.returncode)
+            await _log(migration_id, phase, f"rclone exit code {proc.returncode}")
             return False
 
     except FileNotFoundError:
@@ -264,6 +274,36 @@ async def _run_rclone(
     except Exception as e:
         await _log(migration_id, phase, f"rclone error: {e}")
         return False
+
+
+# Matches rclone stats lines such as:
+#   2026/04/16 18:36:06 INFO  : Transferred:   1.234 GiB / 5.678 GiB, 22%, 54 MiB/s, ETA 1m30s
+#   2026/04/16 18:36:06 INFO  : Checks:         1234 / 5678, 22%
+_BYTES_RE = re.compile(
+    r"Transferred:.*?([\d.]+)\s*(\w+)\s*/\s*([\d.]+)\s*(\w+),\s*(\d+)%"
+)
+_CHECKS_RE = re.compile(r"Checks:\s+(\d+)\s*/\s*(\d+)")
+
+_UNIT_BYTES = {"B": 1, "KiB": 1024, "MiB": 1024**2, "GiB": 1024**3, "TiB": 1024**4,
+               "KB": 1000, "MB": 1000**2, "GB": 1000**3, "TB": 1000**4}
+
+
+def _to_bytes(value: str, unit: str) -> int:
+    return int(float(value) * _UNIT_BYTES.get(unit, 1))
+
+
+def _parse_rclone_stats(line: str) -> Optional[dict]:
+    """Extract progress fields from a rclone stats/log line."""
+    result: dict = {}
+    m = _BYTES_RE.search(line)
+    if m:
+        result["bytes_done"] = _to_bytes(m.group(1), m.group(2))
+        result["bytes_total"] = _to_bytes(m.group(3), m.group(4))
+    m2 = _CHECKS_RE.search(line)
+    if m2:
+        result["objects_done"] = int(m2.group(1))
+        result["objects_total"] = int(m2.group(2))
+    return result or None
 
 
 # ── State machine: run a full migration ──────────────────────────────────────

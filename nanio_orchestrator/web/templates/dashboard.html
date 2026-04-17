@@ -26,56 +26,35 @@
     </div>
 </div>
 
-{% if unrouted_by_vhost %}
-{% for vg in unrouted_by_vhost %}
-<div class="card card-warn">
-    <div class="card-header">
-        <h3>Unrouted buckets — {{ vg.server_name }}</h3>
-        <div class="card-actions">
-            <button class="btn btn-sm" onclick="syncBuckets({{ vg.vhost_id }})">Sync now</button>
-        </div>
+<div class="grid grid-3" style="margin-top:0">
+    <div class="card {% if unrouted_count > 0 %}card-warn{% endif %}">
+        <h3>Unrouted Buckets</h3>
+        <div class="stat">{{ unrouted_count }}</div>
+        {% if unrouted_count > 0 %}
+        <span class="badge warn">ACTION NEEDED</span>
+        {% else %}
+        <span class="badge ok">ALL ROUTED</span>
+        {% endif %}
+        <a href="/web/buckets">Manage →</a>
     </div>
-    <table>
-        <thead>
-            <tr><th>Bucket</th><th>Discovered</th><th>Actions</th></tr>
-        </thead>
-        <tbody>
-        {% for b in vg.buckets %}
-        <tr>
-            <td><code>{{ b.name }}</code></td>
-            <td>{{ b.discovered_at or '—' }}</td>
-            <td>
-                <button class="btn btn-xs btn-primary" onclick="showRouteModal({{ vg.vhost_id }}, '{{ b.name }}')">Route</button>
-                <button class="btn btn-xs" onclick="ignoreBucket({{ vg.vhost_id }}, '{{ b.name }}')">Ignore</button>
-            </td>
-        </tr>
-        {% endfor %}
-        </tbody>
-    </table>
-</div>
-{% endfor %}
-{% endif %}
-
-<!-- Route Bucket Modal -->
-<div id="route-bucket-modal" class="modal hidden">
-    <div class="modal-content">
-        <h3>Route bucket <span id="route-bucket-name"></span></h3>
-        <form id="route-bucket-form" onsubmit="promoteBucket(event)">
-            <input type="hidden" name="vhost_id" id="route-bucket-vhost-id">
-            <input type="hidden" name="bucket" id="route-bucket-bucket">
-            <label>Target Pool
-                <select name="pool_id" id="route-bucket-pool-select">
-                    {% for p in pools %}
-                    <option value="{{ p.id }}">{{ p.name }}</option>
-                    {% endfor %}
-                </select>
-            </label>
-            <label><input type="checkbox" name="migrate"> Migrate existing objects</label>
-            <div class="modal-actions">
-                <button type="submit" class="btn btn-primary">Route</button>
-                <button type="button" class="btn" onclick="hideModal('route-bucket-modal')">Cancel</button>
-            </div>
-        </form>
+    <div class="card">
+        <h3>Active Migrations</h3>
+        <div class="stat">{{ active_migrations|length }}</div>
+        <a href="/web/migrations">View →</a>
+    </div>
+    <div class="card {% if last_reload and not last_reload.nginx_reload_ok %}card-error{% endif %}">
+        <h3>Last Nginx Reload</h3>
+        {% if last_reload %}
+        {% if last_reload.nginx_reload_ok %}
+        <span class="badge ok">OK</span>
+        {% else %}
+        <span class="badge error">FAILED</span>
+        {% endif %}
+        <p class="meta">{{ last_reload.created_at }}</p>
+        {% else %}
+        <span class="badge">—</span>
+        {% endif %}
+        <a href="/web/config">Config →</a>
     </div>
 </div>
 

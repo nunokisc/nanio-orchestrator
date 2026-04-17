@@ -76,22 +76,29 @@ async def sync_vhost_buckets_once(vhost_id: int) -> dict:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     async with get_db_ctx() as db:
+        # Snapshot existing states for change detection
+        existing_rows = await db.execute_fetchall(
+            "SELECT bucket, status FROM bucket_sync WHERE vhost_id = ?", (vhost_id,)
+        )
+        existing_states = {r["bucket"]: r["status"] for r in existing_rows}
+
         for b in buckets:
             bucket_name = b["name"]
             if bucket_name in routed:
                 new_status = "routed"
                 pool_id = routed[bucket_name]
             else:
-                # Preserve 'ignored' status if set by operator
-                existing = await db.execute_fetchall(
-                    "SELECT status FROM bucket_sync WHERE vhost_id = ? AND bucket = ?",
-                    (vhost_id, bucket_name),
-                )
-                if existing and dict(existing[0])["status"] == "ignored":
+                if existing_states.get(bucket_name) == "ignored":
                     new_status = "ignored"
                 else:
                     new_status = "unrouted"
                 pool_id = None
+
+            old_status = existing_states.get(bucket_name)
+            if old_status is None:
+                logger.info("vhost %d: new bucket '%s' discovered (%s)", vhost_id, bucket_name, new_status)
+            elif old_status != new_status:
+                logger.info("vhost %d: bucket '%s' status %s → %s", vhost_id, bucket_name, old_status, new_status)
 
             await db.execute(
                 """INSERT INTO bucket_sync (vhost_id, bucket, discovered_at, status, routed_pool_id)
@@ -106,6 +113,8 @@ async def sync_vhost_buckets_once(vhost_id: int) -> dict:
                 (vhost_id, bucket_name, now, new_status, pool_id),
             )
         await db.commit()
+
+    logger.info("vhost %d: sync done — %d bucket(s) found", vhost_id, len(buckets))
 
     reconciled = await _reconcile_routed_buckets(vhost_id)
     result: dict = {"vhost_id": vhost_id, "buckets_found": len(buckets), "synced_at": now}

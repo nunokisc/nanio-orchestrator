@@ -1,0 +1,186 @@
+{% extends "base.html" %}
+{% block title %}Buckets — nanio-orchestrator{% endblock %}
+{% block content %}
+<h1>Bucket Management</h1>
+
+<div class="actions" style="display:flex;align-items:center;gap:0.75rem">
+    <button class="btn btn-primary" onclick="syncAll()">↻ Sync All</button>
+    <span id="sync-status" style="color:var(--text-muted);font-size:0.9rem"></span>
+    <label style="margin-left:auto;font-size:0.9rem;color:var(--text-muted)">
+        Filter:
+        <select id="status-filter" onchange="applyFilter()" style="margin-left:0.4rem">
+            <option value="all">All</option>
+            <option value="unrouted" selected>Unrouted</option>
+            <option value="routed">Routed</option>
+            <option value="migrating">Migrating</option>
+            <option value="ignored">Ignored</option>
+        </select>
+    </label>
+</div>
+
+{% for v in vhosts %}
+<div class="card" id="vhost-{{ v.id }}" style="margin-top:1rem">
+    <div class="card-header">
+        <h3>{{ v.server_name }}</h3>
+        <div class="card-actions">
+            <button class="btn btn-sm" onclick="syncVhost({{ v.id }}, this)">↻ Sync</button>
+        </div>
+    </div>
+    <table>
+        <thead>
+            <tr>
+                <th>Bucket</th>
+                <th>Status</th>
+                <th>Pool</th>
+                <th>Discovered</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody id="buckets-{{ v.id }}">
+        {% for b in v.buckets %}
+            <tr class="bucket-row" data-status="{{ b.status }}">
+                <td><code>{{ b.bucket }}</code></td>
+                <td>
+                    {% if b.status == 'unrouted' %}<span class="badge warn">unrouted</span>
+                    {% elif b.status == 'routed' %}<span class="badge ok">routed</span>
+                    {% elif b.status == 'migrating' %}<span class="badge">migrating</span>
+                    {% elif b.status == 'ignored' %}<span class="badge">ignored</span>
+                    {% else %}<span class="badge">{{ b.status }}</span>{% endif %}
+                </td>
+                <td>{{ b.pool_name or '—' }}</td>
+                <td>{{ b.discovered_at or '—' }}</td>
+                <td>
+                    {% if b.status in ('unrouted', 'ignored') %}
+                    <button class="btn btn-xs btn-primary"
+                            onclick="showRouteModal({{ v.id }}, '{{ b.bucket }}')">Route</button>
+                    {% endif %}
+                    {% if b.status == 'unrouted' %}
+                    <button class="btn btn-xs"
+                            onclick="ignoreBucket({{ v.id }}, '{{ b.bucket }}')">Ignore</button>
+                    {% endif %}
+                </td>
+            </tr>
+        {% endfor %}
+        {% if not v.buckets %}
+            <tr><td colspan="5" class="empty">No buckets synced yet — click Sync</td></tr>
+        {% endif %}
+        </tbody>
+    </table>
+</div>
+{% endfor %}
+
+{% if not vhosts %}
+<div class="card empty-state">
+    <p>No vhosts with a default pool configured. Create a vhost with a default pool to start discovering buckets.</p>
+</div>
+{% endif %}
+
+<!-- Route / Promote Modal -->
+<div id="route-bucket-modal" class="modal hidden">
+    <div class="modal-content">
+        <h3>Route bucket: <code id="route-bucket-name"></code></h3>
+        <form id="route-bucket-form" onsubmit="promoteBucket(event)">
+            <input type="hidden" name="vhost_id" id="route-bucket-vhost-id">
+            <input type="hidden" name="bucket" id="route-bucket-bucket">
+            <label>Target Pool
+                <select name="pool_id" id="route-bucket-pool-select">
+                    {% for p in pools %}
+                    <option value="{{ p.id }}">{{ p.name }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label><input type="checkbox" name="migrate"> Migrate existing objects to target pool</label>
+            <div class="modal-actions">
+                <button type="submit" class="btn btn-primary">Route</button>
+                <button type="button" class="btn" onclick="hideModal('route-bucket-modal')">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const VHOST_IDS = {{ vhosts | map(attribute='id') | list | tojson }};
+
+function applyFilter() {
+    const filter = document.getElementById('status-filter').value;
+    document.querySelectorAll('.bucket-row').forEach(row => {
+        const status = row.dataset.status;
+        row.style.display = (filter === 'all' || status === filter) ? '' : 'none';
+    });
+}
+
+async function syncVhost(vhostId, btn) {
+    const orig = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '…'; }
+    try {
+        const res = await fetch(`/api/vhosts/${vhostId}/buckets/sync`, fetchOpts('POST'));
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        location.reload();
+    } catch (err) {
+        alert('Sync failed: ' + err.message);
+        if (btn) { btn.disabled = false; btn.textContent = orig; }
+    }
+}
+
+async function syncAll() {
+    const status = document.getElementById('sync-status');
+    status.textContent = 'Syncing…';
+    try {
+        await Promise.all(VHOST_IDS.map(id =>
+            fetch(`/api/vhosts/${id}/buckets/sync`, fetchOpts('POST'))
+        ));
+        location.reload();
+    } catch (err) {
+        status.textContent = 'Sync failed: ' + err.message;
+    }
+}
+
+function showRouteModal(vhostId, bucket) {
+    document.getElementById('route-bucket-vhost-id').value = vhostId;
+    document.getElementById('route-bucket-bucket').value = bucket;
+    document.getElementById('route-bucket-name').textContent = bucket;
+    document.getElementById('route-bucket-form').reset();
+    document.getElementById('route-bucket-vhost-id').value = vhostId;
+    document.getElementById('route-bucket-bucket').value = bucket;
+    showModal('route-bucket-modal');
+}
+
+async function promoteBucket(e) {
+    e.preventDefault();
+    const form = e.target;
+    const vhostId = form.vhost_id.value;
+    const bucket = form.bucket.value;
+    const poolId = parseInt(form.pool_id.value);
+    const migrate = form.migrate.checked;
+
+    const res = await fetch(`/api/vhosts/${vhostId}/buckets/${encodeURIComponent(bucket)}/promote`,
+        fetchOpts('POST', { pool_id: poolId, migrate }));
+    const data = await res.json();
+    hideModal('route-bucket-modal');
+    if (res.ok && data.ok) {
+        alert(`Bucket '${bucket}' routed to ${data.pool}${migrate ? ' (migration started)' : ''}`);
+        location.reload();
+    } else {
+        alert('Error: ' + (data.error || data.detail || JSON.stringify(data)));
+    }
+}
+
+async function ignoreBucket(vhostId, bucket) {
+    if (!confirm(`Mark '${bucket}' as ignored?`)) return;
+    const res = await fetch(`/api/vhosts/${vhostId}/buckets/${encodeURIComponent(bucket)}/ignore`,
+        fetchOpts('POST'));
+    const data = await res.json();
+    if (data.ok) location.reload();
+    else alert('Error: ' + (data.detail || JSON.stringify(data)));
+}
+
+// Auto-sync on page load if no buckets exist yet
+window.addEventListener('DOMContentLoaded', () => {
+    applyFilter();
+    const anyBucket = document.querySelector('.bucket-row');
+    if (!anyBucket) syncAll();
+});
+</script>
+{% endblock %}
