@@ -31,6 +31,13 @@ from nanio_orchestrator.nginx.generator import (
 router = APIRouter(prefix="/api/vhosts", tags=["vhosts"])
 
 
+async def _get_pool_name(db, pool_id: int | None) -> str | None:
+    if not pool_id:
+        return None
+    rows = await db.execute_fetchall("SELECT name FROM pools WHERE id = ?", (pool_id,))
+    return rows[0]["name"] if rows else None
+
+
 async def _audit(db, action, entity_type, entity_id,
                  before=None, after=None, reload_ok=None, reload_output=None):
     await db.execute(
@@ -102,12 +109,7 @@ async def create_vhost(body: VhostCreate):
         await _audit(db, "create", "vhost", vhost["id"], after=vhost)
         await db.commit()
 
-        # Write sidecar
-        default_pool_name = None
-        if vhost.get("default_pool_id"):
-            pr = await db.execute_fetchall("SELECT name FROM pools WHERE id = ?", (vhost["default_pool_id"],))
-            if pr:
-                default_pool_name = pr[0]["name"]
+        default_pool_name = await _get_pool_name(db, vhost.get("default_pool_id"))
         write_vhost_sidecar(vhost["id"], vhost["server_name"], vhost.get("default_pool_id"), default_pool_name)
 
         return vhost
@@ -155,12 +157,7 @@ async def update_vhost(vhost_id: int, body: VhostUpdate):
                      reload_ok=ok, reload_output=output)
         await db.commit()
 
-        # Update sidecar
-        default_pool_name = None
-        if after.get("default_pool_id"):
-            pr = await db.execute_fetchall("SELECT name FROM pools WHERE id = ?", (after["default_pool_id"],))
-            if pr:
-                default_pool_name = pr[0]["name"]
+        default_pool_name = await _get_pool_name(db, after.get("default_pool_id"))
         write_vhost_sidecar(after["id"], after["server_name"], after.get("default_pool_id"), default_pool_name)
 
         return after

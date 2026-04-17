@@ -340,7 +340,7 @@ async def rebuild_from_disk_endpoint(dry_run: bool = False, force: bool = False)
       - force: proceed even if DB has existing data (clears first)
     """
     from nanio_orchestrator.rebuild import rebuild_from_disk
-    from nanio_orchestrator.db import get_db_ctx
+    from nanio_orchestrator.db import get_db_ctx, CLEAR_TABLES
 
     if not dry_run and not force:
         # Check if DB already has data
@@ -354,14 +354,8 @@ async def rebuild_from_disk_endpoint(dry_run: bool = False, force: bool = False)
                 )
 
     if not dry_run and force:
-        # Clear all data tables (preserve schema)
         async with get_db_ctx() as db:
-            for table in [
-                "migration_log", "migrations", "object_migrations",
-                "node_configs", "bucket_sync", "pool_credentials",
-                "routes", "pool_members", "audit_log", "config_files",
-                "vhosts", "pools",
-            ]:
+            for table in CLEAR_TABLES:
                 await db.execute(f"DELETE FROM {table}")
             await db.commit()
 

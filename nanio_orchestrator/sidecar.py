@@ -197,34 +197,22 @@ def delete_migration_state(migration_id: int) -> None:
 # ── Scanning ──────────────────────────────────────────────────────────────────
 
 
-def scan_pool_sidecars() -> List[dict]:
-    """Scan all pool sidecar files."""
-    s = get_settings()
+def _scan_dir(directory: Path, pattern: str) -> List[dict]:
     results = []
-    for p in sorted(s.pools_dir.glob("*.meta.json")):
+    for p in sorted(directory.glob(pattern)):
         data = _read_json(str(p))
         if data:
             results.append(data)
     return results
+
+
+def scan_pool_sidecars() -> List[dict]:
+    return _scan_dir(get_settings().pools_dir, "*.meta.json")
 
 
 def scan_vhost_sidecars() -> List[dict]:
-    """Scan all vhost sidecar files."""
-    s = get_settings()
-    results = []
-    for p in sorted(s.vhosts_dir.glob("*.meta.json")):
-        data = _read_json(str(p))
-        if data:
-            results.append(data)
-    return results
+    return _scan_dir(get_settings().vhosts_dir, "*.meta.json")
 
 
 def scan_migration_states() -> List[dict]:
-    """Scan all migration state files."""
-    s = get_settings()
-    results = []
-    for p in sorted(s.migrations_dir.glob("*.state.json")):
-        data = _read_json(str(p))
-        if data:
-            results.append(data)
-    return results
+    return _scan_dir(get_settings().migrations_dir, "*.state.json")

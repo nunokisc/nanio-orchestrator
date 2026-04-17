@@ -163,6 +163,15 @@ CREATE TABLE IF NOT EXISTS migration_log (
 """
 
 
+# Tables to truncate when clearing all data (order respects FK constraints)
+CLEAR_TABLES = [
+    "migration_log", "migrations", "object_migrations",
+    "node_configs", "bucket_sync", "pool_credentials",
+    "routes", "pool_members", "audit_log", "config_files",
+    "vhosts", "pools",
+]
+
+
 def get_db_path() -> str:
     global _db_path
     if _db_path is None:

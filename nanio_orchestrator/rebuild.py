@@ -11,6 +11,7 @@ Reconstruct the entire database when the SQLite file is lost or corrupted:
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -73,6 +74,8 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
     async with get_db_ctx() as db:
         # Name → inserted ID mapping
         pool_name_to_id: Dict[str, int] = {}
+        # path → content cache (avoid re-reading files in step 5)
+        conf_content_cache: Dict[str, str] = {}
 
         # Step 2: import pools from nginx upstream configs + sidecars
         for conf_path in sorted(s.pools_dir.glob("*.conf")):
@@ -82,6 +85,7 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
                 continue
             if not is_managed_file(content):
                 continue
+            conf_content_cache[str(conf_path)] = content
 
             parsed = parse_upstream_block(content)
             if not parsed or not parsed["name"]:
@@ -134,6 +138,7 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
                 continue
             if not is_managed_file(content):
                 continue
+            conf_content_cache[str(conf_path)] = content
 
             parsed = parse_vhost_block(content)
             if not parsed or not parsed["server_name"]:
@@ -186,6 +191,7 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
                 route_count += 1
 
         # Step 4: import in-progress migrations from state files
+        vhost_rows = await db.execute_fetchall("SELECT id, server_name FROM vhosts")
         for state in migration_states:
             src_name = state.get("source_pool_name")
             dst_name = state.get("target_pool_name")
@@ -201,7 +207,6 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
 
             # Find vhost_id by looking up vhosts
             vhost_id_for_migration = None
-            vhost_rows = await db.execute_fetchall("SELECT id, server_name FROM vhosts")
             # Try to match via original vhost_id or just use any matching state
             if vhost_rows:
                 # Simple heuristic: use first vhost if only one
@@ -244,15 +249,9 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
             migration_count += 1
 
         # Step 5: rebuild config_files sha256 records
-        all_confs = list(s.pools_dir.glob("*.conf")) + list(s.vhosts_dir.glob("*.conf"))
-        for conf_path in all_confs:
-            try:
-                content = conf_path.read_text(encoding="utf-8")
-            except OSError:
-                continue
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for path_str, content in conf_content_cache.items():
             h = sha256_str(content)
-            from datetime import datetime, timezone
-            now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             await db.execute(
                 """INSERT INTO config_files
                    (path, sha256_disk, sha256_db, content_snapshot, last_synced_at)
@@ -262,7 +261,7 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
                      sha256_db = excluded.sha256_db,
                      content_snapshot = excluded.content_snapshot,
                      last_synced_at = excluded.last_synced_at""",
-                (str(conf_path), h, h, content, now),
+                (path_str, h, h, content, now),
             )
 
         await db.commit()
