@@ -18,10 +18,13 @@ NGINX (gateway machine)
 
 ORCHESTRATOR (:8080, internal only)
 │ writes config files + signals nginx
-├─► /etc/nginx/nanio/pools/*.conf     (upstream blocks)
-├─► /etc/nginx/nanio/vhosts/*.conf    (server blocks, proxy_pass only)
+├─► /etc/nginx/nanio/pools/*.conf          (upstream blocks)
+├─► /etc/nginx/nanio/pools/*.meta.json     (sidecar: pool type, description, encrypted credentials)
+├─► /etc/nginx/nanio/vhosts/*.conf         (server blocks, proxy_pass only)
+├─► /etc/nginx/nanio/vhosts/*.meta.json    (sidecar: default pool)
+├─► /etc/nginx/nanio/migrations/*.state.json  (sidecar: in-progress migration state)
 ├─► SQLite at /opt/nanio-orchestrator/data/orchestrator.db
-└─► Web UI + REST API
+└─► SQLite backup at /opt/nanio-orchestrator/data/orchestrator.db.bak (+ rotated copies)
 ```
 
 ## Quick Start — Production
@@ -51,12 +54,6 @@ python3 -m venv /opt/nanio-orchestrator/venv
 /opt/nanio-orchestrator/venv/bin/nanio-orchestrator install
 ```
 
-### Method D: bootstrap script (bare server)
-
-```bash
-bash scripts/bootstrap.sh --prod --source /path/to/nanio-orchestrator
-```
-
 After install, follow the printed instructions to configure and start the service.
 
 ## Quick Start — Development
@@ -77,7 +74,7 @@ pip install -e ".[dev]"
 python -m nanio_orchestrator
 ```
 
-Dev mode auto-detected when `dev.env` exists or `DEV=true` is set. In dev mode:
+Dev mode is auto-detected when `dev.env` exists or `DEV=true` is set. In dev mode:
 - DB at `./dev-data/orchestrator.db`
 - Nginx config at `./dev-data/nginx/`
 - All nginx commands are **dry-run** (printed, not executed)
@@ -86,33 +83,67 @@ Dev mode auto-detected when `dev.env` exists or `DEV=true` is set. In dev mode:
 
 ## Configuration Reference
 
-All settings via `/etc/nanio-orchestrator/config.env` (production) or `dev.env` (development):
+All settings via `/etc/nanio-orchestrator/config.env` (production) or `dev.env` (development).
+Every variable is prefixed with `NANIO_ORCHESTRATOR_`.
+
+### Core
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `NANIO_ORCHESTRATOR_HOST` | `0.0.0.0` | Bind address |
-| `NANIO_ORCHESTRATOR_PORT` | `8080` | Listen port |
-| `NANIO_ORCHESTRATOR_API_KEY` | `changeme` | API authentication key |
-| `NANIO_ORCHESTRATOR_DB_PATH` | `/opt/nanio-orchestrator/data/orchestrator.db` | SQLite database path |
-| `NANIO_ORCHESTRATOR_NGINX_CONFIG_DIR` | `/etc/nginx/nanio` | Directory for generated nginx configs |
-| `NANIO_ORCHESTRATOR_LOG_LEVEL` | `info` | Log level (debug, info, warning, error) |
-| `NANIO_ORCHESTRATOR_DRIFT_INTERVAL` | `60` | Drift check interval in seconds |
-| `NANIO_ORCHESTRATOR_SESSION_TTL` | `28800` | Web UI session duration in seconds (8 hours) |
+| `HOST` | `0.0.0.0` | Bind address |
+| `PORT` | `8080` | Listen port |
+| `API_KEY` | `changeme` | API authentication key |
+| `DB_PATH` | `/opt/nanio-orchestrator/data/orchestrator.db` | SQLite database path |
+| `NGINX_CONFIG_DIR` | `/etc/nginx/nanio` | Root directory for generated nginx configs |
+| `LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warning`, `error`) |
+| `SESSION_TTL` | `28800` | Web UI session duration in seconds (8 hours) |
+| `SECRET` | _(unset)_ | Fernet key for credential encryption at rest. Generate with: `python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
+
+### S3 / Bucket Sync
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `S3_ACCESS_KEY` | _(unset)_ | Global S3 access key (used when no per-pool credentials are set) |
+| `S3_SECRET_KEY` | _(unset)_ | Global S3 secret key |
+| `S3_PROXY_PORT` | `8081` | Internal S3 listing proxy port |
+| `BUCKET_SYNC_INTERVAL` | `300` | Seconds between automatic bucket list syncs |
+
+### Migrations (rclone)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RCLONE_PATH` | `rclone` | Path to the rclone binary |
+| `MIGRATION_MAX_PARALLEL` | `2` | Maximum concurrent migrations |
+| `MIGRATION_BANDWIDTH_LIMIT` | _(unset)_ | rclone `--bwlimit` value, e.g. `50M` |
+| `MIGRATION_CHECKERS` | `8` | rclone `--checkers` value |
+| `MIGRATION_TRANSFERS` | `4` | rclone `--transfers` value |
+
+### Drift Detection
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DRIFT_INTERVAL` | `60` | Seconds between drift checks |
+
+### Database Backup
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DB_BACKUP_PATH` | `<DB_PATH>.bak` | Backup file path (defaults to DB path + `.bak`) |
+| `DB_BACKUP_INTERVAL` | `60` | Seconds between timed backups |
+| `DB_BACKUP_ROTATE` | `3` | Number of backup copies to keep (`.bak`, `.bak.2`, `.bak.3`) |
 
 ## Authentication
 
-nanio-orchestrator uses two separate auth schemes depending on the client:
-
 | Client | Method | Details |
 |--------|--------|---------|
-| **API** (`/api/*`) | `X-Orchestrator-Key` header | Pass the API key as a request header; missing/wrong key returns `401 {"detail": "..."}`  |
-| **Web UI** (`/web/*`, `/`) | Session cookie | Log in at `/login` with the API key; an HMAC-signed `nanio_session` cookie is issued with a configurable TTL |
+| **API** (`/api/*`) | `X-Orchestrator-Key` header | Missing/wrong key returns `401` |
+| **Web UI** (`/web/*`, `/`) | Session cookie | Log in at `/login`; HMAC-signed `nanio_session` cookie issued with configurable TTL |
 
 Public endpoints (no auth required): `/api/health`, `/api/docs`, `/api/redoc`, `/api/openapi.json`, `/login`, `/logout`, `/static/*`.
 
 ## API Reference
 
-All API endpoints (`/api/*`) require the `X-Orchestrator-Key` header (except `/api/health`).
+All endpoints under `/api/*` require the `X-Orchestrator-Key` header, except `/api/health`.
 
 ### Pools
 
@@ -120,16 +151,26 @@ All API endpoints (`/api/*`) require the `X-Orchestrator-Key` header (except `/a
 |--------|----------|-------------|
 | GET | `/api/pools` | List all pools |
 | POST | `/api/pools` | Create pool |
-| GET | `/api/pools/:id` | Get pool details |
+| GET | `/api/pools/:id` | Get pool |
 | PUT | `/api/pools/:id` | Update pool |
-| DELETE | `/api/pools/:id` | Delete pool (rejects if routes reference it) |
+| DELETE | `/api/pools/:id` | Delete pool (rejected if routes reference it) |
 | GET | `/api/pools/:id/members` | List pool members |
-| POST | `/api/pools/:id/members` | Add member to pool |
+| POST | `/api/pools/:id/members` | Add member |
 | PUT | `/api/pools/:id/members/:mid` | Update member |
 | DELETE | `/api/pools/:id/members/:mid` | Remove member |
-| GET | `/api/pools/:id/members/:mid/node-config` | Generate node config (GET with query params) |
-| POST | `/api/pools/:id/members/:mid/node-config` | Generate node config (POST with body) |
+| GET | `/api/pools/:id/members/:mid/node-config` | Generate node config (query params) |
+| POST | `/api/pools/:id/members/:mid/node-config` | Generate node config (body) |
 | GET | `/api/pools/:id/node-config-summary` | Node config summary for all members |
+
+### Pool Credentials
+
+Per-pool S3 credentials, encrypted at rest with Fernet. Requires `SECRET` to be set.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/pools/:id/credentials` | Get credentials (access key masked) |
+| PUT | `/api/pools/:id/credentials` | Store or replace credentials |
+| DELETE | `/api/pools/:id/credentials` | Remove credentials |
 
 ### Vhosts + Routes
 
@@ -137,37 +178,196 @@ All API endpoints (`/api/*`) require the `X-Orchestrator-Key` header (except `/a
 |--------|----------|-------------|
 | GET | `/api/vhosts` | List all vhosts |
 | POST | `/api/vhosts` | Create vhost |
-| GET | `/api/vhosts/:id` | Get vhost details |
+| GET | `/api/vhosts/:id` | Get vhost |
 | PUT | `/api/vhosts/:id` | Update vhost |
-| DELETE | `/api/vhosts/:id` | Delete vhost (rejects if routes exist) |
-| GET | `/api/vhosts/:id/routes` | List routes for vhost |
+| DELETE | `/api/vhosts/:id` | Delete vhost (rejected if routes exist) |
+| GET | `/api/vhosts/:id/routes` | List routes |
 | POST | `/api/vhosts/:id/routes` | Add route |
 | PUT | `/api/vhosts/:id/routes/:rid` | Update route |
 | DELETE | `/api/vhosts/:id/routes/:rid` | Delete route |
-| GET | `/api/vhosts/:id/preview` | Preview vhost config |
+| GET | `/api/vhosts/:id/preview` | Preview rendered server block |
+
+### Bucket Sync
+
+Tracks buckets discovered on the default pool of each vhost. Background sync runs every `BUCKET_SYNC_INTERVAL` seconds.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/vhosts/:id/buckets` | List buckets with routing status (`unrouted`, `routed`, `migrating`, `ignored`). Pass `?fetch_counts=true` to include object counts. |
+| POST | `/api/vhosts/:id/buckets/sync` | Trigger an immediate bucket list sync |
+| POST | `/api/vhosts/:id/buckets/:bucket/promote` | Promote a bucket: create it on the target pool, add an nginx route, optionally start migration |
+| POST | `/api/vhosts/:id/buckets/:bucket/ignore` | Mark a bucket as ignored |
+| POST | `/api/vhosts/:id/buckets/:bucket/migrate` | Start (or restart) object migration for a routed bucket |
+| GET | `/api/vhosts/:id/buckets/:bucket/migrate/status` | Get migration status for a bucket |
+
+### Migrations (rclone)
+
+Full bucket migrations using rclone. Phases: `pending → copying → verifying → switching → done`.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/migrations` | Start a new migration |
+| GET | `/api/migrations` | List migrations (filter with `?phase=`) |
+| GET | `/api/migrations/:id` | Get migration details |
+| POST | `/api/migrations/:id/cancel` | Cancel a running migration |
+| GET | `/api/migrations/:id/log` | Get migration log entries |
 
 ### Config Operations
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/config/status` | Drift status per file, last reload info |
+| GET | `/api/config/status` | Drift status per file |
 | POST | `/api/config/validate` | Run `nginx -t` |
 | POST | `/api/config/reload` | Run `nginx -s reload` |
 | POST | `/api/config/sync` | Re-import disk state → DB |
 | POST | `/api/config/rebuild` | Rebuild all files from DB → disk → reload |
 | GET | `/api/config/preview/pool/:id` | Preview upstream config |
 | GET | `/api/config/preview/vhost/:id` | Preview server block config |
+| POST | `/api/config/rebuild-from-disk` | Reconstruct DB from nginx configs + sidecar files (see [DB Resilience](#db-resilience)) |
+| POST | `/api/config/backup` | Trigger an immediate database backup |
 
 ### Health + Audit
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/health` | Health check (no auth required) |
-| GET | `/api/audit` | Audit log with filters (?page=&entity_type=&from=&to=) |
+| GET | `/api/audit` | Audit log (`?page=&entity_type=&from=&to=`) |
+
+## How Nginx Config is Managed
+
+### Write Path
+
+Every config change follows this exact sequence:
+
+1. Render new config from DB state (Jinja2 templates)
+2. Write to `<file>.tmp`
+3. Run `nginx -t` — if it fails: delete `.tmp`, return error, stop
+4. `os.rename(<file>.tmp, <file>)` — atomic on POSIX
+5. Run `nginx -s reload`
+6. Update DB: sha256, content snapshot, audit log with nginx output
+7. Trigger a DB backup
+
+### Sidecar Files
+
+Alongside each nginx config file the orchestrator writes a `.meta.json` sidecar containing
+data that cannot be reconstructed from the nginx config alone:
+
+```
+/etc/nginx/nanio/
+├── pools/
+│   ├── pool-2025.conf           # upstream block
+│   └── pool-2025.meta.json      # type, description, encrypted credentials
+├── vhosts/
+│   ├── s3.xpto.pt.conf          # server block
+│   └── s3.xpto.pt.meta.json     # default_pool_id + name
+└── migrations/
+    └── migration-7.state.json   # in-progress migration progress
+```
+
+Sidecars are written atomically (`.tmp` → rename) and are the foundation for
+[DB resilience](#db-resilience).
+
+### Drift Detection
+
+Background check every `DRIFT_INTERVAL` seconds:
+- SHA256 each managed file on disk
+- Compare with the last known hash in DB
+- If mismatch: alert in dashboard and `GET /api/config/status`
+- **Never auto-corrects** — the operator decides
+
+### Pool Types
+
+| Type | Members | Nginx `backup` flag | Description |
+|------|---------|---------------------|-------------|
+| `nanio` | All `active` | Never | Shared storage — any member handles any request |
+| `http` | `primary` + `replica` | Yes, for replicas | Read-only HTTP serve with failover |
+| `cold` | `primary` + `replica` | Yes, for replicas | Read-only archive with failover |
+
+### Node Config Generator
+
+Generates config snippets for upstream nodes (rendered only, never deployed):
+- **nanio-only**: nanio `options.toml` + systemd unit
+- **nginx-only**: nginx server block for file serving
+- **nginx-nanio**: both nanio config and nginx proxy config
+
+Access via API or the "Node Setup" button in the Web UI.
+
+## DB Resilience
+
+The database is not the source of truth — the nginx config files and their sidecar files are.
+The DB can be fully rebuilt from disk after loss or corruption.
+
+### Automatic Backup
+
+The DB is backed up automatically:
+- After every successful nginx reload
+- On a periodic timer (`DB_BACKUP_INTERVAL`, default 60 s)
+- On demand via `POST /api/config/backup`
+
+Backups are rotated: `.bak`, `.bak.2`, `.bak.3`, … up to `DB_BACKUP_ROTATE` copies.
+
+### Rebuild from Disk
+
+If the DB is lost or corrupted, reconstruct it without downtime (nginx keeps running):
+
+```bash
+# Preview what would be imported
+nanio-orchestrator rebuild-db --dry-run
+
+# Rebuild (safe — DB must be empty)
+nanio-orchestrator rebuild-db
+
+# Rebuild over existing data
+nanio-orchestrator rebuild-db --force
+```
+
+Or via API:
+
+```bash
+curl -X POST http://localhost:8080/api/config/rebuild-from-disk \
+  -H "X-Orchestrator-Key: <key>"
+
+# Force over existing data
+curl -X POST "http://localhost:8080/api/config/rebuild-from-disk?force=true" \
+  -H "X-Orchestrator-Key: <key>"
+```
+
+What is recovered:
+
+| Data | Source | Recovered? |
+|------|--------|-----------|
+| Pools (name, lb_method, keepalive) | `pools/*.conf` | ✓ |
+| Pool members | `pools/*.conf` | ✓ |
+| Pool type, description | `pools/*.meta.json` | ✓ |
+| Encrypted credentials | `pools/*.meta.json` | ✓ |
+| Vhosts (server_name, SSL, ports) | `vhosts/*.conf` | ✓ |
+| Routes | `vhosts/*.conf` | ✓ |
+| Vhost default_pool_id | `vhosts/*.meta.json` | ✓ |
+| In-progress migrations | `migrations/*.state.json` | ✓ (reset to pending, will auto-resume) |
+| config_files sha256 records | recomputed from disk | ✓ |
+| bucket_sync | live `ListBuckets` call | ✓ (best-effort) |
+| audit_log | — | ✗ (historical only) |
+
+After rebuild, restart the service so migrations resume:
+
+```bash
+systemctl restart nanio-orchestrator
+```
+
+## CLI Reference
+
+```
+nanio-orchestrator [serve]            Start the server (default command)
+nanio-orchestrator install            Production install (run as root)
+nanio-orchestrator rebuild-db         Rebuild DB from disk
+  --dry-run                             Preview without writing
+  --force                               Overwrite existing DB data
+nanio-orchestrator config validate    Run nginx -t
+nanio-orchestrator config reload      Run nginx -s reload
+nanio-orchestrator config rebuild     Regenerate all config files from DB + reload
+```
 
 ## Offline / Air-gapped Deployment
-
-For servers without internet access:
 
 ```bash
 # On a machine with internet:
@@ -181,78 +381,21 @@ python3 -m venv /opt/nanio-orchestrator/venv
 
 The wheel bundles all dependencies. No internet required on the target server.
 
-## How Nginx Config is Managed
-
-### Write Path
-
-Every config change follows this exact sequence:
-
-1. Render new config from DB state
-2. Write to `<file>.tmp`
-3. Run `nginx -t` — if fails: delete `.tmp`, return error, stop
-4. `os.rename(<file>.tmp, <file>)` — atomic on POSIX
-5. Run `nginx -s reload`
-6. Update DB: sha256, content_snapshot, audit_log with nginx output
-
-### Config Files on Disk = Source of Truth
-
-The orchestrator generates config under `/etc/nginx/nanio/`:
-
-```
-/etc/nginx/nanio/
-├── pools/
-│   ├── pool-2025.conf        # upstream blocks
-│   └── pool-cdn.conf
-└── vhosts/
-    ├── s3.xpto.pt.conf       # server blocks (proxy_pass only)
-    └── cdn.xpto.pt.conf
-```
-
-### Drift Detection
-
-Background check every 60 seconds:
-- SHA256 each managed file on disk
-- Compare with last known hash in DB
-- If mismatch: alert in dashboard and `/api/config/status`
-- **Never auto-corrects** — operator decides
-
-### Startup Reconciliation
-
-On start, the orchestrator reads all files under `/etc/nginx/nanio/` with the
-`# managed by nanio-orchestrator` marker and reconciles with the DB.
-
-### Pool Types
-
-| Type | Members | Nginx `backup` | Description |
-|------|---------|-----------------|-------------|
-| `nanio` | All `active` | Never | Shared storage — any member handles any request |
-| `http` | `primary` + `replica` | Yes, for replicas | Read-only HTTP serve with failover |
-| `cold` | `primary` + `replica` | Yes, for replicas | Read-only archive with failover |
-
-### Node Config Generator
-
-The orchestrator can generate config snippets for upstream nodes (not deployed — just rendered):
-- **nanio-only**: nanio options.toml + systemd unit
-- **nginx-only**: nginx server block for file serving
-- **nginx-nanio**: both nanio config and nginx proxy config
-
-Access via API or the "Node Setup" button in the Web UI.
-
 ## Troubleshooting
 
 ### `nginx -t` fails after config change
 
 The orchestrator never applies a config that fails validation. Check the error output
 in the API response or audit log. Common causes:
-- Missing SSL certificates (referenced in vhost config)
-- Upstream pool name conflict with existing nginx config
+- Missing SSL certificates referenced in the vhost config
+- Upstream pool name conflicts with an existing nginx config
 - `include /etc/nginx/nanio/pools/*.conf;` not added to `nginx.conf`
 
 ### Drift detected
 
 A file was modified outside the orchestrator. Options:
-1. **Accept the change**: `POST /api/config/sync` to import disk state
-2. **Restore from DB**: `POST /api/config/rebuild` to overwrite with DB state
+1. **Accept the change**: `POST /api/config/sync` to import disk state into DB
+2. **Restore from DB**: `POST /api/config/rebuild` to overwrite disk with DB state
 
 ### Service won't start
 
@@ -263,20 +406,30 @@ nanio-orchestrator config validate     # test nginx config
 
 Common causes:
 - DB path not writable
-- Port 8080 already in use (change in config.env)
-- Python version too old (need 3.9+)
+- Port 8080 already in use (change `PORT` in config.env)
+- Python version too old (requires 3.9+)
+
+### Credentials API returns 500
+
+`SECRET` is not set or is not a valid Fernet key. Generate one:
+
+```bash
+python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Set `NANIO_ORCHESTRATOR_SECRET=<generated-key>` in config.env and restart.
 
 ### API returns 401
 
-All API endpoints (except `/api/health`) require the `X-Orchestrator-Key` header.
-Set it to the value of `NANIO_ORCHESTRATOR_API_KEY` in your config.
+All API endpoints (except `/api/health`) require `X-Orchestrator-Key` set to
+`NANIO_ORCHESTRATOR_API_KEY`.
 
 ### Web UI keeps redirecting to /login
 
 - Cookies blocked? Make sure the browser allows cookies for the host.
-- Accessing over HTTP behind a TLS-terminating proxy? Ensure `X-Forwarded-Proto: https` is forwarded so the `Secure` flag is set correctly on the cookie.
-- Session expired? Default TTL is 8 hours (`NANIO_ORCHESTRATOR_SESSION_TTL=28800`). Increase if needed.
-- API key changed? Old cookies become invalid immediately; re-login.
+- Behind a TLS-terminating proxy? Ensure `X-Forwarded-Proto: https` is forwarded so the `Secure` cookie flag is set correctly.
+- Session expired? Default TTL is 8 hours. Increase `SESSION_TTL` if needed.
+- API key changed? Old cookies are immediately invalidated; re-login.
 
 ## License
 
