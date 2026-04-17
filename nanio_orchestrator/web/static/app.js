@@ -458,7 +458,22 @@ async function syncConfig() {
             headers: getHeaders(),
         });
         const data = await res.json();
-        showConfigResult(true, `Imported ${data.count} files:\n${(data.imported || []).join('\n')}`);
+        if (!res.ok) {
+            showConfigResult(false, data.detail || 'Sync failed');
+            return;
+        }
+        let msg = 'Sync from disk complete:\n\n';
+        msg += `  Pools:   ${data.pools_new} new, ${data.pools_updated} updated\n`;
+        msg += `  Members: ${data.members_new} new\n`;
+        msg += `  Vhosts:  ${data.vhosts_new} new, ${data.vhosts_updated} updated\n`;
+        msg += `  Routes:  ${data.routes_synced} synced\n`;
+        msg += `  Config files: ${data.files_synced} recorded`;
+        if (data.warnings && data.warnings.length) {
+            msg += '\n\nWarnings:\n' + data.warnings.join('\n');
+        }
+        showConfigResult(true, msg);
+        const anyNew = data.pools_new > 0 || data.vhosts_new > 0 || data.routes_synced > 0;
+        if (anyNew) setTimeout(() => location.reload(), 1500);
     } catch (err) {
         showConfigResult(false, 'Error: ' + err.message);
     }
