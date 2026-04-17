@@ -323,6 +323,23 @@ async def get_object(
     return body if status == 200 else None
 
 
+async def delete_object(
+    address: str,
+    bucket: str,
+    key: str,
+    access_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+    region: str = "us-east-1",
+) -> bool:
+    """Delete an object. Returns True on success (including 404 = already gone)."""
+    encoded_key = urllib.parse.quote(key, safe="/")
+    status, _ = await asyncio.to_thread(
+        _do_request, "DELETE", address, f"/{bucket}/{encoded_key}", "",
+        b"", access_key, secret_key, region
+    )
+    return status in (200, 204, 404)
+
+
 async def put_object(
     address: str,
     bucket: str,

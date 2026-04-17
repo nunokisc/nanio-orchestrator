@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
-from typing import List
+from typing import List, Optional
 
 import aiofiles
 from fastapi import APIRouter, HTTPException
 
+logger = logging.getLogger(__name__)
+
 from nanio_orchestrator.backup import trigger_backup
+from nanio_orchestrator.credentials import get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
+from nanio_orchestrator.s3client import bucket_exists, create_bucket, count_objects
 from nanio_orchestrator.sidecar import write_vhost_sidecar, delete_vhost_sidecar
 from nanio_orchestrator.models import (
     RouteCreate,
@@ -250,17 +255,21 @@ async def list_routes(vhost_id: int):
         return [dict(r) for r in routes]
 
 
-@router.post("/{vhost_id}/routes", response_model=RouteOut, status_code=201)
+@router.post("/{vhost_id}/routes", status_code=201)
 async def create_route(vhost_id: int, body: RouteCreate):
     if body.path_prefix == "/":
         raise HTTPException(
             400,
             "The '/' route is managed automatically via the vhost's default_pool_id and cannot be created manually",
         )
+
+    vhost_default_pool_id: Optional[int] = None
+
     async with get_db_ctx() as db:
         rows = await db.execute_fetchall("SELECT * FROM vhosts WHERE id = ?", (vhost_id,))
         if not rows:
             raise HTTPException(404, "Vhost not found")
+        vhost_default_pool_id = dict(rows[0]).get("default_pool_id")
 
         pool_rows = await db.execute_fetchall("SELECT * FROM pools WHERE id = ?", (body.pool_id,))
         if not pool_rows:
@@ -291,7 +300,54 @@ async def create_route(vhost_id: int, body: RouteCreate):
         await _audit(db, "create", "route", route["id"], after=route,
                      reload_ok=ok, reload_output=output)
         await db.commit()
-        return route
+
+    # ── Auto-provision bucket on target pool ──────────────────────────────────
+    bucket_segment = body.path_prefix.strip("/").split("/")[0]
+    bucket_provisioned = False
+    objects_on_source: Optional[int] = None
+
+    if bucket_segment:
+        try:
+            async with get_db_ctx() as db:
+                member_rows = await db.execute_fetchall(
+                    "SELECT address FROM pool_members WHERE pool_id = ? AND enabled = 1 ORDER BY id LIMIT 1",
+                    (body.pool_id,),
+                )
+            if member_rows:
+                target_member = member_rows[0]["address"]
+                target_ak, target_sk, _ = await get_pool_s3_params(body.pool_id)
+                exists = await bucket_exists(target_member, bucket_segment,
+                                             access_key=target_ak, secret_key=target_sk)
+                if not exists:
+                    ok_create, _ = await create_bucket(target_member, bucket_segment,
+                                                       access_key=target_ak, secret_key=target_sk)
+                    bucket_provisioned = ok_create
+                    logger.info("route create: provisioned bucket '%s' on pool %d", bucket_segment, body.pool_id)
+        except Exception as exc:
+            logger.warning("route create: target bucket provisioning failed for '%s': %s", bucket_segment, exc)
+
+        if vhost_default_pool_id:
+            try:
+                async with get_db_ctx() as db:
+                    src_rows = await db.execute_fetchall(
+                        "SELECT address FROM pool_members WHERE pool_id = ? AND enabled = 1 ORDER BY id LIMIT 1",
+                        (vhost_default_pool_id,),
+                    )
+                if src_rows:
+                    src_member = src_rows[0]["address"]
+                    src_ak, src_sk, _ = await get_pool_s3_params(vhost_default_pool_id)
+                    objects_on_source = await count_objects(src_member, bucket_segment,
+                                                            access_key=src_ak, secret_key=src_sk)
+            except Exception as exc:
+                logger.warning("route create: source object count failed for '%s': %s", bucket_segment, exc)
+
+    return {
+        **route,
+        "bucket": bucket_segment,
+        "bucket_provisioned": bucket_provisioned,
+        "objects_on_source": objects_on_source,
+        "default_pool_id": vhost_default_pool_id,
+    }
 
 
 @router.put("/{vhost_id}/routes/{route_id}", response_model=RouteOut)

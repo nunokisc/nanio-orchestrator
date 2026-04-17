@@ -6,6 +6,7 @@
 <div class="actions" style="display:flex;align-items:center;gap:0.75rem">
     <button class="btn btn-primary" onclick="syncAll()">↻ Sync All</button>
     <span id="sync-status" style="color:var(--text-muted);font-size:0.9rem"></span>
+    <button class="btn" onclick="scanAllOrphans()">🔍 Scan Orphans</button>
     <label style="margin-left:auto;font-size:0.9rem;color:var(--text-muted)">
         Filter:
         <select id="status-filter" onchange="applyFilter()" style="margin-left:0.4rem">
@@ -24,6 +25,7 @@
         <h3>{{ v.server_name }}</h3>
         <div class="card-actions">
             <button class="btn btn-sm" onclick="syncVhost({{ v.id }}, this)">↻ Sync</button>
+            <button class="btn btn-sm" onclick="scanOrphans({{ v.id }}, this)">Orphans</button>
         </div>
     </div>
     <table>
@@ -95,6 +97,23 @@
                 <button type="button" class="btn" onclick="hideModal('route-bucket-modal')">Cancel</button>
             </div>
         </form>
+    </div>
+</div>
+<!-- Orphan Scan Results Modal -->
+<div id="orphan-modal" class="modal hidden">
+    <div class="modal-content">
+        <h3>Orphan Content Scan</h3>
+        <p style="color:var(--text-muted);font-size:0.9rem">These buckets are routed to a dedicated pool but still have objects on the default pool. Purge to free space.</p>
+        <div id="orphan-results">
+            <table>
+                <thead><tr><th>Bucket</th><th>Objects on Default Pool</th><th></th></tr></thead>
+                <tbody id="orphan-list"></tbody>
+            </table>
+        </div>
+        <input type="hidden" id="orphan-vhost-id">
+        <div class="modal-actions">
+            <button class="btn" onclick="hideModal('orphan-modal')">Close</button>
+        </div>
     </div>
 </div>
 {% endblock %}
@@ -176,11 +195,63 @@ async function ignoreBucket(vhostId, bucket) {
     else alert('Error: ' + (data.detail || JSON.stringify(data)));
 }
 
-// Auto-sync on page load if no buckets exist yet
+async function scanOrphans(vhostId, btn) {
+    const origText = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = 'Scanning…'; }
+    try {
+        const res = await fetch(`/api/vhosts/${vhostId}/buckets/orphans`, fetchOpts('GET'));
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (btn) { btn.disabled = false; btn.textContent = origText; }
+        if (data.orphans.length === 0) {
+            alert(`No orphan content found (checked ${data.checked} routed bucket(s)).`);
+            return;
+        }
+        document.getElementById('orphan-vhost-id').value = vhostId;
+        document.getElementById('orphan-list').innerHTML = data.orphans.map(o =>
+            `<tr>
+                <td><code>${escapeHtml(o.bucket)}</code></td>
+                <td>${o.objects}</td>
+                <td><button class="btn btn-xs btn-danger" onclick="purgeOrphan(${vhostId}, '${escapeHtml(o.bucket)}', this)">Purge</button></td>
+            </tr>`
+        ).join('');
+        showModal('orphan-modal');
+    } catch (err) {
+        if (btn) { btn.disabled = false; btn.textContent = origText; }
+        alert('Scan failed: ' + err.message);
+    }
+}
+
+async function scanAllOrphans() {
+    for (const id of VHOST_IDS) {
+        await scanOrphans(id, null);
+    }
+}
+
+async function purgeOrphan(vhostId, bucket, btn) {
+    if (!confirm(`Delete all objects from default pool's "${bucket}" bucket?\n\nThe empty bucket stub is kept for bucket listing. Only objects (content) will be deleted.`)) return;
+    const origText = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = 'Purging…'; }
+    try {
+        const res = await fetch(`/api/vhosts/${vhostId}/buckets/${encodeURIComponent(bucket)}/purge-orphan`,
+            fetchOpts('POST'));
+        const data = await res.json();
+        if (data.ok) {
+            alert(`Purged ${data.deleted} object(s) from "${bucket}" on default pool.`);
+            if (btn) btn.closest('tr').remove();
+            if (!document.querySelector('#orphan-list tr')) hideModal('orphan-modal');
+        } else {
+            if (btn) { btn.disabled = false; btn.textContent = origText; }
+            alert('Error: ' + (data.error || JSON.stringify(data)));
+        }
+    } catch (err) {
+        if (btn) { btn.disabled = false; btn.textContent = origText; }
+        alert('Purge failed: ' + err.message);
+    }
+}
+
 window.addEventListener('DOMContentLoaded', () => {
     applyFilter();
-    const anyBucket = document.querySelector('.bucket-row');
-    if (!anyBucket) syncAll();
 });
 </script>
 {% endblock %}

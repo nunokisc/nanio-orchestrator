@@ -1,11 +1,13 @@
 """rclone-based migration engine with state machine and crash recovery.
 
 State machine phases:
-  pending → copying → verifying → switching → done
+  pending → copying → verifying → switching → purge_source → done
                                            → error
   Any phase can transition to 'error' or 'cancelled'.
+  purge_source deletes objects from the source bucket after a successful switch,
+  eliminating orphan copies. Failure is non-fatal: migration is still marked done.
 
-rclone is invoked as a subprocess for the copy/verify phases.
+rclone is invoked as a subprocess for the copy/verify/purge phases.
 A temporary rclone config is generated from pool credentials.
 """
 
@@ -306,6 +308,54 @@ def _parse_rclone_stats(line: str) -> Optional[dict]:
     return result or None
 
 
+async def _run_rclone_delete(migration_id: int, config_path: str, remote: str, phase: str) -> bool:
+    """Run rclone delete to remove all objects from a remote bucket. Returns True on success."""
+    s = get_settings()
+    cmd = [
+        s.rclone_path, "delete", remote,
+        "--config", config_path,
+        "--log-level", "INFO",
+    ]
+    await _log(migration_id, phase, f"Running: {' '.join(cmd)}")
+    logger.info("migration %d [%s]: deleting objects from %s", migration_id, phase, remote)
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        async with get_db_ctx() as db:
+            await db.execute("UPDATE migrations SET rclone_pid=? WHERE id=?", (proc.pid, migration_id))
+            await db.commit()
+
+        async for raw in proc.stdout:
+            line = raw.decode(errors="replace").rstrip()
+            if line:
+                logger.debug("rclone [%d]: %s", migration_id, line)
+                await _log(migration_id, phase, line)
+
+        await proc.wait()
+        async with get_db_ctx() as db:
+            await db.execute("UPDATE migrations SET rclone_pid=NULL WHERE id=?", (migration_id,))
+            await db.commit()
+
+        if proc.returncode == 0:
+            await _log(migration_id, phase, "Source purge completed successfully")
+            logger.info("migration %d [%s]: rclone delete finished OK", migration_id, phase)
+            return True
+        else:
+            await _log(migration_id, phase, f"rclone delete exit code {proc.returncode}")
+            return False
+
+    except FileNotFoundError:
+        await _log(migration_id, phase, f"rclone binary not found at: {s.rclone_path}")
+        return False
+    except Exception as e:
+        await _log(migration_id, phase, f"rclone delete error: {e}")
+        return False
+
+
 # ── State machine: run a full migration ──────────────────────────────────────
 
 
@@ -395,6 +445,18 @@ async def run_migration(migration_id: int) -> None:
             await _log(migration_id, "switching", f"nginx test failed: {test_result.output}")
             # Don't fail the migration — route is already updated in DB
 
+        # ── Phase: purge_source ───────────────────────────────────────────
+        await _set_phase(migration_id, "purge_source")
+        await _log(migration_id, "purge_source",
+                   "Purging source bucket content to eliminate orphan copies on default pool")
+
+        purge_ok = await _run_rclone_delete(migration_id, config_path, src_remote, "purge_source")
+        if not purge_ok:
+            await _log(migration_id, "purge_source",
+                       "WARNING: Source purge had errors — orphan content may remain on source pool. "
+                       "Use the Orphan Scan on the Buckets page to clean up manually.")
+            logger.warning("Migration %d: source purge had errors (non-fatal)", migration_id)
+
         # ── Phase: done ───────────────────────────────────────────────────
         await _set_phase(migration_id, "done")
         await _log(migration_id, "done", f"Migration completed: {bucket} moved to pool {dst_pool_id}")
@@ -461,21 +523,36 @@ async def cancel_migration(migration_id: int) -> bool:
 
 
 async def recover_interrupted_migrations() -> int:
-    """On startup, find migrations stuck in copying/verifying and restart them.
+    """On startup, find migrations stuck mid-flight and recover them.
 
     Returns the number of migrations recovered.
     """
     async with get_db_ctx() as db:
-        rows = await db.execute_fetchall(
+        active_rows = await db.execute_fetchall(
             "SELECT id FROM migrations WHERE phase IN ('pending', 'copying', 'verifying')"
+        )
+        # purge_source crashed: data is safe on destination — just mark done
+        purge_rows = await db.execute_fetchall(
+            "SELECT id FROM migrations WHERE phase = 'purge_source'"
         )
 
     count = 0
-    for row in rows:
+
+    # Handle migrations stuck mid-purge: mark done, orphan scan can clean up
+    for row in purge_rows:
+        mid = row["id"]
+        await _log(mid, "recovery",
+                   "Found migration stuck in purge_source — marking done. "
+                   "Use Orphan Scan on Buckets page to clean up residual source content.")
+        await _set_phase(mid, "done")
+        logger.info("Migration %d: purge_source → done (data safe on target)", mid)
+        count += 1
+
+    # Restart migrations interrupted during copy/verify
+    for row in active_rows:
         mid = row["id"]
         if mid not in _active_tasks:
             await _log(mid, "recovery", "Restarting interrupted migration after crash/restart")
-            # Reset phase to pending so the state machine runs from the beginning
             await _set_phase(mid, "pending")
             task = asyncio.create_task(run_migration(mid))
             _active_tasks[mid] = task

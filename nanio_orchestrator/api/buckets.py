@@ -25,6 +25,7 @@ from nanio_orchestrator.nginx.generator import generate_vhost_config, record_fil
 from nanio_orchestrator.s3client import (
     count_objects,
     create_bucket,
+    delete_object,
     get_object,
     list_objects,
     put_object,
@@ -464,3 +465,98 @@ async def migration_status(vhost_id: int, bucket: str):
         started_at=m.get("started_at"),
         finished_at=m.get("finished_at"),
     )
+
+
+# ── Orphan detection ──────────────────────────────────────────────────────────
+
+
+@router.get("/{vhost_id}/buckets/orphans")
+async def list_orphans(vhost_id: int):
+    """Scan routed buckets for orphan content still on the default pool.
+
+    A bucket is an orphan when it has been routed to a dedicated pool but the
+    default pool's copy still contains objects.  This typically happens when a
+    migration completed before the purge_source phase was introduced, or when
+    purge_source failed.
+    """
+    async with get_db_ctx() as db:
+        vhost = await _require_vhost_with_default_pool(vhost_id, db)
+        default_pool_id = vhost["default_pool_id"]
+        default_member = await _first_enabled_member(default_pool_id, db)
+        routed_rows = await db.execute_fetchall(
+            "SELECT bucket FROM bucket_sync WHERE vhost_id = ? AND status = 'routed'",
+            (vhost_id,),
+        )
+
+    default_ak, default_sk, _ = await get_pool_s3_params(default_pool_id)
+
+    orphans = []
+    for row in routed_rows:
+        bucket_name = row["bucket"]
+        try:
+            obj_count = await count_objects(
+                default_member, bucket_name, access_key=default_ak, secret_key=default_sk,
+            )
+            if obj_count > 0:
+                orphans.append({"bucket": bucket_name, "objects": obj_count})
+        except Exception as exc:
+            logger.warning("orphan scan: error checking bucket '%s': %s", bucket_name, exc)
+
+    return {"vhost_id": vhost_id, "orphans": orphans, "checked": len(routed_rows)}
+
+
+@router.post("/{vhost_id}/buckets/{bucket}/purge-orphan")
+async def purge_orphan(vhost_id: int, bucket: str):
+    """Delete all objects from the default pool's copy of a routed bucket.
+
+    The bucket itself is preserved (needed for ListBuckets).  Only the object
+    content is removed so the default pool no longer serves stale data.
+    """
+    async with get_db_ctx() as db:
+        vhost = await _require_vhost_with_default_pool(vhost_id, db)
+        default_pool_id = vhost["default_pool_id"]
+        default_member = await _first_enabled_member(default_pool_id, db)
+
+        bs_rows = await db.execute_fetchall(
+            "SELECT status FROM bucket_sync WHERE vhost_id = ? AND bucket = ?",
+            (vhost_id, bucket),
+        )
+
+    if not bs_rows or dict(bs_rows[0])["status"] != "routed":
+        raise HTTPException(
+            400,
+            "Bucket is not in 'routed' status — only routed buckets can be orphan-purged",
+        )
+
+    default_ak, default_sk, _ = await get_pool_s3_params(default_pool_id)
+
+    try:
+        keys = await list_objects(default_member, bucket, access_key=default_ak, secret_key=default_sk)
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to list objects in bucket '{bucket}': {exc}")
+
+    deleted = 0
+    errors: list = []
+    for key in keys:
+        try:
+            ok = await delete_object(default_member, bucket, key, access_key=default_ak, secret_key=default_sk)
+            if ok:
+                deleted += 1
+            else:
+                errors.append(key)
+        except Exception as exc:
+            errors.append(key)
+            logger.warning("purge_orphan: error deleting '%s/%s': %s", bucket, key, exc)
+
+    logger.info(
+        "purge_orphan: vhost %d bucket '%s': deleted %d/%d objects (%d errors)",
+        vhost_id, bucket, deleted, len(keys), len(errors),
+    )
+
+    return {
+        "ok": len(errors) == 0,
+        "bucket": bucket,
+        "deleted": deleted,
+        "total": len(keys),
+        "errors": errors[:20],
+    }
