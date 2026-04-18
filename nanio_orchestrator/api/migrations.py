@@ -45,7 +45,15 @@ async def create_migration(body: RcloneMigrationCreate):
             "Wait for a running migration to finish or cancel one.",
         )
 
-    # Validate pools exist
+    # Validate pools exist and are distinct
+    if body.src_pool_id == body.dst_pool_id:
+        raise HTTPException(
+            400,
+            "Source and destination pools must be different. "
+            "Migrating a bucket to the same pool it already lives on would "
+            "copy the bucket onto itself and then purge all its content.",
+        )
+
     async with get_db_ctx() as db:
         for pid, label in [(body.src_pool_id, "Source"), (body.dst_pool_id, "Destination")]:
             rows = await db.execute_fetchall("SELECT id FROM pools WHERE id = ?", (pid,))

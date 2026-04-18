@@ -194,11 +194,20 @@ async def promote_bucket(vhost_id: int, bucket: str, body: BucketPromoteRequest)
         if existing_route:
             raise HTTPException(409, f"Route /{bucket}/ already exists for this vhost")
 
+        default_pool_id = vhost["default_pool_id"]
+
+        # Refuse to migrate when target is already the default pool
+        if body.migrate and body.pool_id == default_pool_id:
+            raise HTTPException(
+                400,
+                f"Cannot migrate bucket '{bucket}' to the default pool — "
+                "the bucket already lives there. Select a different destination pool.",
+            )
+
         target_members = await _all_enabled_members(body.pool_id, db)
         if not target_members:
             raise HTTPException(400, "Target pool has no enabled members")
 
-        default_pool_id = vhost["default_pool_id"]
         default_member = await _first_enabled_member(default_pool_id, db)
 
     default_ak, default_sk, _ = await get_pool_s3_params(default_pool_id)
@@ -319,6 +328,13 @@ async def start_migration(vhost_id: int, bucket: str):
             429,
             f"Max parallel migrations reached ({s.migration_max_parallel}). "
             "Wait for a running migration to finish or cancel one.",
+        )
+
+    if src_pool_id == dst_pool_id:
+        raise HTTPException(
+            400,
+            f"Bucket '{bucket}' is already routed to the default pool — "
+            "source and destination are the same pool. No migration needed.",
         )
 
     migration_id = await engine_start_migration(vhost_id, bucket, src_pool_id, dst_pool_id)

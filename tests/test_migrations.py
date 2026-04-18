@@ -103,6 +103,23 @@ class TestMigrationsAPI:
         })
         assert resp2.status_code == 409
 
+    async def test_same_pool_migration_rejected(self, client, mock_nginx, mock_rclone, mock_s3):
+        """Migrating a bucket to the same pool must be rejected at the API layer."""
+        pool = await create_pool(client, "same-pool")
+        await create_member(client, pool["id"], "10.0.0.1:9000")
+        vh = await create_vhost(client, "samepool.example.com", default_pool_id=pool["id"])
+
+        mock_s3["list_buckets"].return_value = [{"name": "same-bk", "created": "2025-01-01"}]
+        await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
+
+        resp = await client.post("/api/migrations", json={
+            "bucket": "same-bk",
+            "src_pool_id": pool["id"],
+            "dst_pool_id": pool["id"],
+        })
+        assert resp.status_code == 400
+        assert "same pool" in resp.json()["detail"].lower()
+
     async def test_migration_log(self, client, mock_nginx, mock_rclone, mock_s3):
         src = await create_pool(client, "log-mig-src")
         await create_member(client, src["id"], "10.0.0.1:9000")

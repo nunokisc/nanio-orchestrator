@@ -382,6 +382,17 @@ async def run_migration(migration_id: int) -> None:
         dst_pool_id = m["dst_pool_id"]
         mode = m.get("mode", "copy")
 
+        # ── Safety: refuse if source and destination are the same pool ────
+        if src_pool_id == dst_pool_id:
+            msg = (
+                f"Refusing to migrate: source and destination are the same pool "
+                f"(pool_id={src_pool_id}). Migrating to the same pool would copy "
+                "the bucket onto itself and then purge all its content."
+            )
+            logger.error("Migration %d aborted: %s", migration_id, msg)
+            await _set_phase(migration_id, "error", msg)
+            return
+
         # Generate rclone config
         config_content = await _build_rclone_config(src_pool_id, dst_pool_id)
         config_dir = tempfile.mkdtemp(prefix="nanio-rclone-")
