@@ -53,9 +53,11 @@ class TestCredentials:
         assert resp.json()["access_key_masked"].startswith("TEST")
 
     async def test_get_credentials_not_found(self, client):
+        # No pool-specific creds — falls back to global credentials (source='global')
         pool = await create_pool(client, "nocred-pool")
         resp = await client.get(f"/api/pools/{pool['id']}/credentials")
-        assert resp.status_code == 404
+        assert resp.status_code == 200
+        assert resp.json()["source"] == "global"
 
     async def test_delete_credentials(self, client):
         pool = await create_pool(client, "delcred-pool")
@@ -66,9 +68,10 @@ class TestCredentials:
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
 
-        # Should be gone
+        # Pool-specific creds deleted — falls back to global credentials (source='global')
         resp = await client.get(f"/api/pools/{pool['id']}/credentials")
-        assert resp.status_code == 404
+        assert resp.status_code == 200
+        assert resp.json()["source"] == "global"
 
     async def test_delete_credentials_not_found(self, client):
         pool = await create_pool(client, "delcred-nf-pool")
