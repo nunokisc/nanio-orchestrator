@@ -400,14 +400,26 @@ async def run_migration(migration_id: int) -> None:
             src_creds = await get_pool_credentials(src_pool_id)
             ak = src_creds["access_key"] if src_creds else None
             sk = src_creds["secret_key"] if src_creds else None
-            src_count = await count_objects(src_address, bucket, access_key=ak, secret_key=sk)
-            if src_count == 0:
-                msg = (f"Refusing to migrate: source bucket '{bucket}' is empty. "
-                       "Copying from an empty source would erase any content already "
-                       "present at the destination. Verify the source bucket and retry.")
-                logger.error("Migration %d aborted: %s", migration_id, msg)
-                await _set_phase(migration_id, "error", msg)
-                return
+            try:
+                src_count = await count_objects(src_address, bucket, access_key=ak, secret_key=sk)
+                if src_count == 0:
+                    msg = (f"Refusing to migrate: source bucket '{bucket}' is empty. "
+                           "Copying from an empty source would erase any content already "
+                           "present at the destination. Verify the source bucket and retry.")
+                    logger.error("Migration %d aborted: %s", migration_id, msg)
+                    await _set_phase(migration_id, "error", msg)
+                    return
+            except (PermissionError, RuntimeError) as exc:
+                logger.warning(
+                    "Migration %d: pre-flight ListObjects failed (%s) — "
+                    "skipping empty-source guard, rclone will verify independently.",
+                    migration_id, exc,
+                )
+                await _log(
+                    migration_id, "copying",
+                    f"Pre-flight object count unavailable ({exc}). "
+                    "Proceeding — rclone uses its own pool credentials.",
+                )
 
         # ── Phase: copying ────────────────────────────────────────────────
         await _set_phase(migration_id, "copying")

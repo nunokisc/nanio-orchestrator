@@ -17,6 +17,7 @@ from httpx import ASGITransport, AsyncClient
 os.environ["DEV"] = "true"
 os.environ["NANIO_ORCHESTRATOR_API_KEY"] = "test-key"
 os.environ["NANIO_ORCHESTRATOR_LOG_LEVEL"] = "warning"
+os.environ.setdefault("NANIO_ORCHESTRATOR_S3_REQUEST_TIMEOUT", "2")  # short timeout in tests
 
 
 @pytest.fixture(scope="session")
@@ -173,6 +174,8 @@ def mock_s3():
             "nanio_orchestrator.s3client.count_objects",
             "nanio_orchestrator.api.buckets.count_objects",
             "nanio_orchestrator.s3_proxy.count_objects",
+            "nanio_orchestrator.migration_engine.count_objects",
+            "nanio_orchestrator.api.vhosts.count_objects",
         ],
         "get_object": [
             "nanio_orchestrator.s3client.get_object",
@@ -186,7 +189,7 @@ def mock_s3():
         "list_buckets": [],
         "create_bucket": (True, "created"),
         "list_objects": [],
-        "count_objects": 0,
+        "count_objects": 1,
         "get_object": b"data",
         "put_object": True,
     }
@@ -205,6 +208,30 @@ def mock_s3():
     yield mocks
 
     for p in active_patches:
+        p.stop()
+
+
+@pytest.fixture(autouse=True)
+def mock_vhost_s3_calls():
+    """Autouse: prevent real S3 calls from vhost route-creation helpers.
+
+    The bucket provisioning and object-count steps in POST /vhosts/{id}/routes
+    are best-effort and wrapped in try/except, but they make real TCP connections
+    which hang in tests when the s3_request_timeout is large.  Mock them here so
+    tests that don't need mock_s3 don't block on network I/O.
+    """
+    patches = [
+        patch("nanio_orchestrator.api.vhosts.bucket_exists",
+              new=AsyncMock(return_value=True)),
+        patch("nanio_orchestrator.api.vhosts.create_bucket",
+              new=AsyncMock(return_value=(True, "already-exists"))),
+        patch("nanio_orchestrator.api.vhosts.count_objects",
+              new=AsyncMock(return_value=0)),
+    ]
+    for p in patches:
+        p.start()
+    yield
+    for p in patches:
         p.stop()
 
 

@@ -254,8 +254,16 @@ async def count_objects(
         _do_request, "GET", address, f"/{bucket}", "list-type=2&max-keys=1000",
         b"", access_key, secret_key, region
     )
+    if status == 403:
+        raise PermissionError(
+            f"ListObjects returned 403 Forbidden for bucket '{bucket}' at {address}. "
+            "Check S3 credentials for this pool."
+        )
     if status != 200:
-        return 0
+        raise RuntimeError(
+            f"ListObjects HTTP {status} for bucket '{bucket}' at {address}: "
+            f"{body[:200].decode(errors='replace')}"
+        )
     root = ET.fromstring(body)
     for elem in root.iter():
         if _strip_ns(elem.tag) == "KeyCount":
