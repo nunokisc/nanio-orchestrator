@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from nanio_orchestrator.config import get_settings
-from nanio_orchestrator.credentials import get_pool_credentials
+from nanio_orchestrator.credentials import get_pool_credentials, get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator.s3client import count_objects
 from nanio_orchestrator.sidecar import write_migration_state, delete_migration_state
@@ -411,9 +411,7 @@ async def run_migration(migration_id: int) -> None:
         # ── Pre-flight: refuse to copy from an empty source ───────────────
         src_address = await _first_member_endpoint(src_pool_id)
         if src_address:
-            src_creds = await get_pool_credentials(src_pool_id)
-            ak = src_creds["access_key"] if src_creds else None
-            sk = src_creds["secret_key"] if src_creds else None
+            ak, sk, _ = await get_pool_s3_params(src_pool_id)
             try:
                 src_count = await count_objects(src_address, bucket, access_key=ak, secret_key=sk)
                 if src_count == 0:
