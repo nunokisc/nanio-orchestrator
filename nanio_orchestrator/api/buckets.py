@@ -5,12 +5,11 @@ All endpoints are nested under /api/vhosts/{vhost_id}/buckets.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Dict, List
+from typing import List
 
 import aiofiles
 from fastapi import APIRouter, HTTPException
@@ -20,23 +19,19 @@ from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.credentials import get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator.migration_engine import start_migration as engine_start_migration
-from nanio_orchestrator.models import BucketListOut, BucketPromoteRequest, MigrationStatus
+from nanio_orchestrator.models import BucketListOut, BucketPromoteRequest
 from nanio_orchestrator.nginx.executor import reload_nginx, test_config
 from nanio_orchestrator.nginx.generator import generate_vhost_config, record_file_state
 from nanio_orchestrator.s3client import (
     count_objects,
     create_bucket,
     delete_object,
-    get_object,
     list_objects,
-    put_object,
 )
 
 router = APIRouter(prefix="/api/vhosts", tags=["buckets"])
 logger = logging.getLogger(__name__)
 
-# Track running migration tasks: (vhost_id, bucket) → asyncio.Task
-_migration_tasks: Dict[tuple, asyncio.Task] = {}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -296,138 +291,7 @@ async def ignore_bucket(vhost_id: int, bucket: str):
     return {"ok": True, "bucket": bucket, "status": "ignored"}
 
 
-# ── Migration (legacy in-memory path — kept for status endpoint compatibility) ──
-# _start_migration and _run_migration are no longer used for new migrations;
-# promote_bucket and the /migrate endpoint now delegate to migration_engine (rclone).
-# The object_migrations table and its status endpoint remain for historical records.
-
-
-async def _start_migration(
-    vhost_id: int,
-    bucket: str,
-    src_pool_id: int,
-    dst_pool_id: int,
-    src_member: str,
-    dst_member: str,
-    s,
-) -> int:
-    """Create an object_migrations record and launch background task. Returns migration id."""
-    async with get_db_ctx() as db:
-        cursor = await db.execute(
-            """INSERT INTO object_migrations
-               (vhost_id, bucket, src_pool_id, dst_pool_id, status)
-               VALUES (?, ?, ?, ?, 'pending')""",
-            (vhost_id, bucket, src_pool_id, dst_pool_id),
-        )
-        migration_id = cursor.lastrowid
-        await db.commit()
-
-    task = asyncio.create_task(
-        _run_migration(migration_id, vhost_id, bucket, src_member, dst_member, s)
-    )
-    _migration_tasks[(vhost_id, bucket)] = task
-    return migration_id
-
-
-async def _run_migration(
-    migration_id: int,
-    vhost_id: int,
-    bucket: str,
-    src_member: str,
-    dst_member: str,
-    s,
-) -> None:
-    """Background task: copy all objects from src to dst."""
-    now = _now()
-    async with get_db_ctx() as db:
-        await db.execute(
-            "UPDATE object_migrations SET status='running', started_at=? WHERE id=?",
-            (now, migration_id),
-        )
-        # Update bucket_sync status
-        await db.execute(
-            "UPDATE bucket_sync SET status='migrating' WHERE vhost_id=? AND bucket=?",
-            (vhost_id, bucket),
-        )
-        await db.commit()
-
-    logger.info("Object migration started: vhost=%d bucket=%s migration_id=%d src=%s dst=%s",
-                vhost_id, bucket, migration_id, src_member, dst_member)
-    async with get_db_ctx() as db:
-        await _audit(db, "object_migration_started", "bucket", vhost_id,
-                     after={"bucket": bucket, "migration_id": migration_id,
-                            "src_member": src_member, "dst_member": dst_member})
-        await db.commit()
-
-    try:
-        async with get_db_ctx() as db:
-            rows = await db.execute_fetchall(
-                "SELECT src_pool_id, dst_pool_id FROM object_migrations WHERE id = ?",
-                (migration_id,),
-            )
-        if rows:
-            src_ak, src_sk, _ = await get_pool_s3_params(rows[0]["src_pool_id"])
-            dst_ak, dst_sk, _ = await get_pool_s3_params(rows[0]["dst_pool_id"])
-        else:
-            src_ak = src_sk = dst_ak = dst_sk = None
-
-        keys = await list_objects(src_member, bucket, access_key=src_ak, secret_key=src_sk)
-        total = len(keys)
-
-        async with get_db_ctx() as db:
-            await db.execute(
-                "UPDATE object_migrations SET objects_total=? WHERE id=?",
-                (total, migration_id),
-            )
-            await db.commit()
-
-        done = 0
-        for key in keys:
-            data = await get_object(src_member, bucket, key, access_key=src_ak, secret_key=src_sk)
-            if data is not None:
-                ok = await put_object(
-                    dst_member, bucket, key, data, access_key=dst_ak, secret_key=dst_sk,
-                )
-                if ok:
-                    done += 1
-
-            async with get_db_ctx() as db:
-                await db.execute(
-                    "UPDATE object_migrations SET objects_done=? WHERE id=?",
-                    (done, migration_id),
-                )
-                await db.commit()
-
-            await asyncio.sleep(0)  # yield to event loop between objects
-
-        async with get_db_ctx() as db:
-            await db.execute(
-                "UPDATE object_migrations SET status='done', finished_at=? WHERE id=?",
-                (_now(), migration_id),
-            )
-            await db.commit()
-
-        logger.info("Object migration done: vhost=%d bucket=%s migration_id=%d (%d/%d objects)",
-                    vhost_id, bucket, migration_id, done, total)
-        async with get_db_ctx() as db:
-            await _audit(db, "object_migration_done", "bucket", vhost_id,
-                         after={"bucket": bucket, "migration_id": migration_id,
-                                "objects_done": done, "objects_total": total})
-            await db.commit()
-
-    except Exception as e:
-        logger.error("Object migration error: vhost=%d bucket=%s migration_id=%d: %s",
-                     vhost_id, bucket, migration_id, e)
-        async with get_db_ctx() as db:
-            await db.execute(
-                "UPDATE object_migrations SET status='error', error_msg=?, finished_at=? WHERE id=?",
-                (str(e), _now(), migration_id),
-            )
-            await _audit(db, "object_migration_error", "bucket", vhost_id,
-                         after={"bucket": bucket, "migration_id": migration_id, "error": str(e)})
-            await db.commit()
-    finally:
-        _migration_tasks.pop((vhost_id, bucket), None)
+# ── Migration via rclone engine ───────────────────────────────────────────────────
 
 
 @router.post("/{vhost_id}/buckets/{bucket}/migrate")
@@ -459,31 +323,6 @@ async def start_migration(vhost_id: int, bucket: str):
 
     migration_id = await engine_start_migration(vhost_id, bucket, src_pool_id, dst_pool_id)
     return {"ok": True, "migration_id": migration_id, "bucket": bucket}
-
-
-@router.get("/{vhost_id}/buckets/{bucket}/migrate/status", response_model=MigrationStatus)
-async def migration_status(vhost_id: int, bucket: str):
-    """Get the latest migration status for a bucket."""
-    async with get_db_ctx() as db:
-        rows = await db.execute_fetchall(
-            """SELECT * FROM object_migrations
-               WHERE vhost_id = ? AND bucket = ?
-               ORDER BY id DESC LIMIT 1""",
-            (vhost_id, bucket),
-        )
-        if not rows:
-            raise HTTPException(404, "No migration record found")
-        m = dict(rows[0])
-
-    return MigrationStatus(
-        bucket=m["bucket"],
-        status=m["status"],
-        objects_total=m["objects_total"],
-        objects_done=m["objects_done"],
-        error_msg=m.get("error_msg"),
-        started_at=m.get("started_at"),
-        finished_at=m.get("finished_at"),
-    )
 
 
 # ── Orphan detection ──────────────────────────────────────────────────────────

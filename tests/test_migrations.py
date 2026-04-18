@@ -43,6 +43,26 @@ class TestMigrationsAPI:
         data = resp.json()
         assert data["bucket"] == "mig-bucket"
         assert data["phase"] == "pending"
+        assert data["mode"] == "copy"  # default mode
+
+    async def test_create_migration_sync_mode(self, client, mock_nginx, mock_rclone, mock_s3):
+        src = await create_pool(client, "mig-sync-src")
+        await create_member(client, src["id"], "10.0.0.1:9000")
+        dst = await create_pool(client, "mig-sync-dst")
+        await create_member(client, dst["id"], "10.0.0.2:9000")
+        vh = await create_vhost(client, "mig-sync.example.com", default_pool_id=src["id"])
+
+        mock_s3["list_buckets"].return_value = [{"name": "sync-bk", "created": "2025-01-01"}]
+        await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
+
+        resp = await client.post("/api/migrations", json={
+            "bucket": "sync-bk",
+            "src_pool_id": src["id"],
+            "dst_pool_id": dst["id"],
+            "mode": "sync",
+        })
+        assert resp.status_code == 201
+        assert resp.json()["mode"] == "sync"
 
     async def test_list_migrations(self, client):
         resp = await client.get("/api/migrations")

@@ -104,6 +104,27 @@ def serve(host, port, do_reload):
 
     reload_flag = do_reload or s.dev
 
+    # Configure file logging if LOG_FILE is set
+    if s.log_file:
+        import logging
+        from logging.handlers import RotatingFileHandler
+        from pathlib import Path as _Path
+        _Path(s.log_file).parent.mkdir(parents=True, exist_ok=True)
+        _fmt = logging.Formatter(
+            "%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+            datefmt="%Y-%m-%dT%H:%M:%S",
+        )
+        _fh = RotatingFileHandler(
+            s.log_file,
+            maxBytes=10 * 1024 * 1024,  # 10 MB per file
+            backupCount=5,
+            encoding="utf-8",
+        )
+        _fh.setFormatter(_fmt)
+        _fh.setLevel(s.log_level.upper())
+        logging.getLogger().addHandler(_fh)
+        print(f"Logging to file: {s.log_file}")
+
     if s.dev:
         print(f"nanio-orchestrator dev mode → http://localhost:{bind_port}  API key: {s.api_key}")
     else:

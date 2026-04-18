@@ -96,6 +96,7 @@ Every variable is prefixed with `NANIO_ORCHESTRATOR_`.
 | `DB_PATH` | `/opt/nanio-orchestrator/data/orchestrator.db` | SQLite database path |
 | `NGINX_CONFIG_DIR` | `/etc/nginx/nanio` | Root directory for generated nginx configs |
 | `LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warning`, `error`) |
+| `LOG_FILE` | _(unset)_ | Path to a rotating log file, e.g. `/var/log/nanio-orchestrator/nanio.log`. Up to 10 MB per file, 5 rotated copies. When unset, logs go to stderr only. |
 | `SESSION_TTL` | `28800` | Web UI session duration in seconds (8 hours) |
 | `SECRET` | _(unset)_ | Fernet key for credential encryption at rest. Generate with: `python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 
@@ -117,6 +118,7 @@ Every variable is prefixed with `NANIO_ORCHESTRATOR_`.
 | `MIGRATION_BANDWIDTH_LIMIT` | _(unset)_ | rclone `--bwlimit` value, e.g. `50M` |
 | `MIGRATION_CHECKERS` | `8` | rclone `--checkers` value |
 | `MIGRATION_TRANSFERS` | `4` | rclone `--transfers` value |
+| `S3_REQUEST_TIMEOUT` | `3600` | Socket timeout in seconds for S3 HTTP requests. Increase for buckets with very large objects. |
 
 ### Drift Detection
 
@@ -197,16 +199,20 @@ Tracks buckets discovered on the default pool of each vhost. Background sync run
 | POST | `/api/vhosts/:id/buckets/sync` | Trigger an immediate bucket list sync |
 | POST | `/api/vhosts/:id/buckets/:bucket/promote` | Promote a bucket: create it on the target pool, add an nginx route, optionally start migration |
 | POST | `/api/vhosts/:id/buckets/:bucket/ignore` | Mark a bucket as ignored |
-| POST | `/api/vhosts/:id/buckets/:bucket/migrate` | Start (or restart) object migration for a routed bucket |
-| GET | `/api/vhosts/:id/buckets/:bucket/migrate/status` | Get migration status for a bucket |
+| POST | `/api/vhosts/:id/buckets/:bucket/migrate` | Start (or restart) object migration for a routed bucket (uses rclone engine) |
+| GET | `/api/vhosts/:id/buckets/orphans` | Scan routed buckets for orphan objects still on the default pool |
+| POST | `/api/vhosts/:id/buckets/:bucket/purge-orphan` | Delete all objects from the default pool copy of a routed bucket |
 
 ### Migrations (rclone)
 
-Full bucket migrations using rclone. Phases: `pending → copying → verifying → switching → done`.
+Full bucket migrations using rclone. Phases: `pending → copying → verifying → switching → purge_source → done`.
+
+- **copy** mode (default): additive — only copies objects from source to destination, never deletes at the destination.
+- **sync** mode: mirror — destination becomes identical to the source. A pre-flight guard aborts the migration if the source bucket is empty to prevent accidental data loss.
 
 | Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/migrations` | Start a new migration |
+|--------|----------|--------------|
+| POST | `/api/migrations` | Start a new migration. Body: `{bucket, src_pool_id, dst_pool_id, mode}` where `mode` is `"copy"` (default) or `"sync"` |
 | GET | `/api/migrations` | List migrations (filter with `?phase=`) |
 | GET | `/api/migrations/:id` | Get migration details |
 | POST | `/api/migrations/:id/cancel` | Cancel a running migration |
@@ -366,8 +372,9 @@ The web UI is served at `/` and requires a session cookie obtained via `/login`.
 | Dashboard | `/` | Overview: pools, vhosts, drift count, active migrations, unrouted buckets |
 | Pools | `/web/pools` | Manage pools and members |
 | Vhosts | `/web/vhosts` | Manage vhosts and routes |
+| Buckets | `/web/buckets` or via Vhosts page | Bucket list, promote, migrate, orphan scan and purge per vhost |
 | Config | `/web/config` | Config file drift status, per-file actions |
-| Migrations | `/web/migrations` | Start and monitor rclone migrations |
+| Migrations | `/web/migrations` | Start (copy or sync mode) and monitor rclone migrations |
 | Audit | `/web/audit` | Last 100 audit log entries |
 | Settings | `/web/settings` | View all current settings (secrets masked) |
 

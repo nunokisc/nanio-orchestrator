@@ -176,11 +176,9 @@ def mock_s3():
         ],
         "get_object": [
             "nanio_orchestrator.s3client.get_object",
-            "nanio_orchestrator.api.buckets.get_object",
         ],
         "put_object": [
             "nanio_orchestrator.s3client.put_object",
-            "nanio_orchestrator.api.buckets.put_object",
         ],
     }
 

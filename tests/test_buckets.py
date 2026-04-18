@@ -76,3 +76,30 @@ class TestBucketSync:
         data = resp.json()
         assert data["ok"] is True
         assert data["route"] == "/promoted/"
+
+    async def test_promote_bucket_with_migrate(self, client, mock_s3, mock_nginx, mock_rclone):
+        """promote with migrate=True should start a rclone migration."""
+        src_pool = await create_pool(client, "prom-mig-src")
+        await create_member(client, src_pool["id"], "10.0.0.1:9000")
+        dst_pool = await create_pool(client, "prom-mig-dst")
+        await create_member(client, dst_pool["id"], "10.0.0.2:9000")
+        vh = await create_vhost(client, "prom-mig.example.com", default_pool_id=src_pool["id"])
+
+        mock_s3["list_buckets"].return_value = [{"name": "big-bucket", "created": "2025-01-01"}]
+        mock_s3["count_objects"].return_value = 5  # non-empty source
+        await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
+
+        resp = await client.post(f"/api/vhosts/{vh['id']}/buckets/big-bucket/promote", json={
+            "pool_id": dst_pool["id"],
+            "migrate": True,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["migration_started"] is True
+        assert "migration_id" in data
+
+        # Verify migration record exists
+        mig_resp = await client.get(f"/api/migrations/{data['migration_id']}")
+        assert mig_resp.status_code == 200
+        assert mig_resp.json()["bucket"] == "big-bucket"
