@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     migration_checkers: int = 8
     migration_transfers: int = 4
     s3_request_timeout: int = 3600  # seconds; socket timeout for S3 HTTP requests (large for big file transfers)
+    log_file: Optional[str] = None  # path to rotating log file; None = log to stdout only
     db_backup_path: Optional[str] = None  # auto-derived from db_path if None
     db_backup_interval: int = 60  # seconds between timed backups
     db_backup_rotate: int = 3  # keep N backup copies
