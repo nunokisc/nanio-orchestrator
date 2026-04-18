@@ -78,7 +78,13 @@ class TestBucketSync:
         assert data["route"] == "/promoted/"
 
     async def test_promote_bucket_with_migrate(self, client, mock_s3, mock_nginx, mock_rclone):
-        """promote with migrate=True should start a rclone migration."""
+        """promote with migrate=True should start a rclone migration.
+
+        Crucially, the nginx route must initially point to the SOURCE (default)
+        pool so users keep seeing their files while the copy runs.  The migration
+        engine's 'switching' phase will update the route to the destination once
+        the copy is verified.
+        """
         src_pool = await create_pool(client, "prom-mig-src")
         await create_member(client, src_pool["id"], "10.0.0.1:9000")
         dst_pool = await create_pool(client, "prom-mig-dst")
@@ -99,7 +105,20 @@ class TestBucketSync:
         assert data["migration_started"] is True
         assert "migration_id" in data
 
-        # Verify migration record exists
+        # Verify migration record exists with correct src/dst
         mig_resp = await client.get(f"/api/migrations/{data['migration_id']}")
         assert mig_resp.status_code == 200
-        assert mig_resp.json()["bucket"] == "big-bucket"
+        mig = mig_resp.json()
+        assert mig["bucket"] == "big-bucket"
+        assert mig["src_pool_id"] == src_pool["id"]
+        assert mig["dst_pool_id"] == dst_pool["id"]
+
+        # The route must point to the SOURCE pool while migration is in progress
+        # so users keep seeing their files until the 'switching' phase cuts over.
+        routes_resp = await client.get(f"/api/vhosts/{vh['id']}/routes")
+        assert routes_resp.status_code == 200
+        route = next(r for r in routes_resp.json() if r["path_prefix"] == "/big-bucket/")
+        assert route["pool_id"] == src_pool["id"], (
+            "Route should point to SOURCE pool during migration — "
+            "users must not see files disappear while copy is running"
+        )

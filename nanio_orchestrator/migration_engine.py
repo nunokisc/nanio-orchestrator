@@ -44,7 +44,14 @@ def _now() -> str:
 
 
 async def _build_rclone_config(src_pool_id: int, dst_pool_id: int) -> str:
-    """Generate a temporary rclone config with [src] and [dst] remotes."""
+    """Generate a temporary rclone config with [src] and [dst] remotes.
+
+    The endpoint is ALWAYS derived from the first enabled pool member address,
+    bypassing any proxy or endpoint_url override stored in credentials.
+    rclone must talk directly to the S3 backend nodes to avoid routing ambiguity
+    (the proxy may redirect based on the current nginx state) and to support all
+    S3 operations required by rclone check (multipart checksums, etc.).
+    """
     src_creds = await get_pool_credentials(src_pool_id)
     dst_creds = await get_pool_credentials(dst_pool_id)
 
@@ -52,6 +59,9 @@ async def _build_rclone_config(src_pool_id: int, dst_pool_id: int) -> str:
     lines = []
 
     for name, creds, pool_id in [("src", src_creds, src_pool_id), ("dst", dst_creds, dst_pool_id)]:
+        # Always use the direct member address — never go through the proxy
+        addr = await _first_member_endpoint(pool_id)
+
         lines.append(f"[{name}]")
         lines.append("type = s3")
         lines.append("provider = Other")
@@ -61,22 +71,15 @@ async def _build_rclone_config(src_pool_id: int, dst_pool_id: int) -> str:
             lines.append(f"access_key_id = {creds['access_key']}")
             lines.append(f"secret_access_key = {creds['secret_key']}")
             lines.append(f"region = {creds['region']}")
-            if creds.get("endpoint_url"):
-                lines.append(f"endpoint = {creds['endpoint_url']}")
-            else:
-                # Derive endpoint from first enabled member
-                addr = await _first_member_endpoint(pool_id)
-                if addr:
-                    lines.append(f"endpoint = http://{addr}")
         else:
             # Fallback to global credentials
             if s.s3_access_key:
                 lines.append(f"access_key_id = {s.s3_access_key}")
             if s.s3_secret_key:
                 lines.append(f"secret_access_key = {s.s3_secret_key}")
-            addr = await _first_member_endpoint(pool_id)
-            if addr:
-                lines.append(f"endpoint = http://{addr}")
+
+        if addr:
+            lines.append(f"endpoint = http://{addr}")
 
         lines.append("force_path_style = true")
         lines.append("")

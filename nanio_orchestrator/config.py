@@ -77,7 +77,8 @@ class Settings(BaseSettings):
 
     @property
     def migrations_dir(self) -> Path:
-        return Path(self.nginx_config_dir) / "migrations"
+        """State files for in-progress migrations — stored alongside the DB, not in nginx config."""
+        return Path(self.db_path).parent / "migrations"
 
     def ensure_dirs(self) -> None:
         """Create all required directories."""

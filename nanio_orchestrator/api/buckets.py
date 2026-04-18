@@ -233,18 +233,26 @@ async def promote_bucket(vhost_id: int, bucket: str, body: BucketPromoteRequest)
             }
 
     # ── Create nginx route ────────────────────────────────────────────────
+    # When migration is requested the route initially points to the SOURCE
+    # (default) pool so users continue to see their files while the copy runs.
+    # The migration engine's 'switching' phase will update the route to the
+    # destination pool once the copy has been verified successfully.
+    initial_route_pool_id = default_pool_id if body.migrate else body.pool_id
+
     async with get_db_ctx() as db:
         cursor = await db.execute(
             """INSERT INTO routes (vhost_id, path_prefix, pool_id, enabled)
                VALUES (?, ?, ?, 1)""",
-            (vhost_id, f"/{bucket}/", body.pool_id),
+            (vhost_id, f"/{bucket}/", initial_route_pool_id),
         )
         route_id = cursor.lastrowid
         await db.commit()
 
         ok, output = await _apply_vhost_config(vhost_id, db)
         await _audit(db, "promote_bucket", "route", route_id,
-                     after={"bucket": bucket, "pool_id": body.pool_id, "migrate": body.migrate},
+                     after={"bucket": bucket, "pool_id": body.pool_id,
+                            "initial_route_pool_id": initial_route_pool_id,
+                            "migrate": body.migrate},
                      reload_ok=ok, reload_output=output)
 
         # Update bucket_sync status

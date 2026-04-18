@@ -467,8 +467,8 @@ upstream pool-2025 {
             json.dumps(pool2_sidecar)
         )
 
-        # Create migration state file
-        migrations_dir = os.path.join(tmp_dirs["nginx_dir"], "migrations")
+        # Create migration state file (lives alongside the DB, not in nginx dir)
+        migrations_dir = str(Path(tmp_dirs["db_path"]).parent / "migrations")
         os.makedirs(migrations_dir, exist_ok=True)
         migration_state = {
             "migration_id": 7,
@@ -729,7 +729,8 @@ class TestMigrationStateSidecar:
 
         os.environ["NANIO_ORCHESTRATOR_DB_PATH"] = tmp_dirs["db_path"]
         os.environ["NANIO_ORCHESTRATOR_NGINX_CONFIG_DIR"] = tmp_dirs["nginx_dir"]
-        os.makedirs(os.path.join(tmp_dirs["nginx_dir"], "migrations"), exist_ok=True)
+        # migrations_dir is now next to the DB, not inside nginx_dir
+        os.makedirs(str(Path(tmp_dirs["db_path"]).parent / "migrations"), exist_ok=True)
 
         from nanio_orchestrator.db import set_db_path, init_db, get_db_ctx
         set_db_path(tmp_dirs["db_path"])
@@ -749,7 +750,7 @@ class TestMigrationStateSidecar:
         from nanio_orchestrator.migration_engine import _set_phase
         await _set_phase(1, "copying")
 
-        state_path = os.path.join(tmp_dirs["nginx_dir"], "migrations", "migration-1.state.json")
+        state_path = str(Path(tmp_dirs["db_path"]).parent / "migrations" / "migration-1.state.json")
         assert os.path.exists(state_path)
         data = json.loads(Path(state_path).read_text())
         assert data["status"] == "copying"
@@ -768,7 +769,8 @@ class TestMigrationStateSidecar:
 
         os.environ["NANIO_ORCHESTRATOR_DB_PATH"] = tmp_dirs["db_path"]
         os.environ["NANIO_ORCHESTRATOR_NGINX_CONFIG_DIR"] = tmp_dirs["nginx_dir"]
-        os.makedirs(os.path.join(tmp_dirs["nginx_dir"], "migrations"), exist_ok=True)
+        # migrations_dir is now next to the DB, not inside nginx_dir
+        os.makedirs(str(Path(tmp_dirs["db_path"]).parent / "migrations"), exist_ok=True)
 
         from nanio_orchestrator.db import set_db_path, init_db, get_db_ctx
         set_db_path(tmp_dirs["db_path"])
@@ -787,7 +789,7 @@ class TestMigrationStateSidecar:
         from nanio_orchestrator.migration_engine import _set_phase
         # First write it
         await _set_phase(1, "copying")
-        state_path = os.path.join(tmp_dirs["nginx_dir"], "migrations", "migration-1.state.json")
+        state_path = str(Path(tmp_dirs["db_path"]).parent / "migrations" / "migration-1.state.json")
         assert os.path.exists(state_path)
 
         # Mark done — should delete
