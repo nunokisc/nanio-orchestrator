@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     migration_bandwidth_limit: str = ""  # rclone --bwlimit value, e.g. "50M"
     migration_checkers: int = 8
     migration_transfers: int = 4
+    migration_max_copy_passes: int = 10  # max convergence loop passes before entering write_routing
     s3_request_timeout: int = 3600  # seconds; socket timeout for S3 HTTP requests (large for big file transfers)
     log_file: Optional[str] = None  # path to rotating log file; None = log to stdout only
     db_backup_path: Optional[str] = None  # auto-derived from db_path if None

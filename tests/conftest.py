@@ -117,10 +117,12 @@ def mock_nginx():
     test_targets = [
         "nanio_orchestrator.nginx.executor.test_config",
         "nanio_orchestrator.api.buckets.test_config",
+        "nanio_orchestrator.migration_engine.test_config",
     ]
     reload_targets = [
         "nanio_orchestrator.nginx.executor.reload_nginx",
         "nanio_orchestrator.api.buckets.reload_nginx",
+        "nanio_orchestrator.migration_engine.reload_nginx",
     ]
     backup_targets = [
         "nanio_orchestrator.backup.backup_database",

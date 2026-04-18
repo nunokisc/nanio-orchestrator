@@ -1,9 +1,11 @@
 """rclone-based migration engine with state machine and crash recovery.
 
 State machine phases:
-  pending → copying → verifying → switching → purge_source → done
+  pending → copying (convergence loop) → write_routing → verifying → switching → purge_source → done
+                                       ↗ (skips write_routing if counts converged in copying)
                                            → error
   Any phase can transition to 'error' or 'cancelled'.
+  write_routing: nginx routes writes to dst pool; reads still come from src with 404-fallback.
   purge_source deletes objects from the source bucket after a successful switch,
   eliminating orphan copies. Failure is non-fatal: migration is still marked done.
 
@@ -27,6 +29,12 @@ from typing import Dict, Optional
 from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.credentials import get_pool_credentials, get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
+from nanio_orchestrator.nginx.executor import reload_nginx, test_config
+from nanio_orchestrator.nginx.generator import (
+    generate_vhost_config,
+    record_file_state,
+    write_config_atomic,
+)
 from nanio_orchestrator.s3client import count_objects
 from nanio_orchestrator.sidecar import write_migration_state, delete_migration_state
 
@@ -175,7 +183,11 @@ async def _write_state_sidecar(migration_id: int, db) -> None:
         "bytes_total": m["bytes_total"],
         "started_at": m.get("started_at"),
         "finished_at": m.get("finished_at"),
-        "nginx_state": "source" if m["phase"] in ("pending", "copying", "verifying") else "target",
+        "nginx_state": (
+            "source" if m["phase"] in ("pending", "copying")
+            else "split" if m["phase"] in ("write_routing", "verifying")
+            else "target"
+        ),
     }
     write_migration_state(state)
 
@@ -369,6 +381,7 @@ async def _run_rclone_delete(migration_id: int, config_path: str, remote: str, p
 async def run_migration(migration_id: int) -> None:
     """Execute the full migration state machine for a single migration."""
     config_dir = None
+    s = get_settings()
     try:
         # Load migration record
         async with get_db_ctx() as db:
@@ -433,20 +446,95 @@ async def run_migration(migration_id: int) -> None:
                     "Proceeding — rclone uses its own pool credentials.",
                 )
 
-        # ── Phase: copying ────────────────────────────────────────────────
+        # ── Phase: copying (convergence loop) ───────────────────────────
+        # Repeat rclone copy until src and dst object counts match, or until
+        # the configured max passes is reached.  Each pass only transfers
+        # new/changed objects, so later passes are fast.  The loop breaks
+        # early when src count stabilises (no new files arriving).
         await _set_phase(migration_id, "copying")
-        await _log(migration_id, "copying", f"Starting rclone {mode}: {src_remote} \u2192 {dst_remote}")
+        converged = False
+        prev_src_count: int = -1
+        for pass_num in range(1, s.migration_max_copy_passes + 1):
+            pass_label = f"pass {pass_num}/{s.migration_max_copy_passes}"
+            await _log(migration_id, "copying",
+                       f"Starting rclone {mode} {pass_label}: {src_remote} → {dst_remote}")
+            ok = await _run_rclone(migration_id, config_path, src_remote, dst_remote,
+                                   "copying", mode=mode)
+            if not ok:
+                await _set_phase(migration_id, "error", f"rclone {mode} failed ({pass_label})")
+                return
 
-        ok = await _run_rclone(migration_id, config_path, src_remote, dst_remote, "copying", mode=mode)
+            # Check convergence by comparing object counts on both sides
+            try:
+                src_ak, src_sk, _ = await get_pool_s3_params(src_pool_id)
+                dst_ak, dst_sk, _ = await get_pool_s3_params(dst_pool_id)
+                src_addr = await _first_member_endpoint(src_pool_id)
+                dst_addr = await _first_member_endpoint(dst_pool_id)
+                if src_addr and dst_addr:
+                    src_count = await count_objects(src_addr, bucket,
+                                                    access_key=src_ak, secret_key=src_sk)
+                    dst_count = await count_objects(dst_addr, bucket,
+                                                    access_key=dst_ak, secret_key=dst_sk)
+                    await _log(migration_id, "copying",
+                               f"{pass_label}: src={src_count} objects, dst={dst_count} objects")
+                    if src_count == dst_count:
+                        await _log(migration_id, "copying",
+                                   f"Converged after {pass_num} pass(es) — skipping write-routing")
+                        converged = True
+                        break
+                    if src_count == prev_src_count:
+                        await _log(migration_id, "copying",
+                                   f"Source count stable at {src_count} objects — entering write-routing")
+                        break
+                    prev_src_count = src_count
+            except Exception as exc:
+                await _log(migration_id, "copying",
+                           f"Object count unavailable ({exc}) — entering write-routing")
+                break  # cannot measure convergence, proceed to write-routing
+
+        if not converged:
+            await _log(migration_id, "copying",
+                       "Source still receiving writes — entering write-routing to freeze source")
+
+        # ── Phase: write_routing ───────────────────────────────────────
+        # nginx routes client writes (PUT/POST/DELETE) directly to the dst
+        # pool.  Reads still come from source with a 404-fallback to dst.
+        # The source is frozen for new objects from this point on.
+        if not converged:
+            await _set_phase(migration_id, "write_routing")
+            await _log(migration_id, "write_routing",
+                       "nginx: writes → dst pool | reads → src pool (404-fallback to dst)")
+            vhost_id = m["vhost_id"]
+            filepath, content_ng = await generate_vhost_config(vhost_id)
+            wr_test = await test_config()
+            if wr_test.ok:
+                await write_config_atomic(filepath, content_ng)
+                await reload_nginx()
+                async with get_db_ctx() as db:
+                    await record_file_state(db, filepath, content_ng)
+                    await db.commit()
+                await _log(migration_id, "write_routing",
+                           "nginx reloaded with write-routing split config")
+            else:
+                await _log(migration_id, "write_routing",
+                           f"WARNING: nginx test failed — write-routing not active: {wr_test.output}")
+
+        # ── Phase: verifying ──────────────────────────────────────────
+        # Source is now frozen (writes go to dst).  Final copy transfers any
+        # objects that arrived between the last convergence pass and the nginx
+        # write-routing switch.  Then rclone check confirms src == dst.
+        await _set_phase(migration_id, "verifying")
+        await _log(migration_id, "verifying",
+                   "Final copy pass — source frozen, syncing remaining objects to destination")
+        ok = await _run_rclone(migration_id, config_path, src_remote, dst_remote,
+                               "verifying", mode="copy")
         if not ok:
-            await _set_phase(migration_id, "error", f"rclone {mode} failed")
+            await _set_phase(migration_id, "error", "Final copy pass failed during verification")
             return
 
-        # ── Phase: verifying ──────────────────────────────────────────────
-        await _set_phase(migration_id, "verifying")
-        await _log(migration_id, "verifying", "Running rclone check to verify integrity")
-
-        ok = await _run_rclone(migration_id, config_path, src_remote, dst_remote, "verifying", check_only=True)
+        await _log(migration_id, "verifying", "rclone check — verifying src == dst")
+        ok = await _run_rclone(migration_id, config_path, src_remote, dst_remote,
+                               "verifying", check_only=True)
         if not ok:
             await _set_phase(migration_id, "error", "rclone check verification failed")
             return
@@ -471,10 +559,7 @@ async def run_migration(migration_id: int) -> None:
             )
             await db.commit()
 
-        # Regenerate and reload nginx config
-        from nanio_orchestrator.nginx.generator import generate_vhost_config, write_config_atomic, record_file_state
-        from nanio_orchestrator.nginx.executor import reload_nginx, test_config
-
+        # Regenerate nginx config (write_routing split is no longer needed)
         filepath, content = await generate_vhost_config(m["vhost_id"])
 
         test_result = await test_config()

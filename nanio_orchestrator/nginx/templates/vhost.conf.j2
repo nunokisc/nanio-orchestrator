@@ -23,9 +23,18 @@ server {
 {% for route in routes %}
 {% if route.enabled %}
 
-    # route_id:{{ route.id }} prefix:{{ route.path_prefix }}
+    # route_id:{{ route.id }} prefix:{{ route.path_prefix }}{% if route.migration_dst_pool_name %} [LIVE MIGRATION → {{ route.migration_dst_pool_name }}]{% endif %}
+
     location {{ route.path_prefix }} {
-{% if route.key_prefix %}
+{% if route.migration_dst_pool_name %}
+        # Live migration split routing:
+        #   writes (PUT/POST/DELETE) → destination pool ({{ route.migration_dst_pool_name }})
+        #   reads  (GET/HEAD)        → source pool ({{ route.pool_name }}), 404-fallback to destination
+        error_page 418 = @nanio_mig_{{ route.id }};
+        if ($request_method !~ ^(GET|HEAD|OPTIONS)$) { return 418; }
+        proxy_intercept_errors on;
+        error_page 404 = @nanio_mig_{{ route.id }};
+{% elif route.key_prefix %}
         rewrite ^{{ route.path_prefix }}(.*)$ /{{ route.key_prefix }}$1 break;
 {% endif %}
         proxy_pass         http://{{ route.pool_name }};
@@ -37,6 +46,20 @@ server {
 {% if route.extra_directives %}
         {{ route.extra_directives }}
 {% endif %}
+    }
+{% endif %}
+{% endfor %}
+{% for route in routes %}
+{% if route.enabled and route.migration_dst_pool_name %}
+
+    # Named fallback/write location for live migration route_id:{{ route.id }}
+    location @nanio_mig_{{ route.id }} {
+        proxy_pass         http://{{ route.migration_dst_pool_name }};
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   Connection        "";
     }
 {% endif %}
 {% endfor %}
