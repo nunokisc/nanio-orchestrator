@@ -366,8 +366,11 @@ async def list_orphans(vhost_id: int):
         default_pool_id = vhost["default_pool_id"]
         default_member = await _first_enabled_member(default_pool_id, db)
         routed_rows = await db.execute_fetchall(
-            "SELECT bucket FROM bucket_sync WHERE vhost_id = ? AND status = 'routed'",
-            (vhost_id,),
+            """SELECT bucket FROM bucket_sync
+               WHERE vhost_id = ? AND status = 'routed'
+                 AND routed_pool_id IS NOT NULL
+                 AND routed_pool_id != ?""",
+            (vhost_id, default_pool_id),
         )
 
     default_ak, default_sk, _ = await get_pool_s3_params(default_pool_id)
