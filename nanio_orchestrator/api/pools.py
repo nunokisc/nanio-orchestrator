@@ -260,13 +260,9 @@ async def delete_pool(pool_id: int):
                 "Cancel or wait for them to finish first.",
             )
 
-        # Clean up finished migration records and object_migrations referencing this pool
+        # Clean up finished migration records referencing this pool
         await db.execute(
             "DELETE FROM migrations WHERE src_pool_id = ? OR dst_pool_id = ?",
-            (pool_id, pool_id),
-        )
-        await db.execute(
-            "DELETE FROM object_migrations WHERE src_pool_id = ? OR dst_pool_id = ?",
             (pool_id, pool_id),
         )
         # Null out bucket_sync references (nullable column)

@@ -614,7 +614,7 @@ upstream no-sidecar {
             # First, clear existing data (simulating force)
             async with get_db_ctx() as db:
                 for table in [
-                    "migration_log", "migrations", "object_migrations",
+                    "migration_log", "migrations",
                     "node_configs", "bucket_sync", "pool_credentials",
                     "routes", "pool_members", "audit_log", "config_files",
                     "vhosts", "pools",

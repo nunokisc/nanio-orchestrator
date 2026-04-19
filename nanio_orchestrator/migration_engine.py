@@ -424,6 +424,39 @@ async def _run_rclone_delete(migration_id: int, config_path: str, remote: str, p
         return False
 
 
+async def _restore_nginx_config(migration_id: int, phase: str, filepath: str) -> None:
+    """Restore a vhost nginx config from the DB content_snapshot after a failed reload.
+
+    Called when reload_nginx() fails after a file rename so the broken config
+    does not affect future nginx reloads.  Best-effort: logs a warning on failure.
+    """
+    try:
+        async with get_db_ctx() as db:
+            rows = await db.execute_fetchall(
+                "SELECT content_snapshot FROM config_files WHERE path = ?", (filepath,)
+            )
+        snapshot = dict(rows[0]).get("content_snapshot") if rows else None
+        if snapshot:
+            await write_config_atomic(filepath, snapshot)
+            await reload_nginx()
+            logger.info(
+                "migration %d [%s]: nginx config restored from snapshot (%s)",
+                migration_id, phase, filepath,
+            )
+        else:
+            await _log(migration_id, phase,
+                       f"WARNING: No config snapshot available to restore {filepath}. "
+                       "Run config rebuild to re-sync nginx configs.")
+    except Exception as exc:
+        logger.warning(
+            "migration %d [%s]: failed to restore nginx config from snapshot: %s",
+            migration_id, phase, exc,
+        )
+        await _log(migration_id, phase,
+                   f"WARNING: Could not restore nginx config: {exc}. "
+                   "Run config rebuild to re-sync nginx configs.")
+
+
 # ── State machine: run a full migration ──────────────────────────────────────
 
 
@@ -570,7 +603,8 @@ async def run_migration(migration_id: int) -> None:
                                "nginx reloaded with write-routing split config")
                 else:
                     await _log(migration_id, "write_routing",
-                               f"nginx reload failed — write-routing not active: {reload_result.output}")
+                               f"nginx reload failed — restoring previous config: {reload_result.output}")
+                    await _restore_nginx_config(migration_id, "write_routing", filepath)
                     await _set_phase(migration_id, "error",
                                      f"nginx reload failed during write_routing: {reload_result.output}")
                     return
@@ -647,9 +681,11 @@ async def run_migration(migration_id: int) -> None:
                     await db.commit()
                 await _log(migration_id, "switching", "nginx reloaded with new route")
             else:
-                # Reload failed — rollback DB route to source pool
+                # Reload failed — rollback DB route to source pool, then regenerate
+                # correct nginx config (pointing to src) so the broken file doesn't
+                # affect future nginx reloads.
                 await _log(migration_id, "switching",
-                           f"nginx reload failed: {reload_result.output} — rolling back route")
+                           f"nginx reload failed: {reload_result.output} — rolling back route and restoring config")
                 async with get_db_ctx() as db:
                     await db.execute(
                         """UPDATE routes SET pool_id = ?, updated_at = datetime('now')
@@ -662,6 +698,26 @@ async def run_migration(migration_id: int) -> None:
                         (vhost_id, bucket),
                     )
                     await db.commit()
+                # After DB rollback, route points to src. Regenerate config and reload
+                # so nginx on disk matches DB state. Best-effort: don't fail if this fails.
+                try:
+                    restored_fp, restored_content = await generate_vhost_config(vhost_id)
+                    await write_config_atomic(restored_fp, restored_content)
+                    restore_reload = await reload_nginx()
+                    if restore_reload.ok:
+                        async with get_db_ctx() as db:
+                            await record_file_state(db, restored_fp, restored_content)
+                            await db.commit()
+                        await _log(migration_id, "switching",
+                                   "nginx config restored and reloaded (pointing to source pool)")
+                    else:
+                        await _log(migration_id, "switching",
+                                   f"WARNING: Config restoration reload also failed: {restore_reload.output}. "
+                                   "Run config rebuild to re-sync nginx configs.")
+                except Exception as restore_exc:
+                    await _log(migration_id, "switching",
+                               f"WARNING: Could not restore nginx config: {restore_exc}. "
+                               "Run config rebuild to re-sync nginx configs.")
                 await _set_phase(migration_id, "error",
                                  f"nginx reload failed during switching: {reload_result.output}")
                 return
@@ -805,12 +861,34 @@ async def recover_interrupted_migrations() -> int:
         active_rows = await db.execute_fetchall(
             "SELECT id FROM migrations WHERE phase IN ('pending', 'copying', 'verifying')"
         )
-        # purge_source crashed: data is safe on destination — just mark done
         purge_rows = await db.execute_fetchall(
             "SELECT id FROM migrations WHERE phase = 'purge_source'"
         )
+        # Migrations stuck in write_routing or switching: nginx and DB state are
+        # uncertain — require operator review rather than auto-resuming.
+        stuck_rows = await db.execute_fetchall(
+            "SELECT id, phase FROM migrations WHERE phase IN ('write_routing', 'switching')"
+        )
 
     count = 0
+
+    # Migrations stuck in write_routing/switching: mark as error for operator review.
+    # The DB route and nginx config may be inconsistent; operator must verify and
+    # either restart the migration or reconcile manually via the config rebuild API.
+    for row in stuck_rows:
+        mid = row["id"]
+        phase = row["phase"]
+        await _log(mid, "recovery",
+                   f"Found migration stuck in '{phase}' phase (process restart). "
+                   "Marking as error — operator review required. "
+                   "Verify nginx config and route state, then restart or cancel.")
+        await _set_phase(mid, "error",
+                         f"Interrupted during {phase} phase (process restart). "
+                         "Operator review required: check nginx config and routes.")
+        logger.warning(
+            "Migration %d: stuck in %s → error (operator review required)", mid, phase
+        )
+        count += 1
 
     # Handle migrations stuck mid-purge: mark as needs_purge for operator review
     # instead of silently marking done — the purge may be incomplete.

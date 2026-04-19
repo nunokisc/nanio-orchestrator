@@ -170,7 +170,6 @@ def mock_s3():
         "list_objects": [
             "nanio_orchestrator.s3client.list_objects",
             "nanio_orchestrator.api.buckets.list_objects",
-            "nanio_orchestrator.s3_proxy.list_objects",
         ],
         "count_objects": [
             "nanio_orchestrator.s3client.count_objects",

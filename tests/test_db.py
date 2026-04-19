@@ -19,7 +19,7 @@ class TestDatabase:
         expected = {
             "pools", "pool_members", "vhosts", "routes",
             "config_files", "audit_log", "node_configs",
-            "bucket_sync", "object_migrations",
+            "bucket_sync",
             "pool_credentials", "migrations", "migration_log",
         }
         assert expected.issubset(table_names)
