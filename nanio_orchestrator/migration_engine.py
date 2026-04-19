@@ -479,6 +479,7 @@ async def run_migration(migration_id: int) -> None:
         src_pool_id = m["src_pool_id"]
         dst_pool_id = m["dst_pool_id"]
         mode = m.get("mode", "copy")
+        route_id = m.get("route_id")  # may be None for legacy migrations
 
         # ── Safety: refuse if source and destination are the same pool ────
         if src_pool_id == dst_pool_id:
@@ -652,11 +653,17 @@ async def run_migration(migration_id: int) -> None:
 
         # First, generate the target config by temporarily updating DB
         async with get_db_ctx() as db:
-            await db.execute(
-                """UPDATE routes SET pool_id = ?, updated_at = datetime('now')
-                   WHERE vhost_id = ? AND path_prefix = ?""",
-                (dst_pool_id, vhost_id, f"/{bucket}/"),
-            )
+            if route_id:
+                await db.execute(
+                    "UPDATE routes SET pool_id = ?, updated_at = datetime('now') WHERE id = ?",
+                    (dst_pool_id, route_id),
+                )
+            else:
+                await db.execute(
+                    """UPDATE routes SET pool_id = ?, updated_at = datetime('now')
+                       WHERE vhost_id = ? AND path_prefix = ?""",
+                    (dst_pool_id, vhost_id, f"/{bucket}/"),
+                )
             await db.execute(
                 """UPDATE bucket_sync SET status = 'routed', routed_pool_id = ?
                    WHERE vhost_id = ? AND bucket = ?""",
@@ -687,11 +694,17 @@ async def run_migration(migration_id: int) -> None:
                 await _log(migration_id, "switching",
                            f"nginx reload failed: {reload_result.output} — rolling back route and restoring config")
                 async with get_db_ctx() as db:
-                    await db.execute(
-                        """UPDATE routes SET pool_id = ?, updated_at = datetime('now')
-                           WHERE vhost_id = ? AND path_prefix = ?""",
-                        (src_pool_id, vhost_id, f"/{bucket}/"),
-                    )
+                    if route_id:
+                        await db.execute(
+                            "UPDATE routes SET pool_id = ?, updated_at = datetime('now') WHERE id = ?",
+                            (src_pool_id, route_id),
+                        )
+                    else:
+                        await db.execute(
+                            """UPDATE routes SET pool_id = ?, updated_at = datetime('now')
+                               WHERE vhost_id = ? AND path_prefix = ?""",
+                            (src_pool_id, vhost_id, f"/{bucket}/"),
+                        )
                     await db.execute(
                         """UPDATE bucket_sync SET status = 'migrating', routed_pool_id = NULL
                            WHERE vhost_id = ? AND bucket = ?""",
@@ -731,11 +744,17 @@ async def run_migration(migration_id: int) -> None:
             except OSError:
                 pass
             async with get_db_ctx() as db:
-                await db.execute(
-                    """UPDATE routes SET pool_id = ?, updated_at = datetime('now')
-                       WHERE vhost_id = ? AND path_prefix = ?""",
-                    (src_pool_id, vhost_id, f"/{bucket}/"),
-                )
+                if route_id:
+                    await db.execute(
+                        "UPDATE routes SET pool_id = ?, updated_at = datetime('now') WHERE id = ?",
+                        (src_pool_id, route_id),
+                    )
+                else:
+                    await db.execute(
+                        """UPDATE routes SET pool_id = ?, updated_at = datetime('now')
+                           WHERE vhost_id = ? AND path_prefix = ?""",
+                        (src_pool_id, vhost_id, f"/{bucket}/"),
+                    )
                 await db.execute(
                     """UPDATE bucket_sync SET status = 'migrating', routed_pool_id = NULL
                        WHERE vhost_id = ? AND bucket = ?""",
@@ -781,11 +800,16 @@ async def run_migration(migration_id: int) -> None:
 
 
 async def start_migration(
-    vhost_id: int, bucket: str, src_pool_id: int, dst_pool_id: int, mode: str = "copy"
+    vhost_id: int, bucket: str, src_pool_id: int, dst_pool_id: int,
+    mode: str = "copy", route_id: Optional[int] = None,
 ) -> int:
     """Create a migration record and launch the background task. Returns migration id.
 
     Raises RuntimeError if the max parallel migration limit is reached.
+
+    route_id: if set, the switching phase updates this specific route instead of
+              looking up by '/{bucket}/' path_prefix. Required when the route
+              path_prefix doesn't match /{bucket}/ (e.g. /photos/2025/).
     """
     s = get_settings()
     async with _migration_lock:
@@ -798,9 +822,9 @@ async def start_migration(
         async with get_db_ctx() as db:
             cursor = await db.execute(
                 """INSERT INTO migrations
-                   (vhost_id, bucket, src_pool_id, dst_pool_id, phase, mode)
-                   VALUES (?, ?, ?, ?, 'pending', ?)""",
-                (vhost_id, bucket, src_pool_id, dst_pool_id, mode),
+                   (vhost_id, bucket, src_pool_id, dst_pool_id, phase, mode, route_id)
+                   VALUES (?, ?, ?, ?, 'pending', ?, ?)""",
+                (vhost_id, bucket, src_pool_id, dst_pool_id, mode, route_id),
             )
             migration_id = cursor.lastrowid
             await db.commit()

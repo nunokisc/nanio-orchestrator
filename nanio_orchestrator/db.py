@@ -136,6 +136,7 @@ CREATE TABLE IF NOT EXISTS migrations (
     error_msg       TEXT,
     started_at      TEXT,
     finished_at     TEXT,
+    route_id        INTEGER REFERENCES routes(id),
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -311,6 +312,14 @@ async def _run_migrations_async(db) -> None:
         await db.commit()
         await db.execute("PRAGMA foreign_keys=ON")
 
+    # migrations.route_id (for route-specific migration tracking)
+    info = await db.execute_fetchall("PRAGMA table_info(migrations)")
+    col_names = {r['name'] for r in info}
+    if 'route_id' not in col_names:
+        await db.execute(
+            "ALTER TABLE migrations ADD COLUMN route_id INTEGER REFERENCES routes(id)"
+        )
+
     row = await db.execute_fetchall(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='node_configs'"
     )
@@ -444,6 +453,13 @@ def init_db_sync() -> None:
         conn.execute("ALTER TABLE migrations_new RENAME TO migrations")
         conn.commit()
         conn.execute("PRAGMA foreign_keys=ON")
+    # migrations.route_id (for route-specific migration tracking)
+    info = conn.execute("PRAGMA table_info(migrations)").fetchall()
+    col_names = {r[1] for r in info}
+    if 'route_id' not in col_names:
+        conn.execute(
+            "ALTER TABLE migrations ADD COLUMN route_id INTEGER REFERENCES routes(id)"
+        )
     # node_configs: ensure ON DELETE CASCADE on member_id FK
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='node_configs'"

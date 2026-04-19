@@ -22,9 +22,9 @@ ORCHESTRATOR (:8080, internal only)
 ├─► /etc/nginx/nanio/pools/*.meta.json     (sidecar: pool type, description, encrypted credentials)
 ├─► /etc/nginx/nanio/vhosts/*.conf         (server blocks, proxy_pass only)
 ├─► /etc/nginx/nanio/vhosts/*.meta.json    (sidecar: default pool)
-├─► /etc/nginx/nanio/migrations/*.state.json  (sidecar: in-progress migration state)
 ├─► SQLite at /opt/nanio-orchestrator/data/orchestrator.db
-└─► SQLite backup at /opt/nanio-orchestrator/data/orchestrator.db.bak (+ rotated copies)
+├─► SQLite backup at /opt/nanio-orchestrator/data/orchestrator.db.bak (+ rotated copies)
+└─► /opt/nanio-orchestrator/data/migrations/*.state.json  (in-progress migration state — alongside DB)
 ```
 
 ## Quick Start — Production
@@ -131,7 +131,7 @@ Every variable is prefixed with `NANIO_ORCHESTRATOR_`.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DB_BACKUP_PATH` | `<DB_PATH>.bak` | Backup file path (defaults to DB path + `.bak`) |
-| `DB_BACKUP_INTERVAL` | `60` | Seconds between timed backups |
+| `DB_BACKUP_INTERVAL` | `300` | Seconds between timed backups |
 | `DB_BACKUP_ROTATE` | `3` | Number of backup copies to keep (`.bak`, `.bak.2`, `.bak.3`) |
 
 ## Authentication
@@ -205,7 +205,19 @@ Tracks buckets discovered on the default pool of each vhost. Background sync run
 
 ### Migrations (rclone)
 
-Full bucket migrations using rclone. Phases: `pending → copying → verifying → switching → purge_source → done`.
+Full bucket migrations using rclone.
+
+Phases: `pending → copying → write_routing → verifying → switching → purge_source → done`
+
+- **copying**: rclone copies data in a convergence loop (up to `MIGRATION_MAX_COPY_PASSES` passes). Ends early if counts stabilise.
+- **write_routing**: nginx is reconfigured so writes go directly to the destination pool while reads still come from the source (with 404-fallback to destination). Freezes new writes to the source.
+- **verifying**: a final copy pass + rclone check to confirm source == destination.
+- **switching**: the nginx route is flipped to the destination pool and the DB is updated atomically.
+- **purge_source**: source bucket content is deleted to eliminate orphan copies.
+- **needs_purge**: set if the process crashes during `purge_source` — operator review required before purging or marking done.
+- **error** / **cancelled**: terminal failure states.
+
+A migration started automatically by `POST /api/vhosts/:id/routes` (when the destination pool differs from the vhost default and the source bucket has objects) uses the same engine. The route is initially created pointing to the source pool; the engine flips it to the destination when switching completes.
 
 - **copy** mode (default): additive — only copies objects from source to destination, never deletes at the destination.
 - **sync** mode: mirror — destination becomes identical to the source. A pre-flight guard aborts the migration if the source bucket is empty to prevent accidental data loss.
@@ -266,11 +278,15 @@ data that cannot be reconstructed from the nginx config alone:
 ├── pools/
 │   ├── pool-2025.conf           # upstream block
 │   └── pool-2025.meta.json      # type, description, encrypted credentials
-├── vhosts/
-│   ├── s3.xpto.pt.conf          # server block
-│   └── s3.xpto.pt.meta.json     # default_pool_id + name
+└── vhosts/
+    ├── s3.xpto.pt.conf          # server block
+    └── s3.xpto.pt.meta.json     # default_pool_id + name
+
+/opt/nanio-orchestrator/data/
+├── orchestrator.db
+├── orchestrator.db.bak
 └── migrations/
-    └── migration-7.state.json   # in-progress migration progress
+    └── migration-7.state.json   # in-progress migration state (alongside DB, not in nginx dir)
 ```
 
 Sidecars are written atomically (`.tmp` → rename) and are the foundation for
@@ -352,7 +368,7 @@ What is recovered:
 | Vhosts (server_name, SSL, ports) | `vhosts/*.conf` | ✓ |
 | Routes | `vhosts/*.conf` | ✓ |
 | Vhost default_pool_id | `vhosts/*.meta.json` | ✓ |
-| In-progress migrations | `migrations/*.state.json` | ✓ (reset to pending, will auto-resume) |
+| In-progress migrations | `data/migrations/*.state.json` | ✓ (reset to pending, will auto-resume) |
 | config_files sha256 records | recomputed from disk | ✓ |
 | bucket_sync | live `ListBuckets` call | ✓ (best-effort) |
 | audit_log | — | ✗ (historical only) |

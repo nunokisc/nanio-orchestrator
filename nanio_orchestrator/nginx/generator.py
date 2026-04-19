@@ -156,18 +156,27 @@ async def generate_vhost_config(vhost_id: int) -> tuple:
         # vhost is in write_routing or verifying phase, client writes must go
         # directly to the destination pool while reads still come from source.
         mig_rows = await db.execute_fetchall(
-            """SELECT m.bucket, p.name AS dst_pool_name
+            """SELECT m.bucket, m.route_id, p.name AS dst_pool_name
                FROM migrations m
                JOIN pools p ON m.dst_pool_id = p.id
                WHERE m.vhost_id = ? AND m.phase IN ('write_routing', 'verifying')""",
             (vhost_id,),
         )
-        migration_map = {row["bucket"]: row["dst_pool_name"] for row in mig_rows}
+        # Build two lookup maps: precise (by route_id) and legacy (by bucket name)
+        migration_by_route_id: Dict[int, str] = {}
+        migration_by_bucket: Dict[str, str] = {}
+        for row in mig_rows:
+            if row["route_id"]:
+                migration_by_route_id[row["route_id"]] = row["dst_pool_name"]
+            else:
+                migration_by_bucket[row["bucket"]] = row["dst_pool_name"]
         for route in routes:
-            # Match migration by exact bucket name — migration routes use /{bucket}/
-            # so only an exact match applies (avoids /photos/ vs /photos/2025/ collision)
-            prefix_stripped = route["path_prefix"].strip("/")
-            route["migration_dst_pool_name"] = migration_map.get(prefix_stripped)
+            if route["id"] in migration_by_route_id:
+                route["migration_dst_pool_name"] = migration_by_route_id[route["id"]]
+            else:
+                # Legacy: match by exact bucket name (route path_prefix = /{bucket}/)
+                prefix_stripped = route["path_prefix"].strip("/")
+                route["migration_dst_pool_name"] = migration_by_bucket.get(prefix_stripped)
 
     content = render_vhost(vhost, routes)
     filepath = str(s.vhosts_dir / f"{vhost['server_name']}.conf")

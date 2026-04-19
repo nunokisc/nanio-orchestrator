@@ -283,23 +283,57 @@ async def create_route(vhost_id: int, body: RouteCreate):
             "The '/' route is managed automatically via the vhost's default_pool_id and cannot be created manually",
         )
 
-    vhost_default_pool_id: Optional[int] = None
-
     async with get_db_ctx() as db:
         rows = await db.execute_fetchall("SELECT * FROM vhosts WHERE id = ?", (vhost_id,))
         if not rows:
             raise HTTPException(404, "Vhost not found")
-        vhost_default_pool_id = dict(rows[0]).get("default_pool_id")
+        vhost_default_pool_id: Optional[int] = dict(rows[0]).get("default_pool_id")
 
         pool_rows = await db.execute_fetchall("SELECT * FROM pools WHERE id = ?", (body.pool_id,))
         if not pool_rows:
             raise HTTPException(400, f"Pool {body.pool_id} not found")
 
+    # The S3 bucket name is the first path segment (e.g. /photos/2025/ → bucket=photos)
+    bucket_segment = body.path_prefix.strip("/").split("/")[0]
+
+    # Migration is needed when the destination differs from the vhost default (source) pool
+    needs_migration = bool(
+        bucket_segment
+        and vhost_default_pool_id
+        and body.pool_id != vhost_default_pool_id
+    )
+
+    # Count objects on source before creating the route, so we know whether to migrate
+    objects_on_source: Optional[int] = None
+    if needs_migration:
+        try:
+            async with get_db_ctx() as db:
+                src_rows = await db.execute_fetchall(
+                    "SELECT address FROM pool_members WHERE pool_id = ? AND enabled = 1 ORDER BY id LIMIT 1",
+                    (vhost_default_pool_id,),
+                )
+            if src_rows:
+                src_ak, src_sk, _ = await get_pool_s3_params(vhost_default_pool_id)
+                objects_on_source = await count_objects(
+                    src_rows[0]["address"], bucket_segment,
+                    access_key=src_ak, secret_key=src_sk,
+                )
+        except Exception as exc:
+            logger.warning("route create: source object count failed for '%s': %s", bucket_segment, exc)
+
+    # If there are objects to migrate, create the route initially pointing to the
+    # source pool so existing data stays available while the migration runs.
+    # The migration engine will flip the route to dst when switching completes.
+    # If no objects (new bucket) or no migration needed, route goes directly to dst.
+    has_objects = objects_on_source is not None and objects_on_source > 0
+    initial_pool_id = vhost_default_pool_id if (needs_migration and has_objects) else body.pool_id
+
+    async with get_db_ctx() as db:
         try:
             cursor = await db.execute(
                 """INSERT INTO routes (vhost_id, path_prefix, pool_id, key_prefix, extra_directives, enabled)
                    VALUES (?, ?, ?, ?, ?, ?)""",
-                (vhost_id, body.path_prefix, body.pool_id, body.key_prefix,
+                (vhost_id, body.path_prefix, initial_pool_id, body.key_prefix,
                  body.extra_directives, 1 if body.enabled else 0),
             )
             await db.commit()
@@ -308,24 +342,22 @@ async def create_route(vhost_id: int, body: RouteCreate):
                 raise HTTPException(409, f"Route with prefix '{body.path_prefix}' already exists for this vhost")
             raise
 
+        route_id = cursor.lastrowid
         rrows = await db.execute_fetchall(
             """SELECT r.*, p.name as pool_name
                FROM routes r JOIN pools p ON r.pool_id = p.id
                WHERE r.id = ?""",
-            (cursor.lastrowid,),
+            (route_id,),
         )
         route = dict(rrows[0])
 
         ok, output = await _apply_vhost_config(vhost_id, db)
-        await _audit(db, "create", "route", route["id"], after=route,
+        await _audit(db, "create", "route", route_id, after=route,
                      reload_ok=ok, reload_output=output)
         await db.commit()
 
-    # ── Auto-provision bucket on target pool ──────────────────────────────────
-    bucket_segment = body.path_prefix.strip("/").split("/")[0]
+    # ── Auto-provision bucket on destination pool ─────────────────────────────
     bucket_provisioned = False
-    objects_on_source: Optional[int] = None
-
     if bucket_segment:
         try:
             async with get_db_ctx() as db:
@@ -334,32 +366,41 @@ async def create_route(vhost_id: int, body: RouteCreate):
                     (body.pool_id,),
                 )
             if member_rows:
-                target_member = member_rows[0]["address"]
                 target_ak, target_sk, _ = await get_pool_s3_params(body.pool_id)
-                exists = await bucket_exists(target_member, bucket_segment,
+                exists = await bucket_exists(member_rows[0]["address"], bucket_segment,
                                              access_key=target_ak, secret_key=target_sk)
                 if not exists:
-                    ok_create, _ = await create_bucket(target_member, bucket_segment,
+                    ok_create, _ = await create_bucket(member_rows[0]["address"], bucket_segment,
                                                        access_key=target_ak, secret_key=target_sk)
                     bucket_provisioned = ok_create
                     logger.info("route create: provisioned bucket '%s' on pool %d", bucket_segment, body.pool_id)
         except Exception as exc:
             logger.warning("route create: target bucket provisioning failed for '%s': %s", bucket_segment, exc)
 
-        if vhost_default_pool_id:
-            try:
-                async with get_db_ctx() as db:
-                    src_rows = await db.execute_fetchall(
-                        "SELECT address FROM pool_members WHERE pool_id = ? AND enabled = 1 ORDER BY id LIMIT 1",
-                        (vhost_default_pool_id,),
-                    )
-                if src_rows:
-                    src_member = src_rows[0]["address"]
-                    src_ak, src_sk, _ = await get_pool_s3_params(vhost_default_pool_id)
-                    objects_on_source = await count_objects(src_member, bucket_segment,
-                                                            access_key=src_ak, secret_key=src_sk)
-            except Exception as exc:
-                logger.warning("route create: source object count failed for '%s': %s", bucket_segment, exc)
+    # ── Auto-start migration if source has data ───────────────────────────────
+    migration_id: Optional[int] = None
+    migration_warning: Optional[str] = None
+    if needs_migration and has_objects:
+        try:
+            from nanio_orchestrator.migration_engine import start_migration
+            migration_id = await start_migration(
+                vhost_id=vhost_id,
+                bucket=bucket_segment,
+                src_pool_id=vhost_default_pool_id,
+                dst_pool_id=body.pool_id,
+                route_id=route_id,
+            )
+            logger.info(
+                "route create: started migration %d for bucket '%s' route_id=%d src=%d dst=%d",
+                migration_id, bucket_segment, route_id, vhost_default_pool_id, body.pool_id,
+            )
+        except RuntimeError as exc:
+            migration_warning = str(exc)
+            logger.warning(
+                "route create: could not start migration for '%s' (route_id=%d): %s",
+                bucket_segment, route_id, exc,
+            )
+            # Route stays on source pool — data remains accessible; operator must start migration manually
 
     return {
         **route,
@@ -367,6 +408,8 @@ async def create_route(vhost_id: int, body: RouteCreate):
         "bucket_provisioned": bucket_provisioned,
         "objects_on_source": objects_on_source,
         "default_pool_id": vhost_default_pool_id,
+        "migration_id": migration_id,
+        "migration_warning": migration_warning,
     }
 
 

@@ -35,7 +35,8 @@ async def tmp_dirs(tmp_path):
     nginx_dir = str(tmp_path / "nginx")
     os.makedirs(os.path.join(nginx_dir, "pools"), exist_ok=True)
     os.makedirs(os.path.join(nginx_dir, "vhosts"), exist_ok=True)
-    os.makedirs(os.path.join(nginx_dir, "migrations"), exist_ok=True)
+    # Migration state files live alongside the DB (db_path.parent/migrations), not in nginx dir
+    os.makedirs(str(tmp_path / "migrations"), exist_ok=True)
     return {"db_path": db_path, "nginx_dir": nginx_dir, "tmp_path": tmp_path}
 
 
