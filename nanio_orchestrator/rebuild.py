@@ -207,23 +207,23 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
 
             # Find vhost_id by looking up vhosts
             vhost_id_for_migration = None
-            # Try to match via original vhost_id or just use any matching state
             if vhost_rows:
-                # Simple heuristic: use first vhost if only one
-                if len(vhost_rows) == 1:
+                # Try matching by original vhost_id in state
+                for vr in vhost_rows:
+                    if vr["id"] == state.get("vhost_id"):
+                        vhost_id_for_migration = vr["id"]
+                        break
+                # If only one vhost, use it as fallback
+                if not vhost_id_for_migration and len(vhost_rows) == 1:
                     vhost_id_for_migration = vhost_rows[0]["id"]
-                else:
-                    # Try matching by original vhost_id in state
-                    for vr in vhost_rows:
-                        if vr["id"] == state.get("vhost_id"):
-                            vhost_id_for_migration = vr["id"]
-                            break
-                    if not vhost_id_for_migration:
-                        vhost_id_for_migration = vhost_rows[0]["id"]
-                        warnings.append(
-                            f"Migration {state.get('migration_id')}: "
-                            f"could not match vhost, assigned to {vhost_rows[0]['server_name']}"
-                        )
+                elif not vhost_id_for_migration:
+                    # Multiple vhosts and no match — skip to avoid assigning to wrong vhost
+                    warnings.append(
+                        f"Migration {state.get('migration_id')}: "
+                        f"vhost_id {state.get('vhost_id')} not found among rebuilt vhosts, "
+                        "skipping to avoid assigning to wrong vhost"
+                    )
+                    continue
 
             if not vhost_id_for_migration:
                 warnings.append(

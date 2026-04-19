@@ -7,6 +7,13 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+import re
+
+# Patterns for nginx-safe values
+_PATH_PREFIX_RE = re.compile(r"^/[A-Za-z0-9._/@-]+/?$")
+_SERVER_NAME_RE = re.compile(r"^(\*\.)?[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$")
+_NGINX_DANGEROUS_RE = re.compile(r"[;{}\\]")
+
 
 # ── Pool ──────────────────────────────────────────────────────────────────────
 
@@ -95,6 +102,17 @@ class VhostCreate(BaseModel):
     enabled: bool = True
     default_pool_id: Optional[int] = None
 
+    @field_validator("server_name")
+    @classmethod
+    def validate_server_name(cls, v: str) -> str:
+        v = v.strip()
+        if not _SERVER_NAME_RE.match(v):
+            raise ValueError(
+                "server_name must be a valid hostname or wildcard (e.g. *.example.com); "
+                "characters ; { } \\ are not allowed"
+            )
+        return v
+
 
 class VhostUpdate(BaseModel):
     server_name: Optional[str] = Field(None, min_length=1, max_length=253)
@@ -105,6 +123,19 @@ class VhostUpdate(BaseModel):
     extra_directives: Optional[str] = None
     enabled: Optional[bool] = None
     default_pool_id: Optional[int] = None
+
+    @field_validator("server_name")
+    @classmethod
+    def validate_server_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v = v.strip()
+        if not _SERVER_NAME_RE.match(v):
+            raise ValueError(
+                "server_name must be a valid hostname or wildcard (e.g. *.example.com); "
+                "characters ; { } \\ are not allowed"
+            )
+        return v
 
 
 class VhostOut(BaseModel):
@@ -136,6 +167,21 @@ class RouteCreate(BaseModel):
     def validate_prefix(cls, v: str) -> str:
         if not v.startswith("/"):
             raise ValueError("path_prefix must start with /")
+        if not _PATH_PREFIX_RE.match(v):
+            raise ValueError(
+                "path_prefix must match /[A-Za-z0-9._/@-]+/? — "
+                "characters ; { } \\ and spaces are not allowed"
+            )
+        return v
+
+    @field_validator("extra_directives")
+    @classmethod
+    def validate_extra_directives(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and _NGINX_DANGEROUS_RE.search(v):
+            raise ValueError(
+                "extra_directives contains dangerous characters (; { } \\). "
+                "Use the config rebuild API for advanced directives."
+            )
         return v
 
 
@@ -145,6 +191,30 @@ class RouteUpdate(BaseModel):
     key_prefix: Optional[str] = None
     extra_directives: Optional[str] = None
     enabled: Optional[bool] = None
+
+    @field_validator("path_prefix")
+    @classmethod
+    def validate_prefix(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        if not v.startswith("/"):
+            raise ValueError("path_prefix must start with /")
+        if not _PATH_PREFIX_RE.match(v):
+            raise ValueError(
+                "path_prefix must match /[A-Za-z0-9._/@-]+/? — "
+                "characters ; { } \\ and spaces are not allowed"
+            )
+        return v
+
+    @field_validator("extra_directives")
+    @classmethod
+    def validate_extra_directives(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and _NGINX_DANGEROUS_RE.search(v):
+            raise ValueError(
+                "extra_directives contains dangerous characters (; { } \\). "
+                "Use the config rebuild API for advanced directives."
+            )
+        return v
 
 
 class RouteOut(BaseModel):

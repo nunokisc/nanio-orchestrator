@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import urllib.parse
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set
@@ -21,7 +22,7 @@ from fastapi import FastAPI, Request, Response
 from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.credentials import get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
-from nanio_orchestrator.s3client import list_buckets, list_objects, count_objects
+from nanio_orchestrator.s3client import list_buckets, count_objects
 
 logger = logging.getLogger(__name__)
 
@@ -84,26 +85,39 @@ def create_proxy_app() -> FastAPI:
         # Forward query params
         params = dict(request.query_params)
         list_type = params.get("list-type", "2")
-        max_keys = int(params.get("max-keys", "1000"))
+        max_keys = min(int(params.get("max-keys", "1000")), 1000)
         prefix = params.get("prefix", "")
         continuation = params.get("continuation-token", "")
 
+        # Build the query to forward to the backend directly
+        query = f"list-type={list_type}&max-keys={max_keys}"
+        if prefix:
+            query += f"&prefix={urllib.parse.quote(prefix, safe='')}"
+        if continuation:
+            query += f"&continuation-token={urllib.parse.quote(continuation, safe='')}"
+
         try:
-            keys = await list_objects(address, bucket, access_key=ak, secret_key=sk, region=region)
+            from nanio_orchestrator.s3client import _do_request
+            import xml.etree.ElementTree as _ET
+
+            status_code, body = await asyncio.to_thread(
+                _do_request, "GET", address, f"/{bucket}", query,
+                b"", ak, sk, region
+            )
+            if status_code != 200:
+                return Response(
+                    content=_build_error_xml("InternalError", f"Backend returned HTTP {status_code}"),
+                    status_code=500,
+                    media_type="application/xml",
+                )
+            # Forward the backend XML response directly — preserves IsTruncated and NextContinuationToken
+            return Response(content=body, media_type="application/xml")
         except Exception as e:
             return Response(
                 content=_build_error_xml("InternalError", str(e)),
                 status_code=500,
                 media_type="application/xml",
             )
-
-        # Apply prefix filter
-        if prefix:
-            keys = [k for k in keys if k.startswith(prefix)]
-
-        # Build XML
-        xml = _build_list_objects_xml(bucket, keys[:max_keys], len(keys) > max_keys)
-        return Response(content=xml, media_type="application/xml")
 
     return app
 
@@ -152,18 +166,8 @@ async def _resolve_bucket_pool(bucket: str):
             if members:
                 return pool_id, members[0]["address"]
 
-        # Last resort: first vhost with default pool
-        rows = await db.execute_fetchall(
-            "SELECT default_pool_id FROM vhosts WHERE default_pool_id IS NOT NULL LIMIT 1"
-        )
-        if rows:
-            pool_id = rows[0]["default_pool_id"]
-            members = await db.execute_fetchall(
-                "SELECT address FROM pool_members WHERE pool_id = ? AND enabled = 1 ORDER BY id LIMIT 1",
-                (pool_id,),
-            )
-            if members:
-                return pool_id, members[0]["address"]
+        # No match — do NOT fall through to an arbitrary vhost's default pool,
+        # as that would cross tenant boundaries in multi-vhost deployments.
 
     return None, None
 

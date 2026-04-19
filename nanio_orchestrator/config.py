@@ -10,10 +10,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def _detect_dev_mode() -> bool:
-    """Dev mode when DEV=true, or dev.env exists in cwd, or no prod config file."""
+    """Dev mode when DEV=true env var is explicitly set, or no prod config file exists."""
     if os.environ.get("DEV", "").lower() in ("1", "true", "yes"):
-        return True
-    if Path("dev.env").exists():
         return True
     if not Path("/etc/nanio-orchestrator/config.env").exists():
         return True
@@ -57,7 +55,7 @@ class Settings(BaseSettings):
     s3_request_timeout: int = 3600  # seconds; socket timeout for S3 HTTP requests (large for big file transfers)
     log_file: Optional[str] = None  # path to rotating log file; None = log to stdout only
     db_backup_path: Optional[str] = None  # auto-derived from db_path if None
-    db_backup_interval: int = 60  # seconds between timed backups
+    db_backup_interval: int = 300  # seconds between timed backups
     db_backup_rotate: int = 3  # keep N backup copies
     dev: bool = DEV_MODE
 

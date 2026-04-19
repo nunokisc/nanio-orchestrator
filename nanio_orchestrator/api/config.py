@@ -339,26 +339,34 @@ async def rebuild_all():
         async with aiofiles.open(tmp, "w") as f:
             await f.write(content)
 
-    # Test with all .tmp files renamed
-    test_result = await test_config()
-    if not test_result.ok:
-        # Clean up .tmp files
-        for filepath, _ in to_write:
-            tmp = filepath + ".tmp"
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-        return {"ok": False, "output": test_result.output, "written": [], "removed": removed}
-
-    # Atomic rename all
+    # Save old configs for rollback, then rename .tmp → live
+    old_configs: dict = {}
     for filepath, content in to_write:
         tmp = filepath + ".tmp"
+        if os.path.exists(filepath):
+            async with aiofiles.open(filepath, "r") as f:
+                old_configs[filepath] = await f.read()
         try:
             os.rename(tmp, filepath)
-            written.append(filepath)
         except OSError as e:
             errors.append(f"{filepath}: {e}")
+
+    # Test the actual config nginx will use (all files now in place)
+    test_result = await test_config()
+    if not test_result.ok:
+        # Restore old configs on failure
+        for filepath, content in to_write:
+            if filepath in old_configs:
+                async with aiofiles.open(filepath, "w") as f:
+                    await f.write(old_configs[filepath])
+            elif os.path.exists(filepath):
+                try:
+                    os.unlink(filepath)
+                except OSError:
+                    pass
+        return {"ok": False, "output": test_result.output, "written": [], "removed": removed}
+
+    written = [fp for fp, _ in to_write if fp not in [e.split(":")[0] for e in errors]]
 
     reload_result = await reload_nginx()
 

@@ -27,7 +27,7 @@ from nanio_orchestrator.s3client import bucket_exists, list_buckets
 
 logger = logging.getLogger(__name__)
 
-_running = False
+_stop_event = asyncio.Event()
 
 
 async def sync_vhost_buckets_once(vhost_id: int) -> dict:
@@ -55,13 +55,14 @@ async def sync_vhost_buckets_once(vhost_id: int) -> dict:
         member_address = dict(member_rows[0])["address"]
 
         # Build set of buckets that already have dedicated routes
-        # path_prefix like '/assets-2025/' → first segment = 'assets-2025'
+        # Use the full stripped path_prefix as the bucket key to avoid collisions
+        # (e.g. /photos/ and /photos/2025/ are distinct routes)
         route_rows = await db.execute_fetchall(
             "SELECT path_prefix, pool_id FROM routes WHERE vhost_id = ?", (vhost_id,)
         )
         routed: dict[str, int] = {}
         for r in route_rows:
-            seg = r["path_prefix"].strip("/").split("/")[0]
+            seg = r["path_prefix"].strip("/")
             if seg:
                 routed[seg] = r["pool_id"]
 
@@ -222,21 +223,24 @@ async def sync_all_vhosts() -> List[dict]:
 
 async def bucket_sync_loop() -> None:
     """Run bucket sync in a loop."""
-    global _running
-    _running = True
+    _stop_event.clear()
     s = get_settings()
     interval = s.bucket_sync_interval
 
     logger.info("Bucket sync started (interval=%ds)", interval)
 
-    while _running:
+    while not _stop_event.is_set():
         try:
             await sync_all_vhosts()
         except Exception as e:
             logger.error("Bucket sync error: %s", e)
-        await asyncio.sleep(interval)
+
+        try:
+            await asyncio.wait_for(_stop_event.wait(), timeout=interval)
+            break  # stop_event was set
+        except asyncio.TimeoutError:
+            pass  # interval elapsed, continue loop
 
 
 def stop_bucket_sync() -> None:
-    global _running
-    _running = False
+    _stop_event.set()

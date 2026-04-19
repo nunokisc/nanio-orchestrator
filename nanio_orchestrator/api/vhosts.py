@@ -16,7 +16,14 @@ from nanio_orchestrator.backup import trigger_backup
 from nanio_orchestrator.credentials import get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator.s3client import bucket_exists, create_bucket, count_objects
-from nanio_orchestrator.sidecar import write_vhost_sidecar, delete_vhost_sidecar
+from nanio_orchestrator.sidecar import write_vhost_sidecar as _write_vhost_sidecar_sync, delete_vhost_sidecar as _delete_vhost_sidecar_sync
+import asyncio as _asyncio
+
+async def write_vhost_sidecar(*args, **kwargs):
+    await _asyncio.to_thread(_write_vhost_sidecar_sync, *args, **kwargs)
+
+async def delete_vhost_sidecar(*args, **kwargs):
+    await _asyncio.to_thread(_delete_vhost_sidecar_sync, *args, **kwargs)
 from nanio_orchestrator.models import (
     RouteCreate,
     RouteOut,
@@ -85,12 +92,25 @@ async def _apply_vhost_config(vhost_id: int, db) -> tuple:
     async with aiofiles.open(tmp_path, "w") as f:
         await f.write(content)
 
+    # Save current config for rollback
+    old_content = None
+    if os.path.exists(filepath):
+        async with aiofiles.open(filepath, "r") as f:
+            old_content = await f.read()
+
+    # Rename .tmp → live, then test the actual config nginx will use
+    os.rename(tmp_path, filepath)
+
     test_result = await test_config()
     if not test_result.ok:
-        os.unlink(tmp_path)
+        # Restore previous config on failure
+        if old_content is not None:
+            async with aiofiles.open(filepath, "w") as f:
+                await f.write(old_content)
+        else:
+            os.unlink(filepath)
         return False, test_result.output
 
-    os.rename(tmp_path, filepath)
     reload_result = await reload_nginx()
     await record_file_state(db, filepath, content)
     await db.commit()
@@ -136,7 +156,7 @@ async def create_vhost(body: VhostCreate):
         await _audit(db, "create", "vhost", vhost["id"], after=vhost)
 
         default_pool_name = await _get_pool_name(db, vhost.get("default_pool_id"))
-        write_vhost_sidecar(vhost["id"], vhost["server_name"], vhost.get("default_pool_id"), default_pool_name)
+        await write_vhost_sidecar(vhost["id"], vhost["server_name"], vhost.get("default_pool_id"), default_pool_name)
 
         # Auto-create the immutable '/' catch-all route pointing to the default pool
         if body.default_pool_id:
@@ -203,7 +223,7 @@ async def update_vhost(vhost_id: int, body: VhostUpdate):
         await db.commit()
 
         default_pool_name = await _get_pool_name(db, after.get("default_pool_id"))
-        write_vhost_sidecar(after["id"], after["server_name"], after.get("default_pool_id"), default_pool_name)
+        await write_vhost_sidecar(after["id"], after["server_name"], after.get("default_pool_id"), default_pool_name)
 
         return after
 
@@ -233,7 +253,7 @@ async def delete_vhost(vhost_id: int):
         await db.commit()
 
         # Delete sidecar
-        delete_vhost_sidecar(vhost["server_name"])
+        await delete_vhost_sidecar(vhost["server_name"])
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────

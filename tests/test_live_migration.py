@@ -28,6 +28,20 @@ from tests.conftest import create_member, create_pool, create_vhost
 # ---------------------------------------------------------------------------
 
 
+async def _wait_migration_terminal(client, mig_id: int, timeout: float = 10.0):
+    """Poll until migration reaches a terminal phase, with timeout."""
+    terminal = {"done", "error", "cancelled", "needs_purge"}
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        resp = await client.get(f"/api/migrations/{mig_id}")
+        if resp.json()["phase"] in terminal:
+            return resp.json()
+        await asyncio.sleep(0.05)
+    # Return last state even on timeout
+    resp = await client.get(f"/api/migrations/{mig_id}")
+    return resp.json()
+
+
 @pytest.fixture(autouse=True)
 def set_secret():
     from cryptography.fernet import Fernet
@@ -94,7 +108,7 @@ class TestConvergenceLoop:
         mig_id = resp.json()["id"]
 
         # Wait for engine to finish
-        await asyncio.sleep(0.5)
+        await _wait_migration_terminal(client, mig_id)
 
         log_resp = await client.get(f"/api/migrations/{mig_id}/log")
         log_lines = [e["message"] for e in log_resp.json()]
@@ -141,7 +155,7 @@ class TestConvergenceLoop:
         assert resp.status_code == 201
         mig_id = resp.json()["id"]
 
-        await asyncio.sleep(0.6)
+        await _wait_migration_terminal(client, mig_id)
 
         log_resp = await client.get(f"/api/migrations/{mig_id}/log")
         log_lines = [e["message"] for e in log_resp.json()]
@@ -184,7 +198,7 @@ class TestConvergenceLoop:
         assert resp.status_code == 201
         mig_id = resp.json()["id"]
 
-        await asyncio.sleep(0.8)
+        await _wait_migration_terminal(client, mig_id)
 
         log_resp = await client.get(f"/api/migrations/{mig_id}/log")
         log_lines = [e["message"] for e in log_resp.json()]
@@ -229,7 +243,7 @@ class TestConvergenceLoop:
             assert resp.status_code == 201
             mig_id = resp.json()["id"]
 
-            await asyncio.sleep(0.8)
+            await _wait_migration_terminal(client, mig_id)
 
             log_resp = await client.get(f"/api/migrations/{mig_id}/log")
             log_lines = [e["message"] for e in log_resp.json()]
@@ -280,7 +294,7 @@ class TestWriteRoutingPhase:
         assert resp.status_code == 201
         mig_id = resp.json()["id"]
 
-        await asyncio.sleep(0.8)
+        await _wait_migration_terminal(client, mig_id)
 
         # reload_nginx should have been called at least once for write_routing
         # and once more for switching
@@ -321,31 +335,25 @@ class TestWriteRoutingPhase:
         assert resp.status_code == 201
         mig_id = resp.json()["id"]
 
-        await asyncio.sleep(1.0)
+        await _wait_migration_terminal(client, mig_id)
 
         mig_resp = await client.get(f"/api/migrations/{mig_id}")
         data = mig_resp.json()
         assert data["phase"] in ("done", "purge_source", "switching"), \
             f"Unexpected phase: {data['phase']}"
 
-    async def test_nginx_test_failure_does_not_abort_write_routing(
+    async def test_nginx_test_failure_aborts_write_routing(
         self, client, mock_rclone, mock_s3
     ):
-        """If nginx test fails during write_routing, a warning is logged but migration continues."""
+        """If nginx test fails during write_routing, migration transitions to error (C4 fix)."""
         # Create a dedicated nginx mock with failing test_config
         test_result_fail = MagicMock(ok=False, output="syntax error")
         test_result_ok = MagicMock(ok=True, output="syntax ok")
         reload_mock = AsyncMock(return_value=MagicMock(ok=True))
 
-        # First call (write_routing) fails; subsequent calls (switching) succeed
-        call_n = {"n": 0}
-
-        async def test_side_effect():
-            call_n["n"] += 1
-            return test_result_fail if call_n["n"] == 1 else test_result_ok
-
+        # test_config always fails — simulates bad nginx config
         with patch("nanio_orchestrator.migration_engine.test_config",
-                   new=AsyncMock(side_effect=test_side_effect)), \
+                   new=AsyncMock(return_value=test_result_fail)), \
              patch("nanio_orchestrator.migration_engine.reload_nginx", reload_mock), \
              patch("nanio_orchestrator.api.buckets.test_config",
                    new=AsyncMock(return_value=test_result_ok)), \
@@ -382,20 +390,12 @@ class TestWriteRoutingPhase:
             assert resp.status_code == 201
             mig_id = resp.json()["id"]
 
-            await asyncio.sleep(1.0)
+            await _wait_migration_terminal(client, mig_id)
 
-            log_resp = await client.get(f"/api/migrations/{mig_id}/log")
-            log_lines = [e["message"] for e in log_resp.json()]
-
-            # Should log a warning about nginx test failure, not abort
-            assert any("warning" in m.lower() and "nginx test" in m.lower()
-                       or "write-routing not active" in m.lower()
-                       for m in log_lines), f"No nginx-test-fail warning: {log_lines}"
-
-            # Migration should not be in error phase
+            # Migration should be in error phase due to nginx test failure
             mig_resp = await client.get(f"/api/migrations/{mig_id}")
-            assert mig_resp.json()["phase"] != "error", \
-                f"Migration aborted unexpectedly: {mig_resp.json()}"
+            assert mig_resp.json()["phase"] == "error", \
+                f"Expected error phase, got: {mig_resp.json()['phase']}"
 
 
 # ---------------------------------------------------------------------------

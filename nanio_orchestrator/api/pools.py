@@ -9,7 +9,14 @@ from fastapi import APIRouter, HTTPException, status
 
 from nanio_orchestrator.backup import trigger_backup
 from nanio_orchestrator.db import get_db_ctx
-from nanio_orchestrator.sidecar import write_pool_sidecar, delete_pool_sidecar
+from nanio_orchestrator.sidecar import write_pool_sidecar as _write_pool_sidecar_sync, delete_pool_sidecar as _delete_pool_sidecar_sync
+import asyncio as _asyncio
+
+async def write_pool_sidecar(*args, **kwargs):
+    await _asyncio.to_thread(_write_pool_sidecar_sync, *args, **kwargs)
+
+async def delete_pool_sidecar(*args, **kwargs):
+    await _asyncio.to_thread(_delete_pool_sidecar_sync, *args, **kwargs)
 from nanio_orchestrator.models import (
     MemberCreate,
     MemberOut,
@@ -66,14 +73,24 @@ async def _apply_pool_config(pool_id: int, db) -> tuple:
     async with aiofiles.open(tmp_path, "w") as f:
         await f.write(content)
 
-    # Test
+    # Save current config for rollback
+    old_content = None
+    if os.path.exists(filepath):
+        async with aiofiles.open(filepath, "r") as f:
+            old_content = await f.read()
+
+    # Rename .tmp → live, then test the actual config nginx will use
+    os.rename(tmp_path, filepath)
+
     test_result = await test_config()
     if not test_result.ok:
-        os.unlink(tmp_path)
+        # Restore previous config on failure
+        if old_content is not None:
+            async with aiofiles.open(filepath, "w") as f:
+                await f.write(old_content)
+        else:
+            os.unlink(filepath)
         return False, test_result.output
-
-    # Atomic rename
-    os.rename(tmp_path, filepath)
 
     # Reload
     reload_result = await reload_nginx()
@@ -135,7 +152,7 @@ async def create_pool(body: PoolCreate):
         await db.commit()
 
         # Write sidecar
-        write_pool_sidecar(pool["id"], pool["name"], pool["type"], pool.get("description"))
+        await write_pool_sidecar(pool["id"], pool["name"], pool["type"], pool.get("description"))
 
         return pool
 
@@ -188,7 +205,7 @@ async def update_pool(pool_id: int, body: PoolUpdate):
         await db.commit()
 
         # Update sidecar
-        write_pool_sidecar(after["id"], after["name"], after["type"], after.get("description"))
+        await write_pool_sidecar(after["id"], after["name"], after["type"], after.get("description"))
 
         return after
 
@@ -285,7 +302,7 @@ async def delete_pool(pool_id: int):
         await db.commit()
 
         # Delete sidecar
-        delete_pool_sidecar(pool["name"])
+        await delete_pool_sidecar(pool["name"])
 
 
 # ── Pool Members ──────────────────────────────────────────────────────────────

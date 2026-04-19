@@ -40,8 +40,8 @@ async def backup_database() -> str | None:
 
     Path(dst).parent.mkdir(parents=True, exist_ok=True)
 
-    # Rotate existing backups: .bak.3 → .bak.4, .bak.2 → .bak.3, .bak → .bak.2
-    _rotate_backups(dst, s.db_backup_rotate)
+    # Rotate existing backups (blocking I/O — run in thread to avoid stalling event loop)
+    await asyncio.to_thread(_rotate_backups, dst, s.db_backup_rotate)
 
     try:
         async with aiosqlite.connect(src) as src_db:

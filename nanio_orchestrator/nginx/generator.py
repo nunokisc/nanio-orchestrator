@@ -68,7 +68,15 @@ async def write_config_atomic(filepath: str, content: str) -> str:
     tmp_path = filepath + ".tmp"
     async with aiofiles.open(tmp_path, "w") as f:
         await f.write(content)
+        await f.flush()
+        os.fsync(f.fileno())
     os.rename(tmp_path, filepath)
+    # fsync the parent directory to ensure the rename is durable
+    dir_fd = os.open(os.path.dirname(filepath) or ".", os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
     return sha256_str(content)
 
 
@@ -156,8 +164,10 @@ async def generate_vhost_config(vhost_id: int) -> tuple:
         )
         migration_map = {row["bucket"]: row["dst_pool_name"] for row in mig_rows}
         for route in routes:
-            bucket = route["path_prefix"].strip("/").split("/")[0]
-            route["migration_dst_pool_name"] = migration_map.get(bucket)
+            # Match migration by exact bucket name — migration routes use /{bucket}/
+            # so only an exact match applies (avoids /photos/ vs /photos/2025/ collision)
+            prefix_stripped = route["path_prefix"].strip("/")
+            route["migration_dst_pool_name"] = migration_map.get(prefix_stripped)
 
     content = render_vhost(vhost, routes)
     filepath = str(s.vhosts_dir / f"{vhost['server_name']}.conf")

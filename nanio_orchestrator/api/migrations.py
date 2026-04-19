@@ -15,11 +15,9 @@ from typing import List
 
 from fastapi import APIRouter, HTTPException, Query
 
-from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator.migration_engine import (
     cancel_migration,
-    get_active_count,
     start_migration,
 )
 from nanio_orchestrator.models import (
@@ -35,15 +33,6 @@ logger = logging.getLogger(__name__)
 @router.post("", response_model=RcloneMigrationOut, status_code=201)
 async def create_migration(body: RcloneMigrationCreate):
     """Start a new rclone-based migration."""
-    s = get_settings()
-
-    # Enforce parallel limit
-    if get_active_count() >= s.migration_max_parallel:
-        raise HTTPException(
-            429,
-            f"Max parallel migrations reached ({s.migration_max_parallel}). "
-            "Wait for a running migration to finish or cancel one.",
-        )
 
     # Validate pools exist and are distinct
     if body.src_pool_id == body.dst_pool_id:
@@ -102,7 +91,10 @@ async def create_migration(body: RcloneMigrationCreate):
             )
         vhost_id = vh_rows[0]["id"]
 
-    migration_id = await start_migration(vhost_id, body.bucket, body.src_pool_id, body.dst_pool_id, body.mode)
+    try:
+        migration_id = await start_migration(vhost_id, body.bucket, body.src_pool_id, body.dst_pool_id, body.mode)
+    except RuntimeError as e:
+        raise HTTPException(429, str(e))
 
     # Return the created migration
     async with get_db_ctx() as db:

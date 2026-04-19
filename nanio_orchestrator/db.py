@@ -107,22 +107,6 @@ CREATE TABLE IF NOT EXISTS bucket_sync (
     UNIQUE(vhost_id, bucket)
 );
 
-CREATE TABLE IF NOT EXISTS object_migrations (
-    id              INTEGER PRIMARY KEY,
-    vhost_id        INTEGER NOT NULL REFERENCES vhosts(id) ON DELETE CASCADE,
-    bucket          TEXT NOT NULL,
-    src_pool_id     INTEGER NOT NULL REFERENCES pools(id),
-    dst_pool_id     INTEGER NOT NULL REFERENCES pools(id),
-    status          TEXT NOT NULL DEFAULT 'pending'
-                    CHECK (status IN ('pending','running','done','error')),
-    objects_total   INTEGER NOT NULL DEFAULT 0,
-    objects_done    INTEGER NOT NULL DEFAULT 0,
-    error_msg       TEXT,
-    started_at      TEXT,
-    finished_at     TEXT,
-    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
 CREATE TABLE IF NOT EXISTS pool_credentials (
     id              INTEGER PRIMARY KEY,
     pool_id         INTEGER NOT NULL UNIQUE REFERENCES pools(id) ON DELETE CASCADE,
@@ -143,7 +127,7 @@ CREATE TABLE IF NOT EXISTS migrations (
     mode            TEXT NOT NULL DEFAULT 'copy'
                     CHECK (mode IN ('copy','sync')),
     phase           TEXT NOT NULL DEFAULT 'pending'
-                    CHECK (phase IN ('pending','copying','write_routing','verifying','switching','purge_source','done','error','cancelled')),
+                    CHECK (phase IN ('pending','copying','write_routing','verifying','switching','purge_source','needs_purge','done','error','cancelled')),
     rclone_pid      INTEGER,
     objects_total   INTEGER NOT NULL DEFAULT 0,
     objects_done    INTEGER NOT NULL DEFAULT 0,
@@ -295,6 +279,38 @@ async def _run_migrations_async(db) -> None:
         await db.execute("ALTER TABLE migrations_new RENAME TO migrations")
         await db.commit()
         await db.execute("PRAGMA foreign_keys=ON")
+    # migrations.phase: add needs_purge (CHECK constraint requires table recreation)
+    row = await db.execute_fetchall(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='migrations'"
+    )
+    if row and "needs_purge" not in (row[0]["sql"] or ""):
+        await db.execute("PRAGMA foreign_keys=OFF")
+        await db.execute("""CREATE TABLE migrations_new (
+            id              INTEGER PRIMARY KEY,
+            vhost_id        INTEGER NOT NULL REFERENCES vhosts(id),
+            bucket          TEXT NOT NULL,
+            src_pool_id     INTEGER NOT NULL REFERENCES pools(id),
+            dst_pool_id     INTEGER NOT NULL REFERENCES pools(id),
+            mode            TEXT NOT NULL DEFAULT 'copy'
+                            CHECK (mode IN ('copy','sync')),
+            phase           TEXT NOT NULL DEFAULT 'pending'
+                            CHECK (phase IN ('pending','copying','write_routing','verifying','switching','purge_source','needs_purge','done','error','cancelled')),
+            rclone_pid      INTEGER,
+            objects_total   INTEGER NOT NULL DEFAULT 0,
+            objects_done    INTEGER NOT NULL DEFAULT 0,
+            bytes_total     INTEGER NOT NULL DEFAULT 0,
+            bytes_done      INTEGER NOT NULL DEFAULT 0,
+            error_msg       TEXT,
+            started_at      TEXT,
+            finished_at     TEXT,
+            created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+        )""")
+        await db.execute("INSERT INTO migrations_new SELECT * FROM migrations")
+        await db.execute("DROP TABLE migrations")
+        await db.execute("ALTER TABLE migrations_new RENAME TO migrations")
+        await db.commit()
+        await db.execute("PRAGMA foreign_keys=ON")
+
     row = await db.execute_fetchall(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='node_configs'"
     )
@@ -382,6 +398,37 @@ def init_db_sync() -> None:
                             CHECK (mode IN ('copy','sync')),
             phase           TEXT NOT NULL DEFAULT 'pending'
                             CHECK (phase IN ('pending','copying','write_routing','verifying','switching','purge_source','done','error','cancelled')),
+            rclone_pid      INTEGER,
+            objects_total   INTEGER NOT NULL DEFAULT 0,
+            objects_done    INTEGER NOT NULL DEFAULT 0,
+            bytes_total     INTEGER NOT NULL DEFAULT 0,
+            bytes_done      INTEGER NOT NULL DEFAULT 0,
+            error_msg       TEXT,
+            started_at      TEXT,
+            finished_at     TEXT,
+            created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+        )""")
+        conn.execute("INSERT INTO migrations_new SELECT * FROM migrations")
+        conn.execute("DROP TABLE migrations")
+        conn.execute("ALTER TABLE migrations_new RENAME TO migrations")
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys=ON")
+    # migrations.phase: add needs_purge (CHECK constraint requires table recreation)
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='migrations'"
+    ).fetchone()
+    if row and "needs_purge" not in (row[0] or ""):
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("""CREATE TABLE migrations_new (
+            id              INTEGER PRIMARY KEY,
+            vhost_id        INTEGER NOT NULL REFERENCES vhosts(id),
+            bucket          TEXT NOT NULL,
+            src_pool_id     INTEGER NOT NULL REFERENCES pools(id),
+            dst_pool_id     INTEGER NOT NULL REFERENCES pools(id),
+            mode            TEXT NOT NULL DEFAULT 'copy'
+                            CHECK (mode IN ('copy','sync')),
+            phase           TEXT NOT NULL DEFAULT 'pending'
+                            CHECK (phase IN ('pending','copying','write_routing','verifying','switching','purge_source','needs_purge','done','error','cancelled')),
             rclone_pid      INTEGER,
             objects_total   INTEGER NOT NULL DEFAULT 0,
             objects_done    INTEGER NOT NULL DEFAULT 0,

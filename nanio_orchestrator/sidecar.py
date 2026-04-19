@@ -26,12 +26,20 @@ def _now_iso() -> str:
 
 
 def _write_atomic(filepath: str, data: dict) -> None:
-    """Write JSON atomically: write .tmp then rename."""
+    """Write JSON atomically: write .tmp, fsync, then rename."""
     tmp = filepath + ".tmp"
     with open(tmp, "w") as f:
         json.dump(data, f, indent=2, default=str)
         f.write("\n")
+        f.flush()
+        os.fsync(f.fileno())
     os.rename(tmp, filepath)
+    # fsync parent directory to ensure rename is durable
+    dir_fd = os.open(os.path.dirname(filepath) or ".", os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 def _read_json(filepath: str) -> Optional[dict]:

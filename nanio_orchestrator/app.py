@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
 from contextlib import asynccontextmanager
 
@@ -24,7 +25,7 @@ from nanio_orchestrator.backup import backup_loop, stop_backup
 logger = logging.getLogger(__name__)
 
 # Paths that never require any authentication
-_UNPROTECTED = {"/api/health", "/api/docs", "/api/redoc", "/api/openapi.json", "/login", "/logout"}
+_UNPROTECTED = {"/api/health", "/api/docs", "/api/redoc", "/login", "/logout"}
 _UNPROTECTED_PREFIXES = ("/static/",)
 
 
@@ -49,6 +50,19 @@ async def lifespan(app: FastAPI):
 
     # Start S3 listing proxy
     proxy_task = asyncio.create_task(start_proxy_server())
+
+    def _proxy_done(task: asyncio.Task) -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc:
+            logger.error(
+                "S3 listing proxy failed to start or crashed: %s. "
+                "The proxy will not be available. Check if port %d is already in use.",
+                exc, s.s3_proxy_port,
+            )
+
+    proxy_task.add_done_callback(_proxy_done)
 
     # Start DB backup loop
     backup_task = asyncio.create_task(backup_loop())
@@ -122,7 +136,7 @@ def create_app() -> FastAPI:
         # ── /api/* — header OR cookie auth ─────────────────────────────────
         if path.startswith("/api/"):
             key = request.headers.get("X-Orchestrator-Key", "")
-            if key == s.api_key:
+            if key and hmac.compare_digest(key, s.api_key):
                 return await call_next(request)
             # Also allow a browser session cookie (Web UI calls the API directly)
             if is_authenticated(request, s.api_key, s.session_ttl):

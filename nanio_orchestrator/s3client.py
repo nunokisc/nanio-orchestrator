@@ -38,6 +38,19 @@ def _signing_key(secret: str, date: str, region: str, service: str) -> bytes:
     return _hmac_sha256(k, "aws4_request")
 
 
+def _canonicalize_query_string(query: str) -> str:
+    """Sort and URI-encode query parameters per AWS SigV4 spec."""
+    if not query:
+        return ""
+    pairs = urllib.parse.parse_qsl(query, keep_blank_values=True)
+    sorted_pairs = sorted(pairs, key=lambda p: (p[0], p[1]))
+    return "&".join(
+        f"{urllib.parse.quote(k, safe='~')}"
+        f"={urllib.parse.quote(v, safe='~')}"
+        for k, v in sorted_pairs
+    )
+
+
 def _make_auth_headers(
     method: str,
     host: str,
@@ -71,7 +84,7 @@ def _make_auth_headers(
     canonical_request = "\n".join([
         method.upper(),
         urllib.parse.quote(path, safe="/-_.~"),
-        query,
+        _canonicalize_query_string(query),
         canonical_headers,
         signed_headers_str,
         body_hash,
@@ -249,29 +262,53 @@ async def count_objects(
     secret_key: Optional[str] = None,
     region: str = "us-east-1",
 ) -> int:
-    """Return number of objects in bucket (first page only, max 1000)."""
-    status, body = await asyncio.to_thread(
-        _do_request, "GET", address, f"/{bucket}", "list-type=2&max-keys=1000",
-        b"", access_key, secret_key, region
-    )
-    if status == 403:
-        raise PermissionError(
-            f"ListObjects returned 403 Forbidden for bucket '{bucket}' at {address}. "
-            "Check S3 credentials for this pool."
+    """Return number of objects in bucket (paginates to count all objects)."""
+    total = 0
+    continuation_token = ""
+
+    while True:
+        query = "list-type=2&max-keys=1000"
+        if continuation_token:
+            query += "&continuation-token=" + urllib.parse.quote(continuation_token)
+
+        status, body = await asyncio.to_thread(
+            _do_request, "GET", address, f"/{bucket}", query,
+            b"", access_key, secret_key, region
         )
-    if status != 200:
-        raise RuntimeError(
-            f"ListObjects HTTP {status} for bucket '{bucket}' at {address}: "
-            f"{body[:200].decode(errors='replace')}"
-        )
-    root = ET.fromstring(body)
-    for elem in root.iter():
-        if _strip_ns(elem.tag) == "KeyCount":
-            try:
-                return int(elem.text or "0")
-            except ValueError:
-                return 0
-    return 0
+        if status == 403:
+            raise PermissionError(
+                f"ListObjects returned 403 Forbidden for bucket '{bucket}' at {address}. "
+                "Check S3 credentials for this pool."
+            )
+        if status != 200:
+            raise RuntimeError(
+                f"ListObjects HTTP {status} for bucket '{bucket}' at {address}: "
+                f"{body[:200].decode(errors='replace')}"
+            )
+        root = ET.fromstring(body)
+        page_count = 0
+        for elem in root.iter():
+            if _strip_ns(elem.tag) == "KeyCount":
+                try:
+                    page_count = int(elem.text or "0")
+                except ValueError:
+                    page_count = 0
+        total += page_count
+
+        is_truncated = False
+        next_token = None
+        for elem in root.iter():
+            t = _strip_ns(elem.tag)
+            if t == "IsTruncated":
+                is_truncated = (elem.text or "").lower() == "true"
+            elif t == "NextContinuationToken":
+                next_token = elem.text
+
+        if not is_truncated or not next_token:
+            break
+        continuation_token = next_token
+
+    return total
 
 
 async def list_objects(
@@ -295,7 +332,10 @@ async def list_objects(
             b"", access_key, secret_key, region
         )
         if status != 200:
-            break
+            raise RuntimeError(
+                f"ListObjects HTTP {status} for bucket '{bucket}' at {address}: "
+                f"{body[:200].decode(errors='replace')}"
+            )
 
         root = ET.fromstring(body)
         for elem in root.iter():

@@ -7,6 +7,7 @@ Runs as root.
 from __future__ import annotations
 
 import os
+import secrets
 import shutil
 import sys
 from pathlib import Path
@@ -18,7 +19,7 @@ CONFIG_ENV_CONTENT = """\
 # nanio-orchestrator configuration
 NANIO_ORCHESTRATOR_HOST=0.0.0.0
 NANIO_ORCHESTRATOR_PORT=8080
-NANIO_ORCHESTRATOR_API_KEY=changeme
+NANIO_ORCHESTRATOR_API_KEY={generated_api_key}
 NANIO_ORCHESTRATOR_DB_PATH=/opt/nanio-orchestrator/data/orchestrator.db
 NANIO_ORCHESTRATOR_NGINX_CONFIG_DIR=/etc/nginx/nanio
 NANIO_ORCHESTRATOR_LOG_LEVEL=info
@@ -42,7 +43,7 @@ NANIO_ORCHESTRATOR_MIGRATION_TRANSFERS=4
 # NANIO_ORCHESTRATOR_S3_SECRET_KEY=
 # Database backup settings
 NANIO_ORCHESTRATOR_DB_BACKUP_PATH=/opt/nanio-orchestrator/data/orchestrator.db.bak
-NANIO_ORCHESTRATOR_DB_BACKUP_INTERVAL=60   # seconds
+NANIO_ORCHESTRATOR_DB_BACKUP_INTERVAL=300   # seconds
 NANIO_ORCHESTRATOR_DB_BACKUP_ROTATE=3      # keep N backup copies
 """
 
@@ -53,13 +54,16 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
+User=nanio-orchestrator
+Group=nanio-orchestrator
 EnvironmentFile=/etc/nanio-orchestrator/config.env
 ExecStart=/opt/nanio-orchestrator/venv/bin/python -m nanio_orchestrator
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
+# Allow nginx -t and nginx -s reload via sudo
+AmbientCapabilities=
 
 [Install]
 WantedBy=multi-user.target
@@ -104,7 +108,23 @@ def run_install() -> None:
         sys.exit(1)
     _step("Running as root")
 
-    # 2. Detect nginx
+    # 2. Create service user
+    import subprocess
+    try:
+        subprocess.run(
+            ["id", "nanio-orchestrator"],
+            check=True, capture_output=True,
+        )
+        _step("Service user 'nanio-orchestrator' exists")
+    except subprocess.CalledProcessError:
+        subprocess.run(
+            ["useradd", "--system", "--no-create-home", "--shell", "/usr/sbin/nologin",
+             "nanio-orchestrator"],
+            check=True,
+        )
+        _step("Created service user 'nanio-orchestrator'")
+
+    # 3. Detect nginx
     nginx_info = detect_nginx()
     if nginx_info["installed"]:
         _step(f"nginx detected: {nginx_info['version']}")
@@ -125,8 +145,14 @@ def run_install() -> None:
     if config_file.exists():
         _step(f"Config exists at {config_file} (not overwritten)")
     else:
-        config_file.write_text(CONFIG_ENV_CONTENT)
+        generated_api_key = secrets.token_urlsafe(32)
+        config_content = CONFIG_ENV_CONTENT.replace(
+            "{generated_api_key}", generated_api_key
+        )
+        config_file.write_text(config_content)
         _step(f"Created {config_file}")
+        print(f"\n  ⚠  API key generated: {generated_api_key}")
+        print("     Save this key — it will not be shown again.\n")
 
     # 5. Create nginx config directories
     pools_dir = Path("/etc/nginx/nanio/pools")

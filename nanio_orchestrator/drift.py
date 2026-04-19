@@ -19,7 +19,7 @@ from nanio_orchestrator.nginx.generator import sha256_str
 
 logger = logging.getLogger(__name__)
 
-_running = False
+_stop_event = asyncio.Event()
 
 
 async def check_drift_once() -> list[dict]:
@@ -71,23 +71,25 @@ async def check_drift_once() -> list[dict]:
 
 async def drift_loop() -> None:
     """Run drift detection in a loop."""
-    global _running
-    _running = True
+    _stop_event.clear()
     s = get_settings()
     interval = s.drift_interval
 
     logger.info("Drift detection started (interval=%ds)", interval)
 
-    while _running:
+    while not _stop_event.is_set():
         try:
             await check_drift_once()
         except Exception as e:
             logger.error("Drift check error: %s", e)
 
-        await asyncio.sleep(interval)
+        try:
+            await asyncio.wait_for(_stop_event.wait(), timeout=interval)
+            break  # stop_event was set
+        except asyncio.TimeoutError:
+            pass  # interval elapsed, continue loop
 
 
 def stop_drift() -> None:
     """Signal the drift loop to stop."""
-    global _running
-    _running = False
+    _stop_event.set()
