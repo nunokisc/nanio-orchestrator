@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import List
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException
 
 from nanio_orchestrator.audit_log import log_audit
 from nanio_orchestrator.backup import trigger_backup

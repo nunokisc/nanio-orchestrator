@@ -106,7 +106,6 @@ Every variable is prefixed with `NANIO_ORCHESTRATOR_`.
 |----------|---------|-------------|
 | `S3_ACCESS_KEY` | _(unset)_ | Global S3 access key (used when no per-pool credentials are set) |
 | `S3_SECRET_KEY` | _(unset)_ | Global S3 secret key |
-| `S3_PROXY_PORT` | `8081` | Internal S3 listing proxy port |
 | `BUCKET_SYNC_INTERVAL` | `300` | Seconds between automatic bucket list syncs |
 
 ### Migrations (rclone)

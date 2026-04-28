@@ -45,7 +45,6 @@ class Settings(BaseSettings):
     s3_access_key: Optional[str] = None
     s3_secret_key: Optional[str] = None
     secret: Optional[str] = None  # Fernet key for credential encryption
-    s3_proxy_port: int = 8081
     rclone_path: str = "rclone"
     migration_max_parallel: int = 2
     migration_bandwidth_limit: str = ""  # rclone --bwlimit value, e.g. "50M"

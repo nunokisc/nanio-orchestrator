@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 from typing import List
 
@@ -22,7 +21,7 @@ from nanio_orchestrator.nginx.generator import (
     sha256_str,
     write_config_atomic,
 )
-from nanio_orchestrator.nginx.parser import is_managed_file, scan_managed_files
+from nanio_orchestrator.nginx.parser import is_managed_file
 
 router = APIRouter(prefix="/api/config", tags=["config"])
 

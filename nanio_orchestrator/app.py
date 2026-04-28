@@ -18,7 +18,6 @@ from nanio_orchestrator.db import init_db
 from nanio_orchestrator.drift import drift_loop, stop_drift
 from nanio_orchestrator.bucket_sync import bucket_sync_loop, stop_bucket_sync
 from nanio_orchestrator.migration_engine import recover_interrupted_migrations
-from nanio_orchestrator.s3_proxy import start_proxy_server, stop_proxy_server
 from nanio_orchestrator.backup import backup_loop, stop_backup
 
 
@@ -48,22 +47,6 @@ async def lifespan(app: FastAPI):
     # Recover interrupted migrations
     await recover_interrupted_migrations()
 
-    # Start S3 listing proxy
-    proxy_task = asyncio.create_task(start_proxy_server())
-
-    def _proxy_done(task: asyncio.Task) -> None:
-        if task.cancelled():
-            return
-        exc = task.exception()
-        if exc:
-            logger.error(
-                "S3 listing proxy failed to start or crashed: %s. "
-                "The proxy will not be available. Check if port %d is already in use.",
-                exc, s.s3_proxy_port,
-            )
-
-    proxy_task.add_done_callback(_proxy_done)
-
     # Start DB backup loop
     backup_task = asyncio.create_task(backup_loop())
 
@@ -89,13 +72,6 @@ async def lifespan(app: FastAPI):
     bucket_sync_task.cancel()
     try:
         await bucket_sync_task
-    except asyncio.CancelledError:
-        pass
-
-    await stop_proxy_server()
-    proxy_task.cancel()
-    try:
-        await proxy_task
     except asyncio.CancelledError:
         pass
 

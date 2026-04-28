@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import List, Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -395,12 +394,5 @@ class HealthOut(BaseModel):
     db_ok: bool
     nginx_config_dir: str
     drift_alerts: int = 0
-
-
-# ── Generic ───────────────────────────────────────────────────────────────────
-
-
-class ErrorOut(BaseModel):
-    detail: str
 
 

@@ -16,14 +16,12 @@ A temporary rclone config is generated from pool credentials.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import re
 import shutil
 import tempfile
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Dict, Optional
 
 from nanio_orchestrator.config import get_settings

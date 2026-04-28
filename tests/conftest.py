@@ -65,8 +65,6 @@ async def app(tmp_dirs):
          patch("nanio_orchestrator.app.bucket_sync_loop", new_callable=AsyncMock) as _bsl, \
          patch("nanio_orchestrator.app.stop_bucket_sync") as _sbs, \
          patch("nanio_orchestrator.app.recover_interrupted_migrations", new_callable=AsyncMock, return_value=0) as _rim, \
-         patch("nanio_orchestrator.app.start_proxy_server", new_callable=AsyncMock) as _sps, \
-         patch("nanio_orchestrator.app.stop_proxy_server", new_callable=AsyncMock) as _stps, \
          patch("nanio_orchestrator.app.backup_loop", new_callable=AsyncMock) as _bkl, \
          patch("nanio_orchestrator.app.stop_backup") as _sbk:
         from nanio_orchestrator.app import create_app
@@ -162,7 +160,6 @@ def mock_s3():
         "list_buckets": [
             "nanio_orchestrator.s3client.list_buckets",
             "nanio_orchestrator.bucket_sync.list_buckets",
-            "nanio_orchestrator.s3_proxy.list_buckets",
         ],
         "create_bucket": [
             "nanio_orchestrator.s3client.create_bucket",
@@ -182,7 +179,6 @@ def mock_s3():
         "count_objects": [
             "nanio_orchestrator.s3client.count_objects",
             "nanio_orchestrator.api.buckets.count_objects",
-            "nanio_orchestrator.s3_proxy.count_objects",
             "nanio_orchestrator.migration_engine.count_objects",
             "nanio_orchestrator.api.vhosts.count_objects",
         ],
