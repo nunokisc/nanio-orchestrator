@@ -7,6 +7,7 @@ from typing import List
 
 from fastapi import APIRouter, HTTPException, status
 
+from nanio_orchestrator.audit_log import log_audit
 from nanio_orchestrator.backup import trigger_backup
 from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator.sidecar import write_pool_sidecar as _write_pool_sidecar_sync, delete_pool_sidecar as _delete_pool_sidecar_sync
@@ -32,25 +33,10 @@ from nanio_orchestrator.nginx.generator import (
     node_config_instructions,
     record_file_state,
     render_node_config,
-    sha256_str,
-    write_config_atomic,
 )
 from nanio_orchestrator.nginx.executor import test_config, reload_nginx
 
 router = APIRouter(prefix="/api/pools", tags=["pools"])
-
-
-async def _audit(db, action: str, entity_type: str, entity_id: int,
-                 before=None, after=None, reload_ok=None, reload_output=None):
-    await db.execute(
-        """INSERT INTO audit_log (action, entity_type, entity_id, before_json, after_json,
-           nginx_reload_ok, nginx_reload_output) VALUES (?,?,?,?,?,?,?)""",
-        (action, entity_type, entity_id,
-         json.dumps(before) if before else None,
-         json.dumps(after) if after else None,
-         1 if reload_ok is True else (0 if reload_ok is False else None),
-         reload_output),
-    )
 
 
 async def _apply_pool_config(pool_id: int, db) -> tuple:
@@ -148,7 +134,7 @@ async def create_pool(body: PoolCreate):
 
         row = await db.execute_fetchall("SELECT * FROM pools WHERE id = ?", (cursor.lastrowid,))
         pool = dict(row[0])
-        await _audit(db, "create", "pool", pool["id"], after=pool)
+        await log_audit(db, "create", "pool", pool["id"], after=pool)
         await db.commit()
 
         # Write sidecar
@@ -200,7 +186,7 @@ async def update_pool(pool_id: int, body: PoolUpdate):
 
         # Regenerate config
         ok, output = await _apply_pool_config(pool_id, db)
-        await _audit(db, "update", "pool", pool_id, before=before, after=after,
+        await log_audit(db, "update", "pool", pool_id, before=before, after=after,
                      reload_ok=ok, reload_output=output)
         await db.commit()
 
@@ -293,7 +279,7 @@ async def delete_pool(pool_id: int):
 
         # Reload nginx
         reload_result = await reload_nginx()
-        await _audit(db, "delete", "pool", pool_id, before=pool,
+        await log_audit(db, "delete", "pool", pool_id, before=pool,
                      reload_ok=reload_result.ok, reload_output=reload_result.output)
         await db.commit()
 
@@ -339,7 +325,7 @@ async def create_member(pool_id: int, body: MemberCreate):
 
         # Regenerate pool config
         ok, output = await _apply_pool_config(pool_id, db)
-        await _audit(db, "create", "pool_member", member["id"], after=member,
+        await log_audit(db, "create", "pool_member", member["id"], after=member,
                      reload_ok=ok, reload_output=output)
         await db.commit()
         return member
@@ -383,7 +369,7 @@ async def update_member(pool_id: int, member_id: int, body: MemberUpdate):
         after = dict(mrows[0])
 
         ok, output = await _apply_pool_config(pool_id, db)
-        await _audit(db, "update", "pool_member", member_id, before=before, after=after,
+        await log_audit(db, "update", "pool_member", member_id, before=before, after=after,
                      reload_ok=ok, reload_output=output)
         await db.commit()
         return after
@@ -405,7 +391,7 @@ async def delete_member(pool_id: int, member_id: int):
         await db.commit()
 
         ok, output = await _apply_pool_config(pool_id, db)
-        await _audit(db, "delete", "pool_member", member_id, before=before,
+        await log_audit(db, "delete", "pool_member", member_id, before=before,
                      reload_ok=ok, reload_output=output)
         await db.commit()
 

@@ -118,6 +118,7 @@ Every variable is prefixed with `NANIO_ORCHESTRATOR_`.
 | `MIGRATION_BANDWIDTH_LIMIT` | _(unset)_ | rclone `--bwlimit` value, e.g. `50M` |
 | `MIGRATION_CHECKERS` | `8` | rclone `--checkers` value |
 | `MIGRATION_TRANSFERS` | `4` | rclone `--transfers` value |
+| `MIGRATION_MAX_COPY_PASSES` | `10` | Maximum convergence loop passes during the `copying` phase before entering `write_routing`. |
 | `S3_REQUEST_TIMEOUT` | `3600` | Socket timeout in seconds for S3 HTTP requests. Increase for buckets with very large objects. |
 
 ### Drift Detection
@@ -207,15 +208,16 @@ Tracks buckets discovered on the default pool of each vhost. Background sync run
 
 Full bucket migrations using rclone.
 
-Phases: `pending → copying → write_routing → verifying → switching → purge_source → done`
+Phases: `pending → copying → write_routing → verifying → switching → done`
 
-- **copying**: rclone copies data in a convergence loop (up to `MIGRATION_MAX_COPY_PASSES` passes). Ends early if counts stabilise.
+- **copying**: rclone copies data in a convergence loop (up to `MIGRATION_MAX_COPY_PASSES` passes). Ends early if counts stabilise across passes.
 - **write_routing**: nginx is reconfigured so writes go directly to the destination pool while reads still come from the source (with 404-fallback to destination). Freezes new writes to the source.
 - **verifying**: a final copy pass + rclone check to confirm source == destination.
 - **switching**: the nginx route is flipped to the destination pool and the DB is updated atomically.
-- **purge_source**: source bucket content is deleted to eliminate orphan copies.
-- **needs_purge**: set if the process crashes during `purge_source` — operator review required before purging or marking done.
+- **done**: migration complete. Source data is **never deleted automatically**. The migration record tracks `orphaned_source_pool_id`, `orphaned_source_prefix`, and `orphaned_at` so operators can locate and clean up the source bucket at their own pace.
 - **error** / **cancelled**: terminal failure states.
+
+> **Source data is never purged automatically.** When a migration reaches `done`, the orchestrator records where the original data lives (pool + prefix + timestamp). Use `nanio-orchestrator orphaned list` or `GET /api/migrations/orphaned` to review, and delete the source objects manually when ready.
 
 A migration started automatically by `POST /api/vhosts/:id/routes` (when the destination pool differs from the vhost default and the source bucket has objects) uses the same engine. The route is initially created pointing to the source pool; the engine flips it to the destination when switching completes.
 
@@ -226,7 +228,8 @@ A migration started automatically by `POST /api/vhosts/:id/routes` (when the des
 |--------|----------|--------------|
 | POST | `/api/migrations` | Start a new migration. Body: `{bucket, src_pool_id, dst_pool_id, mode}` where `mode` is `"copy"` (default) or `"sync"` |
 | GET | `/api/migrations` | List migrations (filter with `?phase=`) |
-| GET | `/api/migrations/:id` | Get migration details |
+| GET | `/api/migrations/orphaned` | List completed migrations that have orphaned source data pending manual cleanup |
+| GET | `/api/migrations/:id` | Get migration details (includes `orphaned_source_pool_id`, `orphaned_source_prefix`, `orphaned_at`) |
 | POST | `/api/migrations/:id/cancel` | Cancel a running migration |
 | GET | `/api/migrations/:id/log` | Get migration log entries |
 
@@ -286,7 +289,8 @@ data that cannot be reconstructed from the nginx config alone:
 ├── orchestrator.db
 ├── orchestrator.db.bak
 └── migrations/
-    └── migration-7.state.json   # in-progress migration state (alongside DB, not in nginx dir)
+    ├── migration-7.state.json   # in-progress migration state (alongside DB, not in nginx dir)
+    └── migration-7.done.json    # permanent completion record (written when migration reaches 'done')
 ```
 
 Sidecars are written atomically (`.tmp` → rename) and are the foundation for
@@ -369,6 +373,7 @@ What is recovered:
 | Routes | `vhosts/*.conf` | ✓ |
 | Vhost default_pool_id | `vhosts/*.meta.json` | ✓ |
 | In-progress migrations | `data/migrations/*.state.json` | ✓ (reset to pending, will auto-resume) |
+| Completed migration records | `data/migrations/*.done.json` | ✓ (orphaned source info preserved) |
 | config_files sha256 records | recomputed from disk | ✓ |
 | bucket_sync | live `ListBuckets` call | ✓ (best-effort) |
 | audit_log | — | ✗ (historical only) |
@@ -412,6 +417,8 @@ nanio-orchestrator config edit              Open the config file in $EDITOR
 nanio-orchestrator config validate          Run nginx -t
 nanio-orchestrator config reload            Run nginx -s reload
 nanio-orchestrator config rebuild           Regenerate all config files from DB + reload
+
+nanio-orchestrator orphaned list            List all completed migrations with orphaned source data
 ```
 
 ### `config show` example

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -253,16 +253,6 @@ class BucketPromoteRequest(BaseModel):
     migrate: bool = False
 
 
-class MigrationStatus(BaseModel):
-    bucket: str
-    status: str
-    objects_total: int
-    objects_done: int
-    error_msg: Optional[str] = None
-    started_at: Optional[str] = None
-    finished_at: Optional[str] = None
-
-
 # ── Pool Credentials ───────────────────────────────────────────────────────────
 
 
@@ -379,14 +369,6 @@ class NodeConfigOut(BaseModel):
     instructions: str
 
 
-class NodeConfigHistoryOut(BaseModel):
-    id: int
-    member_id: int
-    node_type: str
-    config_json: str
-    generated_at: str
-
-
 # ── Audit ─────────────────────────────────────────────────────────────────────
 
 
@@ -422,8 +404,3 @@ class ErrorOut(BaseModel):
     detail: str
 
 
-class PaginatedResponse(BaseModel):
-    items: List[Dict[str, Any]]
-    total: int
-    page: int
-    per_page: int

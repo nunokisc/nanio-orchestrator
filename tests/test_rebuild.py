@@ -830,6 +830,200 @@ class TestBackupRotation:
         cfg_mod.settings = None
 
 
+class TestRebuildMigrationRecovery:
+    """Rebuild migration state and completion record handling."""
+
+    def _write_pool_configs(self, tmp_dirs):
+        pools_dir = os.path.join(tmp_dirs["nginx_dir"], "pools")
+        for name, ip in [("pool-src", "10.0.0.1"), ("pool-dst", "10.0.0.2")]:
+            conf = f"""# managed by nanio-orchestrator
+# pool_id:1 name:{name} type:nanio updated:2026-04-16T10:00:00Z
+upstream {name} {{
+    least_conn;
+    server {ip}:9000 weight=1 max_fails=3 fail_timeout=30s;
+    keepalive 32;
+}}
+"""
+            Path(os.path.join(pools_dir, f"{name}.conf")).write_text(conf)
+            Path(os.path.join(pools_dir, f"{name}.meta.json")).write_text(
+                json.dumps({"pool_id": 1, "name": name, "type": "nanio"})
+            )
+        vhosts_dir = os.path.join(tmp_dirs["nginx_dir"], "vhosts")
+        vhost_conf = """# managed by nanio-orchestrator
+# vhost_id:1 name:s3.example.com updated:2026-04-16T10:00:00Z
+server {
+    listen 80;
+    server_name s3.example.com;
+    client_max_body_size 0;
+}
+"""
+        Path(os.path.join(vhosts_dir, "s3.example.com.conf")).write_text(vhost_conf)
+        Path(os.path.join(vhosts_dir, "s3.example.com.meta.json")).write_text(
+            json.dumps({"vhost_id": 1, "server_name": "s3.example.com",
+                        "default_pool_name": "pool-src"})
+        )
+
+    def _setup_env(self, tmp_dirs):
+        import nanio_orchestrator.config as cfg_mod
+        import nanio_orchestrator.db as db_mod
+        cfg_mod.settings = None
+        db_mod._db_path = None
+        os.environ["NANIO_ORCHESTRATOR_DB_PATH"] = tmp_dirs["db_path"]
+        os.environ["NANIO_ORCHESTRATOR_NGINX_CONFIG_DIR"] = tmp_dirs["nginx_dir"]
+        from nanio_orchestrator.db import set_db_path
+        set_db_path(tmp_dirs["db_path"])
+        if os.path.exists(tmp_dirs["db_path"]):
+            os.unlink(tmp_dirs["db_path"])
+
+    @pytest.mark.asyncio
+    async def test_rebuild_recovers_completion_with_orphaned_fields(self, tmp_dirs):
+        """Rebuild imports .done.json completion records with orphaned_source_* fields."""
+        self._write_pool_configs(tmp_dirs)
+        self._setup_env(tmp_dirs)
+
+        migrations_dir = str(Path(tmp_dirs["db_path"]).parent / "migrations")
+        os.makedirs(migrations_dir, exist_ok=True)
+        done_state = {
+            "migration_id": 42,
+            "vhost_id": 1,
+            "bucket": "photos",
+            "source_pool_id": 1,
+            "source_pool_name": "pool-src",
+            "target_pool_id": 2,
+            "target_pool_name": "pool-dst",
+            "mode": "copy",
+            "route_id": None,
+            "status": "done",
+            "orphaned_source_pool_id": 1,
+            "orphaned_source_prefix": "/photos/",
+            "orphaned_at": "2026-04-28T10:00:00Z",
+        }
+        Path(os.path.join(migrations_dir, "migration-42.done.json")).write_text(
+            json.dumps(done_state)
+        )
+
+        with patch("nanio_orchestrator.s3client.list_buckets", new_callable=AsyncMock, return_value=[]):
+            from nanio_orchestrator.rebuild import rebuild_from_disk
+            result = await rebuild_from_disk()
+
+        assert result["completed_migrations_imported"] == 1
+
+        from nanio_orchestrator.db import get_db_ctx
+        async with get_db_ctx() as db:
+            migs = await db.execute_fetchall("SELECT * FROM migrations")
+            assert len(migs) == 1
+            m = dict(migs[0])
+            assert m["phase"] == "done"
+            assert m["bucket"] == "photos"
+            assert m["orphaned_source_prefix"] == "/photos/"
+            assert m["orphaned_at"] == "2026-04-28T10:00:00Z"
+
+        import nanio_orchestrator.config as cfg_mod
+        import nanio_orchestrator.db as db_mod
+        cfg_mod.settings = None
+        db_mod._db_path = None
+
+    @pytest.mark.asyncio
+    async def test_rebuild_switching_phase_preserved(self, tmp_dirs):
+        """Migrations stuck in 'switching' are preserved as switching (not reset to pending).
+        recover_interrupted_migrations will mark them as error for operator review."""
+        self._write_pool_configs(tmp_dirs)
+        self._setup_env(tmp_dirs)
+
+        migrations_dir = str(Path(tmp_dirs["db_path"]).parent / "migrations")
+        os.makedirs(migrations_dir, exist_ok=True)
+        state = {
+            "migration_id": 5,
+            "vhost_id": 1,
+            "bucket": "data",
+            "source_pool_id": 1,
+            "source_pool_name": "pool-src",
+            "target_pool_id": 2,
+            "target_pool_name": "pool-dst",
+            "status": "switching",
+            "mode": "copy",
+            "route_id": None,
+            "copied_objects": 100,
+            "total_objects": 100,
+            "bytes_transferred": 0,
+            "bytes_total": 0,
+        }
+        Path(os.path.join(migrations_dir, "migration-5.state.json")).write_text(
+            json.dumps(state)
+        )
+
+        with patch("nanio_orchestrator.s3client.list_buckets", new_callable=AsyncMock, return_value=[]):
+            from nanio_orchestrator.rebuild import rebuild_from_disk
+            result = await rebuild_from_disk()
+
+        assert result["migrations_imported"] == 1
+
+        from nanio_orchestrator.db import get_db_ctx
+        async with get_db_ctx() as db:
+            migs = await db.execute_fetchall("SELECT * FROM migrations")
+            assert migs[0]["phase"] == "switching"
+
+        import nanio_orchestrator.config as cfg_mod
+        import nanio_orchestrator.db as db_mod
+        cfg_mod.settings = None
+        db_mod._db_path = None
+
+    @pytest.mark.asyncio
+    async def test_rebuild_state_includes_mode_and_route_id(self, tmp_dirs):
+        """State files now include mode and route_id, which rebuild restores."""
+        self._write_pool_configs(tmp_dirs)
+        self._setup_env(tmp_dirs)
+
+        migrations_dir = str(Path(tmp_dirs["db_path"]).parent / "migrations")
+        os.makedirs(migrations_dir, exist_ok=True)
+        state = {
+            "migration_id": 9,
+            "vhost_id": 1,
+            "bucket": "archive",
+            "source_pool_id": 1,
+            "source_pool_name": "pool-src",
+            "target_pool_id": 2,
+            "target_pool_name": "pool-dst",
+            "status": "copying",
+            "mode": "sync",
+            "route_id": None,
+            "copied_objects": 50,
+            "total_objects": 200,
+            "bytes_transferred": 0,
+            "bytes_total": 0,
+        }
+        Path(os.path.join(migrations_dir, "migration-9.state.json")).write_text(
+            json.dumps(state)
+        )
+
+        with patch("nanio_orchestrator.s3client.list_buckets", new_callable=AsyncMock, return_value=[]):
+            from nanio_orchestrator.rebuild import rebuild_from_disk
+            result = await rebuild_from_disk()
+
+        assert result["migrations_imported"] == 1
+
+        from nanio_orchestrator.db import get_db_ctx
+        async with get_db_ctx() as db:
+            migs = await db.execute_fetchall("SELECT * FROM migrations")
+            m = dict(migs[0])
+            assert m["phase"] == "pending"  # copying → pending
+            assert m["route_id"] is None
+
+        import nanio_orchestrator.config as cfg_mod
+        import nanio_orchestrator.db as db_mod
+        cfg_mod.settings = None
+        db_mod._db_path = None
+
+    @pytest.mark.asyncio
+    async def test_rebuild_no_purge_references(self, tmp_dirs):
+        """rebuild.py must not reference purge_source or needs_purge in any path."""
+        import inspect
+        from nanio_orchestrator.rebuild import rebuild_from_disk
+        src = inspect.getsource(rebuild_from_disk)
+        assert "purge_source" not in src
+        assert "needs_purge" not in src
+
+
 class TestRebuildAPIEdgeCases:
     """Edge-case tests for the rebuild API endpoint."""
 

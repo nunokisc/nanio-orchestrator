@@ -23,6 +23,7 @@ from nanio_orchestrator.nginx.parser import (
     parse_vhost_block,
 )
 from nanio_orchestrator.sidecar import (
+    scan_migration_completions,
     scan_migration_states,
     scan_pool_sidecars,
     scan_vhost_sidecars,
@@ -64,9 +65,12 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
             vhost_sidecars[sn] = sc
 
     migration_states = scan_migration_states()
+    migration_completions = scan_migration_completions()
 
     if dry_run:
-        return await _dry_run_report(s, pool_sidecars, vhost_sidecars, migration_states)
+        return await _dry_run_report(
+            s, pool_sidecars, vhost_sidecars, migration_states, migration_completions
+        )
 
     # Step 1: (re)create schema
     await init_db()
@@ -232,20 +236,70 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
                 continue
 
             phase = state.get("status", "pending")
-            # Map active phases to pending for restart
-            if phase in ("copying", "verifying", "switching"):
+            # pending/copying/verifying → pending (safe to restart from beginning).
+            # write_routing/switching stay as-is: recover_interrupted_migrations will
+            # mark them as error and require operator review before resuming.
+            if phase in ("pending", "copying", "verifying"):
                 phase = "pending"
 
             await db.execute(
                 """INSERT INTO migrations
-                   (vhost_id, bucket, src_pool_id, dst_pool_id, phase,
+                   (vhost_id, bucket, src_pool_id, dst_pool_id, phase, mode, route_id,
                     objects_total, objects_done, bytes_total, bytes_done)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (vhost_id_for_migration, state.get("bucket", ""),
                  src_id, dst_id, phase,
+                 state.get("mode", "copy"), state.get("route_id"),
                  state.get("total_objects", 0), state.get("copied_objects", 0),
                  state.get("bytes_total", 0), state.get("bytes_transferred", 0)),
             )
+            migration_count += 1
+
+        # Step 4b: import completed migrations from .done.json files
+        # These carry orphaned_source_* info that is not derivable from nginx configs.
+        completion_count = 0
+        for state in migration_completions:
+            src_name = state.get("source_pool_name")
+            dst_name = state.get("target_pool_name")
+            src_id = pool_name_to_id.get(src_name) if src_name else None
+            dst_id = pool_name_to_id.get(dst_name) if dst_name else None
+
+            if not src_id or not dst_id:
+                warnings.append(
+                    f"Completed migration {state.get('migration_id')}: "
+                    f"pool not found (src={src_name}, dst={dst_name}), skipping"
+                )
+                continue
+
+            vhost_id_for_completion = None
+            if vhost_rows:
+                for vr in vhost_rows:
+                    if vr["id"] == state.get("vhost_id"):
+                        vhost_id_for_completion = vr["id"]
+                        break
+                if not vhost_id_for_completion and len(vhost_rows) == 1:
+                    vhost_id_for_completion = vhost_rows[0]["id"]
+
+            if not vhost_id_for_completion:
+                warnings.append(
+                    f"Completed migration {state.get('migration_id')}: "
+                    "vhost not found, skipping"
+                )
+                continue
+
+            await db.execute(
+                """INSERT INTO migrations
+                   (vhost_id, bucket, src_pool_id, dst_pool_id, phase, mode, route_id,
+                    orphaned_source_pool_id, orphaned_source_prefix, orphaned_at)
+                   VALUES (?, ?, ?, ?, 'done', ?, ?, ?, ?, ?)""",
+                (vhost_id_for_completion, state.get("bucket", ""),
+                 src_id, dst_id,
+                 state.get("mode", "copy"), state.get("route_id"),
+                 state.get("orphaned_source_pool_id"),
+                 state.get("orphaned_source_prefix"),
+                 state.get("orphaned_at")),
+            )
+            completion_count += 1
             migration_count += 1
 
         # Step 5: rebuild config_files sha256 records
@@ -275,6 +329,7 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
         "vhosts_imported": vhost_count,
         "routes_imported": route_count,
         "migrations_imported": migration_count,
+        "completed_migrations_imported": completion_count,
         "credentials_recovered": credentials_count,
         "warnings": warnings,
     }
@@ -344,6 +399,7 @@ async def _dry_run_report(
     pool_sidecars: Dict[str, dict],
     vhost_sidecars: Dict[str, dict],
     migration_states: List[dict],
+    migration_completions: List[dict],
 ) -> Dict[str, Any]:
     """Generate a dry-run report without writing anything."""
     pools = []
@@ -390,5 +446,6 @@ async def _dry_run_report(
         "pools": pools,
         "vhosts": vhosts,
         "migrations": len(migration_states),
+        "completed_migrations": len(migration_completions),
         "warnings": warnings,
     }

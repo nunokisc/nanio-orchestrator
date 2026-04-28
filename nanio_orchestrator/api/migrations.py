@@ -15,6 +15,7 @@ from typing import List
 
 from fastapi import APIRouter, HTTPException, Query
 
+from nanio_orchestrator.audit_log import log_audit
 from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator.migration_engine import (
     cancel_migration,
@@ -99,6 +100,11 @@ async def create_migration(body: RcloneMigrationCreate):
     # Return the created migration
     async with get_db_ctx() as db:
         rows = await db.execute_fetchall("SELECT * FROM migrations WHERE id = ?", (migration_id,))
+        await log_audit(db, "create_migration", "migration", migration_id,
+                        after={"bucket": body.bucket, "src_pool_id": body.src_pool_id,
+                               "dst_pool_id": body.dst_pool_id, "mode": body.mode,
+                               "vhost_id": vhost_id})
+        await db.commit()
     m = dict(rows[0])
     return _to_out(m)
 
@@ -181,6 +187,10 @@ async def cancel(migration_id: int):
         raise HTTPException(400, f"Migration is already in terminal state: {phase}")
 
     await cancel_migration(migration_id)
+    async with get_db_ctx() as db:
+        await log_audit(db, "cancel_migration", "migration", migration_id,
+                        before={"phase": phase})
+        await db.commit()
     return {"ok": True, "migration_id": migration_id}
 
 

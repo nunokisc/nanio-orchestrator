@@ -9,6 +9,7 @@ from typing import List
 import aiofiles
 from fastapi import APIRouter, Body, HTTPException
 
+from nanio_orchestrator.audit_log import log_audit
 from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator.models import ConfigFileStatus, ConfigStatus, NginxResult
@@ -93,11 +94,8 @@ async def reload_config():
     """Run nginx -s reload without config change."""
     result = await reload_nginx()
     async with get_db_ctx() as db:
-        await db.execute(
-            """INSERT INTO audit_log (action, entity_type, entity_id, nginx_reload_ok, nginx_reload_output)
-               VALUES ('manual_reload', 'config', NULL, ?, ?)""",
-            (1 if result.ok else 0, result.output),
-        )
+        await log_audit(db, "manual_reload", "config", None,
+                        reload_ok=result.ok, reload_output=result.output)
         await db.commit()
     return NginxResult(ok=result.ok, output=result.output)
 
@@ -375,11 +373,8 @@ async def rebuild_all():
         for filepath, content in to_write:
             if filepath in written:
                 await record_file_state(db, filepath, content)
-        await db.execute(
-            """INSERT INTO audit_log (action, entity_type, entity_id, nginx_reload_ok, nginx_reload_output)
-               VALUES ('rebuild', 'config', NULL, ?, ?)""",
-            (1 if reload_result.ok else 0, reload_result.output),
-        )
+        await log_audit(db, "rebuild", "config", None,
+                        reload_ok=reload_result.ok, reload_output=reload_result.output)
         await db.commit()
 
     return {
@@ -417,11 +412,8 @@ async def absorb_file(path: str = Body(..., embed=True)):
                  last_synced_at   = excluded.last_synced_at""",
             (path, h, h, content, now),
         )
-        await db.execute(
-            """INSERT INTO audit_log (action, entity_type, entity_id, nginx_reload_ok, nginx_reload_output)
-               VALUES ('absorb_drift', 'config', NULL, NULL, ?)""",
-            (f"Absorbed drift for {path}",),
-        )
+        await log_audit(db, "absorb_drift", "config", None,
+                        reload_output=f"Absorbed drift for {path}")
         await db.commit()
     return {"ok": True, "path": path, "sha256": h}
 
@@ -478,11 +470,8 @@ async def rewrite_file(path: str = Body(..., embed=True)):
 
     async with get_db_ctx() as db:
         await record_file_state(db, filepath, content)
-        await db.execute(
-            """INSERT INTO audit_log (action, entity_type, entity_id, nginx_reload_ok, nginx_reload_output)
-               VALUES ('rewrite_file', 'config', NULL, ?, ?)""",
-            (1 if reload_result.ok else 0, reload_result.output),
-        )
+        await log_audit(db, "rewrite_file", "config", None,
+                        reload_ok=reload_result.ok, reload_output=reload_result.output)
         await db.commit()
 
     return {"ok": reload_result.ok, "output": reload_result.output, "path": filepath}

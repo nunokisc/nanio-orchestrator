@@ -12,6 +12,7 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 
+from nanio_orchestrator.audit_log import log_audit
 from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.credentials import (
     delete_pool_credentials,
@@ -19,6 +20,7 @@ from nanio_orchestrator.credentials import (
     store_pool_credentials,
 )
 from nanio_orchestrator.models import CredentialOut, CredentialSet
+from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator.sidecar import (
     write_pool_credentials_sidecar,
     delete_pool_credentials_sidecar,
@@ -36,7 +38,6 @@ def _mask(key: str) -> str:
 
 
 async def _require_pool(pool_id: int) -> dict:
-    from nanio_orchestrator.db import get_db_ctx
     async with get_db_ctx() as db:
         rows = await db.execute_fetchall("SELECT * FROM pools WHERE id = ?", (pool_id,))
     if not rows:
@@ -96,6 +97,10 @@ async def set_credentials(pool_id: int, body: CredentialSet):
     )
 
     creds = await get_pool_credentials(pool_id)
+    async with get_db_ctx() as db:
+        await log_audit(db, "set_credentials", "pool", pool_id,
+                        after={"endpoint_url": body.endpoint_url, "region": body.region})
+        await db.commit()
     return CredentialOut(
         pool_id=creds["pool_id"],
         access_key_masked=_mask(creds["access_key"]),
@@ -114,7 +119,9 @@ async def remove_credentials(pool_id: int):
     if not deleted:
         raise HTTPException(404, "No credentials stored for this pool")
 
-    # Remove credentials from sidecar
     delete_pool_credentials_sidecar(pool["name"])
 
+    async with get_db_ctx() as db:
+        await log_audit(db, "remove_credentials", "pool", pool_id)
+        await db.commit()
     return {"ok": True, "pool_id": pool_id}

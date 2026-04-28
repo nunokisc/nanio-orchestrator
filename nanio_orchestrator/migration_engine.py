@@ -36,7 +36,11 @@ from nanio_orchestrator.nginx.generator import (
     write_config_atomic,
 )
 from nanio_orchestrator.s3client import bucket_exists, bucket_has_objects, count_objects, create_bucket
-from nanio_orchestrator.sidecar import write_migration_state, delete_migration_state
+from nanio_orchestrator.sidecar import (
+    write_migration_state,
+    delete_migration_state,
+    write_migration_completion,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +209,8 @@ async def _write_state_sidecar(migration_id: int, db) -> None:
         "source_pool_name": m.get("source_pool_name"),
         "target_pool_id": m["dst_pool_id"],
         "target_pool_name": m.get("target_pool_name"),
+        "mode": m.get("mode", "copy"),
+        "route_id": m.get("route_id"),
         "status": m["phase"],
         "copied_objects": m["objects_done"],
         "total_objects": m["objects_total"],
@@ -766,6 +772,7 @@ async def run_migration(migration_id: int) -> None:
         # ── Record orphaned source data ───────────────────────────────────
         # Source data is NEVER deleted automatically. Track it so operators can
         # make an informed decision about cleaning up the source bucket.
+        orphaned_at = _now()
         async with get_db_ctx() as db:
             await db.execute(
                 """UPDATE migrations SET
@@ -773,9 +780,29 @@ async def run_migration(migration_id: int) -> None:
                    orphaned_source_prefix = ?,
                    orphaned_at = ?
                    WHERE id = ?""",
-                (src_pool_id, f"/{bucket}/", _now(), migration_id),
+                (src_pool_id, f"/{bucket}/", orphaned_at, migration_id),
             )
             await db.commit()
+            pool_rows = await db.execute_fetchall(
+                "SELECT id, name FROM pools WHERE id IN (?, ?)", (src_pool_id, dst_pool_id),
+            )
+
+        pool_names = {r["id"]: r["name"] for r in pool_rows}
+        write_migration_completion({
+            "migration_id": migration_id,
+            "vhost_id": m["vhost_id"],
+            "bucket": bucket,
+            "source_pool_id": src_pool_id,
+            "source_pool_name": pool_names.get(src_pool_id),
+            "target_pool_id": dst_pool_id,
+            "target_pool_name": pool_names.get(dst_pool_id),
+            "mode": mode,
+            "route_id": route_id,
+            "status": "done",
+            "orphaned_source_pool_id": src_pool_id,
+            "orphaned_source_prefix": f"/{bucket}/",
+            "orphaned_at": orphaned_at,
+        })
 
         # ── Phase: done ───────────────────────────────────────────────────
         await _set_phase(migration_id, "done")

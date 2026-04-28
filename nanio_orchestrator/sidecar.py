@@ -224,3 +224,30 @@ def scan_vhost_sidecars() -> List[dict]:
 
 def scan_migration_states() -> List[dict]:
     return _scan_dir(get_settings().migrations_dir, "*.state.json")
+
+
+# ── Migration completion records ──────────────────────────────────────────────
+
+
+def migration_completion_path(migration_id: int) -> str:
+    """Return the completion record path for a finished migration."""
+    s = get_settings()
+    return str(s.migrations_dir / f"migration-{migration_id}.done.json")
+
+
+def write_migration_completion(state: Dict[str, Any]) -> None:
+    """Write a permanent completion record for a finished migration.
+
+    Called when a migration reaches 'done'. Unlike state files, completion
+    records are never deleted — they allow rebuild to recover orphaned-source
+    tracking info after a DB loss.
+    """
+    filepath = migration_completion_path(state["migration_id"])
+    state_copy = dict(state)
+    state_copy["written_at"] = _now_iso()
+    _write_atomic(filepath, state_copy)
+    logger.debug("Wrote migration completion: %s", filepath)
+
+
+def scan_migration_completions() -> List[dict]:
+    return _scan_dir(get_settings().migrations_dir, "*.done.json")
