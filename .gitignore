@@ -22,6 +22,12 @@ env/
 # Dev data (local DB and generated nginx configs)
 dev-data/
 
+# Claude Code local settings
+.claude/
+
+# Local utility scripts (not part of the public project)                                                                                                                                          
+scripts/magic.sh    
+
 # Environment / secrets
 dev.env
 *.env
