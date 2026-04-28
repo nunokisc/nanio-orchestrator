@@ -33,7 +33,7 @@ ORCHESTRATOR (:8080, internal only)
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
-git clone <repo-url> /tmp/nanio-orchestrator
+git clone https://github.com/nunokisc/nanio-orchestrator /tmp/nanio-orchestrator
 UV_TOOL_DIR=/opt UV_TOOL_BIN_DIR=/usr/local/bin uv tool install /tmp/nanio-orchestrator
 nanio-orchestrator install
 ```
@@ -59,7 +59,7 @@ After install, follow the printed instructions to configure and start the servic
 ## Quick Start — Development
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/nunokisc/nanio-orchestrator
 cd nanio-orchestrator
 make install-dev       # creates .venv, installs deps
 make run               # dev server at http://localhost:8080
