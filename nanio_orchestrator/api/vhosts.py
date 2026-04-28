@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 from nanio_orchestrator.backup import trigger_backup
 from nanio_orchestrator.credentials import get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
-from nanio_orchestrator.s3client import bucket_exists, create_bucket, count_objects
+from nanio_orchestrator.s3client import bucket_exists, count_objects, create_bucket
 from nanio_orchestrator.sidecar import write_vhost_sidecar as _write_vhost_sidecar_sync, delete_vhost_sidecar as _delete_vhost_sidecar_sync
 import asyncio as _asyncio
 
@@ -277,6 +277,13 @@ async def list_routes(vhost_id: int):
 
 @router.post("/{vhost_id}/routes", status_code=201)
 async def create_route(vhost_id: int, body: RouteCreate):
+    """Create a new route (Scenario 1 — config only, no migration).
+
+    Creating a new route configures nginx and provisions the destination bucket if
+    it does not yet exist.  Data is never automatically copied on route creation.
+    To migrate existing bucket data use PUT /{vhost_id}/routes/{route_id} to change
+    the route's pool, which triggers the migration state machine.
+    """
     if body.path_prefix == "/":
         raise HTTPException(
             400,
@@ -296,44 +303,12 @@ async def create_route(vhost_id: int, body: RouteCreate):
     # The S3 bucket name is the first path segment (e.g. /photos/2025/ → bucket=photos)
     bucket_segment = body.path_prefix.strip("/").split("/")[0]
 
-    # Migration is needed when the destination differs from the vhost default (source) pool
-    needs_migration = bool(
-        bucket_segment
-        and vhost_default_pool_id
-        and body.pool_id != vhost_default_pool_id
-    )
-
-    # Count objects on source before creating the route, so we know whether to migrate
-    objects_on_source: Optional[int] = None
-    if needs_migration:
-        try:
-            async with get_db_ctx() as db:
-                src_rows = await db.execute_fetchall(
-                    "SELECT address FROM pool_members WHERE pool_id = ? AND enabled = 1 ORDER BY id LIMIT 1",
-                    (vhost_default_pool_id,),
-                )
-            if src_rows:
-                src_ak, src_sk, _ = await get_pool_s3_params(vhost_default_pool_id)
-                objects_on_source = await count_objects(
-                    src_rows[0]["address"], bucket_segment,
-                    access_key=src_ak, secret_key=src_sk,
-                )
-        except Exception as exc:
-            logger.warning("route create: source object count failed for '%s': %s", bucket_segment, exc)
-
-    # If there are objects to migrate, create the route initially pointing to the
-    # source pool so existing data stays available while the migration runs.
-    # The migration engine will flip the route to dst when switching completes.
-    # If no objects (new bucket) or no migration needed, route goes directly to dst.
-    has_objects = objects_on_source is not None and objects_on_source > 0
-    initial_pool_id = vhost_default_pool_id if (needs_migration and has_objects) else body.pool_id
-
     async with get_db_ctx() as db:
         try:
             cursor = await db.execute(
                 """INSERT INTO routes (vhost_id, path_prefix, pool_id, key_prefix, extra_directives, enabled)
                    VALUES (?, ?, ?, ?, ?, ?)""",
-                (vhost_id, body.path_prefix, initial_pool_id, body.key_prefix,
+                (vhost_id, body.path_prefix, body.pool_id, body.key_prefix,
                  body.extra_directives, 1 if body.enabled else 0),
             )
             await db.commit()
@@ -377,39 +352,11 @@ async def create_route(vhost_id: int, body: RouteCreate):
         except Exception as exc:
             logger.warning("route create: target bucket provisioning failed for '%s': %s", bucket_segment, exc)
 
-    # ── Auto-start migration if source has data ───────────────────────────────
-    migration_id: Optional[int] = None
-    migration_warning: Optional[str] = None
-    if needs_migration and has_objects:
-        try:
-            from nanio_orchestrator.migration_engine import start_migration
-            migration_id = await start_migration(
-                vhost_id=vhost_id,
-                bucket=bucket_segment,
-                src_pool_id=vhost_default_pool_id,
-                dst_pool_id=body.pool_id,
-                route_id=route_id,
-            )
-            logger.info(
-                "route create: started migration %d for bucket '%s' route_id=%d src=%d dst=%d",
-                migration_id, bucket_segment, route_id, vhost_default_pool_id, body.pool_id,
-            )
-        except RuntimeError as exc:
-            migration_warning = str(exc)
-            logger.warning(
-                "route create: could not start migration for '%s' (route_id=%d): %s",
-                bucket_segment, route_id, exc,
-            )
-            # Route stays on source pool — data remains accessible; operator must start migration manually
-
     return {
         **route,
         "bucket": bucket_segment,
         "bucket_provisioned": bucket_provisioned,
-        "objects_on_source": objects_on_source,
         "default_pool_id": vhost_default_pool_id,
-        "migration_id": migration_id,
-        "migration_warning": migration_warning,
     }
 
 
@@ -447,13 +394,83 @@ async def update_route(vhost_id: int, route_id: int, body: RouteUpdate):
         if "enabled" in updates:
             updates["enabled"] = 1 if updates["enabled"] else 0
 
-        set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
-        values = list(updates.values()) + [route_id]
-        await db.execute(
-            f"UPDATE routes SET {set_clause}, updated_at = datetime('now') WHERE id = ?",
-            values,
-        )
-        await db.commit()
+    # ── Scenario 2: pool change on a bucket route → migration ────────────────
+    # If pool changes, bucket is not a sub-path, and source has data, start
+    # migration instead of directly updating the pool_id.  The migration engine
+    # will flip the route to the destination pool when switching completes.
+    migration_id: Optional[int] = None
+    migration_warning: Optional[str] = None
+    dst_pool_id_requested: Optional[int] = None
+
+    if "pool_id" in updates and updates["pool_id"] != before["pool_id"]:
+        bucket_segment = before["path_prefix"].strip("/").split("/")[0]
+        if bucket_segment:
+            # Check if this is a sub-path (a parent bucket route already exists)
+            async with get_db_ctx() as db:
+                parent_rows = await db.execute_fetchall(
+                    """SELECT id FROM routes
+                       WHERE vhost_id = ? AND id != ? AND path_prefix IN (?, ?)""",
+                    (vhost_id, route_id, f"/{bucket_segment}/", f"/{bucket_segment}"),
+                )
+
+            if not parent_rows:
+                # Not a sub-path: check if source bucket has objects
+                src_pool_id_cur = before["pool_id"]
+                dst_pool_id_requested = updates["pool_id"]
+                src_count = 0
+                try:
+                    async with get_db_ctx() as db:
+                        src_member_rows = await db.execute_fetchall(
+                            "SELECT address FROM pool_members WHERE pool_id = ? AND enabled = 1 ORDER BY id LIMIT 1",
+                            (src_pool_id_cur,),
+                        )
+                    if src_member_rows:
+                        src_ak, src_sk, _ = await get_pool_s3_params(src_pool_id_cur)
+                        src_count = await count_objects(
+                            src_member_rows[0]["address"], bucket_segment,
+                            access_key=src_ak, secret_key=src_sk,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "update_route: source object count failed for '%s': %s",
+                        bucket_segment, exc,
+                    )
+
+                if src_count > 0:
+                    # Scenario 2: keep route on current pool, start migration
+                    updates.pop("pool_id")
+                    try:
+                        from nanio_orchestrator.migration_engine import start_migration
+                        migration_id = await start_migration(
+                            vhost_id=vhost_id,
+                            bucket=bucket_segment,
+                            src_pool_id=src_pool_id_cur,
+                            dst_pool_id=dst_pool_id_requested,
+                            route_id=route_id,
+                        )
+                        logger.info(
+                            "update_route: started migration %d for '%s' route_id=%d src=%d dst=%d",
+                            migration_id, bucket_segment, route_id,
+                            src_pool_id_cur, dst_pool_id_requested,
+                        )
+                    except RuntimeError as exc:
+                        migration_warning = str(exc)
+                        # Migration couldn't start — put pool_id back so direct update proceeds
+                        updates["pool_id"] = dst_pool_id_requested
+                        logger.warning(
+                            "update_route: could not start migration for '%s': %s",
+                            bucket_segment, exc,
+                        )
+
+    async with get_db_ctx() as db:
+        if updates:
+            set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
+            values = list(updates.values()) + [route_id]
+            await db.execute(
+                f"UPDATE routes SET {set_clause}, updated_at = datetime('now') WHERE id = ?",
+                values,
+            )
+            await db.commit()
 
         rrows2 = await db.execute_fetchall(
             """SELECT r.*, p.name as pool_name
@@ -467,7 +484,11 @@ async def update_route(vhost_id: int, route_id: int, body: RouteUpdate):
         await _audit(db, "update", "route", route_id, before=before, after=after,
                      reload_ok=ok, reload_output=output)
         await db.commit()
-        return after
+
+    after["migration_id"] = migration_id
+    if migration_warning:
+        after["migration_warning"] = migration_warning
+    return after
 
 
 @router.delete("/{vhost_id}/routes/{route_id}", status_code=204)

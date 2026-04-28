@@ -394,5 +394,65 @@ def config_rebuild():
     sys.exit(0 if ok else 1)
 
 
+@main.group()
+def orphaned():
+    """Orphaned source data management."""
+    pass
+
+
+@orphaned.command("list")
+def orphaned_list():
+    """List all migrations with orphaned source data on the original pool.
+
+    After a migration completes, source-bucket data is never deleted automatically.
+    Use this command to see which buckets have orphaned data so you can decide
+    when and how to clean them up manually.
+    """
+    import asyncio
+
+    async def _list():
+        from nanio_orchestrator.config import get_settings
+        from nanio_orchestrator.db import init_db, get_db_ctx
+
+        s = get_settings()
+        s.ensure_dirs()
+        await init_db()
+
+        async with get_db_ctx() as db:
+            rows = await db.execute_fetchall(
+                """SELECT m.id, m.bucket, m.orphaned_source_pool_id,
+                          m.orphaned_source_prefix, m.orphaned_at, m.finished_at,
+                          p.name as src_pool_name
+                   FROM migrations m
+                   LEFT JOIN pools p ON m.orphaned_source_pool_id = p.id
+                   WHERE m.orphaned_source_pool_id IS NOT NULL
+                   ORDER BY m.orphaned_at DESC"""
+            )
+
+        if not rows:
+            print("No orphaned data found.")
+            return
+
+        col_w = [6, 24, 22, 26, 22]
+        header = (
+            f"{'ID':<{col_w[0]}} {'Bucket':<{col_w[1]}} "
+            f"{'Source Pool':<{col_w[2]}} {'Prefix':<{col_w[3]}} {'Orphaned At'}"
+        )
+        print(header)
+        print("-" * (sum(col_w) + 4))
+        for r in rows:
+            row = dict(r)
+            pool_label = row["src_pool_name"] or str(row["orphaned_source_pool_id"])
+            print(
+                f"{row['id']:<{col_w[0]}} "
+                f"{row['bucket']:<{col_w[1]}} "
+                f"{pool_label:<{col_w[2]}} "
+                f"{(row['orphaned_source_prefix'] or ''):<{col_w[3]}} "
+                f"{row['orphaned_at'] or ''}"
+            )
+
+    asyncio.run(_list())
+
+
 if __name__ == "__main__":
     main()

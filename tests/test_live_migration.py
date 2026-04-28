@@ -30,7 +30,7 @@ from tests.conftest import create_member, create_pool, create_vhost
 
 async def _wait_migration_terminal(client, mig_id: int, timeout: float = 10.0):
     """Poll until migration reaches a terminal phase, with timeout."""
-    terminal = {"done", "error", "cancelled", "needs_purge"}
+    terminal = {"done", "error", "cancelled"}
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
         resp = await client.get(f"/api/migrations/{mig_id}")
@@ -339,7 +339,7 @@ class TestWriteRoutingPhase:
 
         mig_resp = await client.get(f"/api/migrations/{mig_id}")
         data = mig_resp.json()
-        assert data["phase"] in ("done", "purge_source", "switching"), \
+        assert data["phase"] in ("done", "switching"), \
             f"Unexpected phase: {data['phase']}"
 
     async def test_nginx_test_failure_aborts_write_routing(
@@ -489,7 +489,7 @@ class TestNginxStateSidecar:
         await asyncio.sleep(0.1)
 
         assert await self._get_nginx_state(mig_id, "switching") == "target"
-        assert await self._get_nginx_state(mig_id, "purge_source") == "target"
+        assert await self._get_nginx_state(mig_id, "done") == "target"
 
 
 # ---------------------------------------------------------------------------

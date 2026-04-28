@@ -22,6 +22,7 @@ from nanio_orchestrator.migration_engine import (
 )
 from nanio_orchestrator.models import (
     MigrationLogEntry,
+    OrphanedMigrationOut,
     RcloneMigrationCreate,
     RcloneMigrationOut,
 )
@@ -39,8 +40,7 @@ async def create_migration(body: RcloneMigrationCreate):
         raise HTTPException(
             400,
             "Source and destination pools must be different. "
-            "Migrating a bucket to the same pool it already lives on would "
-            "copy the bucket onto itself and then purge all its content.",
+            "Migrating a bucket to the same pool it already lives on is not allowed.",
         )
 
     async with get_db_ctx() as db:
@@ -101,6 +101,38 @@ async def create_migration(body: RcloneMigrationCreate):
         rows = await db.execute_fetchall("SELECT * FROM migrations WHERE id = ?", (migration_id,))
     m = dict(rows[0])
     return _to_out(m)
+
+
+@router.get("/orphaned", response_model=List[OrphanedMigrationOut])
+async def list_orphaned_migrations():
+    """List all migrations that have orphaned source data.
+
+    Orphaned data is source-bucket content that was NOT deleted after migration
+    completed — by design, this system never deletes bucket data automatically.
+    Operators use this list to decide when and how to clean up source buckets.
+    """
+    async with get_db_ctx() as db:
+        rows = await db.execute_fetchall(
+            """SELECT m.id, m.bucket, m.src_pool_id, m.dst_pool_id,
+                      m.orphaned_source_pool_id, m.orphaned_source_prefix,
+                      m.orphaned_at, m.finished_at
+               FROM migrations m
+               WHERE m.orphaned_source_pool_id IS NOT NULL
+               ORDER BY m.orphaned_at DESC"""
+        )
+    return [
+        OrphanedMigrationOut(
+            migration_id=r["id"],
+            bucket=r["bucket"],
+            src_pool_id=r["src_pool_id"],
+            dst_pool_id=r["dst_pool_id"],
+            orphaned_source_pool_id=r["orphaned_source_pool_id"],
+            orphaned_source_prefix=r["orphaned_source_prefix"],
+            orphaned_at=r["orphaned_at"],
+            finished_at=r["finished_at"],
+        )
+        for r in rows
+    ]
 
 
 @router.get("", response_model=List[RcloneMigrationOut])
@@ -194,4 +226,7 @@ def _to_out(m: dict) -> RcloneMigrationOut:
         started_at=m.get("started_at"),
         finished_at=m.get("finished_at"),
         created_at=m["created_at"],
+        orphaned_source_pool_id=m.get("orphaned_source_pool_id"),
+        orphaned_source_prefix=m.get("orphaned_source_prefix"),
+        orphaned_at=m.get("orphaned_at"),
     )

@@ -255,6 +255,38 @@ async def bucket_exists(
     raise RuntimeError(f"Unexpected HTTP {status} checking bucket {bucket}: {body[:200].decode(errors='replace')}")
 
 
+async def bucket_has_objects(
+    address: str,
+    bucket: str,
+    access_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+    region: str = "us-east-1",
+) -> bool:
+    """Return True if bucket contains at least one object (single S3 request).
+
+    Returns False for non-existent buckets (404). Raises RuntimeError on other errors.
+    """
+    status, body = await asyncio.to_thread(
+        _do_request, "GET", address, f"/{bucket}", "list-type=2&max-keys=1",
+        b"", access_key, secret_key, region
+    )
+    if status == 404:
+        return False
+    if status != 200:
+        raise RuntimeError(
+            f"ListObjects HTTP {status} for bucket '{bucket}' at {address}: "
+            f"{body[:200].decode(errors='replace')}"
+        )
+    root = ET.fromstring(body)
+    for elem in root.iter():
+        if _strip_ns(elem.tag) == "KeyCount":
+            try:
+                return int(elem.text or "0") > 0
+            except ValueError:
+                pass
+    return False
+
+
 async def count_objects(
     address: str,
     bucket: str,

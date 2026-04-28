@@ -119,25 +119,28 @@ CREATE TABLE IF NOT EXISTS pool_credentials (
 );
 
 CREATE TABLE IF NOT EXISTS migrations (
-    id              INTEGER PRIMARY KEY,
-    vhost_id        INTEGER NOT NULL REFERENCES vhosts(id) ON DELETE CASCADE,
-    bucket          TEXT NOT NULL,
-    src_pool_id     INTEGER NOT NULL REFERENCES pools(id),
-    dst_pool_id     INTEGER NOT NULL REFERENCES pools(id),
-    mode            TEXT NOT NULL DEFAULT 'copy'
-                    CHECK (mode IN ('copy','sync')),
-    phase           TEXT NOT NULL DEFAULT 'pending'
-                    CHECK (phase IN ('pending','copying','write_routing','verifying','switching','purge_source','needs_purge','done','error','cancelled')),
-    rclone_pid      INTEGER,
-    objects_total   INTEGER NOT NULL DEFAULT 0,
-    objects_done    INTEGER NOT NULL DEFAULT 0,
-    bytes_total     INTEGER NOT NULL DEFAULT 0,
-    bytes_done      INTEGER NOT NULL DEFAULT 0,
-    error_msg       TEXT,
-    started_at      TEXT,
-    finished_at     TEXT,
-    route_id        INTEGER REFERENCES routes(id),
-    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    id                      INTEGER PRIMARY KEY,
+    vhost_id                INTEGER NOT NULL REFERENCES vhosts(id) ON DELETE CASCADE,
+    bucket                  TEXT NOT NULL,
+    src_pool_id             INTEGER NOT NULL REFERENCES pools(id),
+    dst_pool_id             INTEGER NOT NULL REFERENCES pools(id),
+    mode                    TEXT NOT NULL DEFAULT 'copy'
+                            CHECK (mode IN ('copy','sync')),
+    phase                   TEXT NOT NULL DEFAULT 'pending'
+                            CHECK (phase IN ('pending','copying','write_routing','verifying','switching','done','error','cancelled')),
+    rclone_pid              INTEGER,
+    objects_total           INTEGER NOT NULL DEFAULT 0,
+    objects_done            INTEGER NOT NULL DEFAULT 0,
+    bytes_total             INTEGER NOT NULL DEFAULT 0,
+    bytes_done              INTEGER NOT NULL DEFAULT 0,
+    error_msg               TEXT,
+    started_at              TEXT,
+    finished_at             TEXT,
+    route_id                INTEGER REFERENCES routes(id),
+    orphaned_source_pool_id INTEGER REFERENCES pools(id),
+    orphaned_source_prefix  TEXT,
+    orphaned_at             TEXT,
+    created_at              TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS migration_log (
@@ -213,113 +216,85 @@ async def _run_migrations_async(db) -> None:
     if 'key_prefix' not in col_names:
         await db.execute("ALTER TABLE routes ADD COLUMN key_prefix TEXT")
 
-    # migrations.phase: add purge_source (CHECK constraint requires table recreation)
-    row = await db.execute_fetchall(
-        "SELECT sql FROM sqlite_master WHERE type='table' AND name='migrations'"
-    )
-    if row and "purge_source" not in (row[0]["sql"] or ""):
-        await db.execute("PRAGMA foreign_keys=OFF")
-        await db.execute("""CREATE TABLE migrations_new (
-            id              INTEGER PRIMARY KEY,
-            vhost_id        INTEGER NOT NULL REFERENCES vhosts(id) ON DELETE CASCADE,
-            bucket          TEXT NOT NULL,
-            src_pool_id     INTEGER NOT NULL REFERENCES pools(id),
-            dst_pool_id     INTEGER NOT NULL REFERENCES pools(id),
-            phase           TEXT NOT NULL DEFAULT 'pending'
-                            CHECK (phase IN ('pending','copying','verifying','switching','purge_source','done','error','cancelled')),
-            rclone_pid      INTEGER,
-            objects_total   INTEGER NOT NULL DEFAULT 0,
-            objects_done    INTEGER NOT NULL DEFAULT 0,
-            bytes_total     INTEGER NOT NULL DEFAULT 0,
-            bytes_done      INTEGER NOT NULL DEFAULT 0,
-            error_msg       TEXT,
-            started_at      TEXT,
-            finished_at     TEXT,
-            created_at      TEXT NOT NULL DEFAULT (datetime('now'))
-        )""")
-        await db.execute("INSERT INTO migrations_new SELECT * FROM migrations")
-        await db.execute("DROP TABLE migrations")
-        await db.execute("ALTER TABLE migrations_new RENAME TO migrations")
-        await db.commit()
-        await db.execute("PRAGMA foreign_keys=ON")
-
-    # migrations.mode (copy vs sync)
+    # Rebuild migrations table when needed:
+    # - Remove purge_source / needs_purge phases (purge was removed intentionally — data is never
+    #   deleted automatically; orphaned source data is tracked instead)
+    # - Add mode, route_id, orphaned_* columns
+    # - Any existing purge_source/needs_purge records are converted to 'done' (switching already
+    #   completed, data is safe on dst; source data is now orphaned and tracked)
     info = await db.execute_fetchall("PRAGMA table_info(migrations)")
     col_names = {r['name'] for r in info}
-    if 'mode' not in col_names:
-        await db.execute("ALTER TABLE migrations ADD COLUMN mode TEXT NOT NULL DEFAULT 'copy'")
-
-    # migrations.phase: add write_routing (CHECK constraint requires table recreation)
     row = await db.execute_fetchall(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='migrations'"
     )
-    if row and "write_routing" not in (row[0]["sql"] or ""):
-        await db.execute("PRAGMA foreign_keys=OFF")
-        await db.execute("""CREATE TABLE migrations_new (
-            id              INTEGER PRIMARY KEY,
-            vhost_id        INTEGER NOT NULL REFERENCES vhosts(id),
-            bucket          TEXT NOT NULL,
-            src_pool_id     INTEGER NOT NULL REFERENCES pools(id),
-            dst_pool_id     INTEGER NOT NULL REFERENCES pools(id),
-            mode            TEXT NOT NULL DEFAULT 'copy'
-                            CHECK (mode IN ('copy','sync')),
-            phase           TEXT NOT NULL DEFAULT 'pending'
-                            CHECK (phase IN ('pending','copying','write_routing','verifying','switching','purge_source','done','error','cancelled')),
-            rclone_pid      INTEGER,
-            objects_total   INTEGER NOT NULL DEFAULT 0,
-            objects_done    INTEGER NOT NULL DEFAULT 0,
-            bytes_total     INTEGER NOT NULL DEFAULT 0,
-            bytes_done      INTEGER NOT NULL DEFAULT 0,
-            error_msg       TEXT,
-            started_at      TEXT,
-            finished_at     TEXT,
-            created_at      TEXT NOT NULL DEFAULT (datetime('now'))
-        )""")
-        await db.execute("INSERT INTO migrations_new SELECT * FROM migrations")
-        await db.execute("DROP TABLE migrations")
-        await db.execute("ALTER TABLE migrations_new RENAME TO migrations")
-        await db.commit()
-        await db.execute("PRAGMA foreign_keys=ON")
-    # migrations.phase: add needs_purge (CHECK constraint requires table recreation)
-    row = await db.execute_fetchall(
-        "SELECT sql FROM sqlite_master WHERE type='table' AND name='migrations'"
+    migrations_sql = row[0]["sql"] if row else ""
+    needs_rebuild = (
+        "purge_source" in migrations_sql
+        or "needs_purge" in migrations_sql
+        or "orphaned_source_pool_id" not in col_names
+        or "route_id" not in col_names
+        or "mode" not in col_names
     )
-    if row and "needs_purge" not in (row[0]["sql"] or ""):
+    if needs_rebuild:
         await db.execute("PRAGMA foreign_keys=OFF")
         await db.execute("""CREATE TABLE migrations_new (
-            id              INTEGER PRIMARY KEY,
-            vhost_id        INTEGER NOT NULL REFERENCES vhosts(id),
-            bucket          TEXT NOT NULL,
-            src_pool_id     INTEGER NOT NULL REFERENCES pools(id),
-            dst_pool_id     INTEGER NOT NULL REFERENCES pools(id),
-            mode            TEXT NOT NULL DEFAULT 'copy'
-                            CHECK (mode IN ('copy','sync')),
-            phase           TEXT NOT NULL DEFAULT 'pending'
-                            CHECK (phase IN ('pending','copying','write_routing','verifying','switching','purge_source','needs_purge','done','error','cancelled')),
-            rclone_pid      INTEGER,
-            objects_total   INTEGER NOT NULL DEFAULT 0,
-            objects_done    INTEGER NOT NULL DEFAULT 0,
-            bytes_total     INTEGER NOT NULL DEFAULT 0,
-            bytes_done      INTEGER NOT NULL DEFAULT 0,
-            error_msg       TEXT,
-            started_at      TEXT,
-            finished_at     TEXT,
-            created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+            id                      INTEGER PRIMARY KEY,
+            vhost_id                INTEGER NOT NULL REFERENCES vhosts(id) ON DELETE CASCADE,
+            bucket                  TEXT NOT NULL,
+            src_pool_id             INTEGER NOT NULL REFERENCES pools(id),
+            dst_pool_id             INTEGER NOT NULL REFERENCES pools(id),
+            mode                    TEXT NOT NULL DEFAULT 'copy'
+                                    CHECK (mode IN ('copy','sync')),
+            phase                   TEXT NOT NULL DEFAULT 'pending'
+                                    CHECK (phase IN ('pending','copying','write_routing','verifying','switching','done','error','cancelled')),
+            rclone_pid              INTEGER,
+            objects_total           INTEGER NOT NULL DEFAULT 0,
+            objects_done            INTEGER NOT NULL DEFAULT 0,
+            bytes_total             INTEGER NOT NULL DEFAULT 0,
+            bytes_done              INTEGER NOT NULL DEFAULT 0,
+            error_msg               TEXT,
+            started_at              TEXT,
+            finished_at             TEXT,
+            route_id                INTEGER REFERENCES routes(id),
+            orphaned_source_pool_id INTEGER REFERENCES pools(id),
+            orphaned_source_prefix  TEXT,
+            orphaned_at             TEXT,
+            created_at              TEXT NOT NULL DEFAULT (datetime('now'))
         )""")
-        await db.execute("INSERT INTO migrations_new SELECT * FROM migrations")
-        await db.execute("DROP TABLE migrations")
-        await db.execute("ALTER TABLE migrations_new RENAME TO migrations")
-        await db.commit()
-        await db.execute("PRAGMA foreign_keys=ON")
-
-    # migrations.route_id (for route-specific migration tracking)
-    info = await db.execute_fetchall("PRAGMA table_info(migrations)")
-    col_names = {r['name'] for r in info}
-    if 'route_id' not in col_names:
-        await db.execute(
-            "ALTER TABLE migrations ADD COLUMN route_id INTEGER REFERENCES routes(id)"
+        # Migrate existing data; remap purge phases to 'done' (data is safe on dst)
+        existing_cols = {r['name'] for r in await db.execute_fetchall("PRAGMA table_info(migrations)")}
+        src_cols = [
+            "id", "vhost_id", "bucket", "src_pool_id", "dst_pool_id",
+            "rclone_pid", "objects_total", "objects_done", "bytes_total", "bytes_done",
+            "error_msg", "started_at", "finished_at", "created_at",
+        ]
+        optional_cols = {
+            "mode": "'copy'",
+            "route_id": "NULL",
+        }
+        select_parts = []
+        for c in src_cols:
+            select_parts.append(c if c in existing_cols else f"NULL AS {c}")
+        for c, default in optional_cols.items():
+            select_parts.append(c if c in existing_cols else f"{default} AS {c}")
+        # Phase remapping: purge_source/needs_purge → done
+        phase_expr = (
+            "CASE WHEN phase IN ('purge_source','needs_purge') THEN 'done' ELSE phase END"
         )
+        select_parts.append(f"{phase_expr} AS phase")
+        # orphaned_* always NULL for pre-existing records (unknown)
+        select_parts.extend(["NULL AS orphaned_source_pool_id",
+                              "NULL AS orphaned_source_prefix",
+                              "NULL AS orphaned_at"])
+        await db.execute(
+            f"INSERT INTO migrations_new SELECT {', '.join(select_parts)} FROM migrations"
+        )
+        await db.execute("DROP TABLE migrations")
+        await db.execute("ALTER TABLE migrations_new RENAME TO migrations")
+        await db.commit()
+        await db.execute("PRAGMA foreign_keys=ON")
 
+    # node_configs: ensure ON DELETE CASCADE on member_id FK
     row = await db.execute_fetchall(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='node_configs'"
     )
@@ -345,7 +320,7 @@ def init_db_sync() -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.executescript(SCHEMA_SQL)
-    # Migration: default_pool_id
+    # Migration: vhosts.default_pool_id
     info = conn.execute("PRAGMA table_info(vhosts)").fetchall()
     col_names = {r[1] for r in info}
     if 'default_pool_id' not in col_names:
@@ -357,109 +332,77 @@ def init_db_sync() -> None:
     col_names = {r[1] for r in info}
     if 'key_prefix' not in col_names:
         conn.execute("ALTER TABLE routes ADD COLUMN key_prefix TEXT")
-    # migrations.phase: add purge_source (CHECK constraint requires table recreation)
-    row = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type='table' AND name='migrations'"
-    ).fetchone()
-    if row and "purge_source" not in (row[0] or ""):
-        conn.execute("PRAGMA foreign_keys=OFF")
-        conn.execute("""CREATE TABLE migrations_new (
-            id              INTEGER PRIMARY KEY,
-            vhost_id        INTEGER NOT NULL REFERENCES vhosts(id) ON DELETE CASCADE,
-            bucket          TEXT NOT NULL,
-            src_pool_id     INTEGER NOT NULL REFERENCES pools(id),
-            dst_pool_id     INTEGER NOT NULL REFERENCES pools(id),
-            phase           TEXT NOT NULL DEFAULT 'pending'
-                            CHECK (phase IN ('pending','copying','verifying','switching','purge_source','done','error','cancelled')),
-            rclone_pid      INTEGER,
-            objects_total   INTEGER NOT NULL DEFAULT 0,
-            objects_done    INTEGER NOT NULL DEFAULT 0,
-            bytes_total     INTEGER NOT NULL DEFAULT 0,
-            bytes_done      INTEGER NOT NULL DEFAULT 0,
-            error_msg       TEXT,
-            started_at      TEXT,
-            finished_at     TEXT,
-            created_at      TEXT NOT NULL DEFAULT (datetime('now'))
-        )""")
-        conn.execute("INSERT INTO migrations_new SELECT * FROM migrations")
-        conn.execute("DROP TABLE migrations")
-        conn.execute("ALTER TABLE migrations_new RENAME TO migrations")
-        conn.commit()
-        conn.execute("PRAGMA foreign_keys=ON")
-    # migrations.mode (copy vs sync)
+
+    # Rebuild migrations table when needed:
+    # - Remove purge_source / needs_purge phases (purge was removed intentionally — data is never
+    #   deleted automatically; orphaned source data is tracked instead)
+    # - Add mode, route_id, orphaned_* columns
+    # - Any existing purge_source/needs_purge records are converted to 'done'
     info = conn.execute("PRAGMA table_info(migrations)").fetchall()
-    col_names = {r[1] for r in info}
-    if 'mode' not in col_names:
-        conn.execute("ALTER TABLE migrations ADD COLUMN mode TEXT NOT NULL DEFAULT 'copy'")
-    # migrations.phase: add write_routing (CHECK constraint requires table recreation)
+    col_names_mig = {r[1] for r in info}
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='migrations'"
     ).fetchone()
-    if row and "write_routing" not in (row[0] or ""):
+    migrations_sql = row[0] if row else ""
+    needs_rebuild = (
+        "purge_source" in migrations_sql
+        or "needs_purge" in migrations_sql
+        or "orphaned_source_pool_id" not in col_names_mig
+        or "route_id" not in col_names_mig
+        or "mode" not in col_names_mig
+    )
+    if needs_rebuild:
         conn.execute("PRAGMA foreign_keys=OFF")
         conn.execute("""CREATE TABLE migrations_new (
-            id              INTEGER PRIMARY KEY,
-            vhost_id        INTEGER NOT NULL REFERENCES vhosts(id),
-            bucket          TEXT NOT NULL,
-            src_pool_id     INTEGER NOT NULL REFERENCES pools(id),
-            dst_pool_id     INTEGER NOT NULL REFERENCES pools(id),
-            mode            TEXT NOT NULL DEFAULT 'copy'
-                            CHECK (mode IN ('copy','sync')),
-            phase           TEXT NOT NULL DEFAULT 'pending'
-                            CHECK (phase IN ('pending','copying','write_routing','verifying','switching','purge_source','done','error','cancelled')),
-            rclone_pid      INTEGER,
-            objects_total   INTEGER NOT NULL DEFAULT 0,
-            objects_done    INTEGER NOT NULL DEFAULT 0,
-            bytes_total     INTEGER NOT NULL DEFAULT 0,
-            bytes_done      INTEGER NOT NULL DEFAULT 0,
-            error_msg       TEXT,
-            started_at      TEXT,
-            finished_at     TEXT,
-            created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+            id                      INTEGER PRIMARY KEY,
+            vhost_id                INTEGER NOT NULL REFERENCES vhosts(id) ON DELETE CASCADE,
+            bucket                  TEXT NOT NULL,
+            src_pool_id             INTEGER NOT NULL REFERENCES pools(id),
+            dst_pool_id             INTEGER NOT NULL REFERENCES pools(id),
+            mode                    TEXT NOT NULL DEFAULT 'copy'
+                                    CHECK (mode IN ('copy','sync')),
+            phase                   TEXT NOT NULL DEFAULT 'pending'
+                                    CHECK (phase IN ('pending','copying','write_routing','verifying','switching','done','error','cancelled')),
+            rclone_pid              INTEGER,
+            objects_total           INTEGER NOT NULL DEFAULT 0,
+            objects_done            INTEGER NOT NULL DEFAULT 0,
+            bytes_total             INTEGER NOT NULL DEFAULT 0,
+            bytes_done              INTEGER NOT NULL DEFAULT 0,
+            error_msg               TEXT,
+            started_at              TEXT,
+            finished_at             TEXT,
+            route_id                INTEGER REFERENCES routes(id),
+            orphaned_source_pool_id INTEGER REFERENCES pools(id),
+            orphaned_source_prefix  TEXT,
+            orphaned_at             TEXT,
+            created_at              TEXT NOT NULL DEFAULT (datetime('now'))
         )""")
-        conn.execute("INSERT INTO migrations_new SELECT * FROM migrations")
-        conn.execute("DROP TABLE migrations")
-        conn.execute("ALTER TABLE migrations_new RENAME TO migrations")
-        conn.commit()
-        conn.execute("PRAGMA foreign_keys=ON")
-    # migrations.phase: add needs_purge (CHECK constraint requires table recreation)
-    row = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type='table' AND name='migrations'"
-    ).fetchone()
-    if row and "needs_purge" not in (row[0] or ""):
-        conn.execute("PRAGMA foreign_keys=OFF")
-        conn.execute("""CREATE TABLE migrations_new (
-            id              INTEGER PRIMARY KEY,
-            vhost_id        INTEGER NOT NULL REFERENCES vhosts(id),
-            bucket          TEXT NOT NULL,
-            src_pool_id     INTEGER NOT NULL REFERENCES pools(id),
-            dst_pool_id     INTEGER NOT NULL REFERENCES pools(id),
-            mode            TEXT NOT NULL DEFAULT 'copy'
-                            CHECK (mode IN ('copy','sync')),
-            phase           TEXT NOT NULL DEFAULT 'pending'
-                            CHECK (phase IN ('pending','copying','write_routing','verifying','switching','purge_source','needs_purge','done','error','cancelled')),
-            rclone_pid      INTEGER,
-            objects_total   INTEGER NOT NULL DEFAULT 0,
-            objects_done    INTEGER NOT NULL DEFAULT 0,
-            bytes_total     INTEGER NOT NULL DEFAULT 0,
-            bytes_done      INTEGER NOT NULL DEFAULT 0,
-            error_msg       TEXT,
-            started_at      TEXT,
-            finished_at     TEXT,
-            created_at      TEXT NOT NULL DEFAULT (datetime('now'))
-        )""")
-        conn.execute("INSERT INTO migrations_new SELECT * FROM migrations")
-        conn.execute("DROP TABLE migrations")
-        conn.execute("ALTER TABLE migrations_new RENAME TO migrations")
-        conn.commit()
-        conn.execute("PRAGMA foreign_keys=ON")
-    # migrations.route_id (for route-specific migration tracking)
-    info = conn.execute("PRAGMA table_info(migrations)").fetchall()
-    col_names = {r[1] for r in info}
-    if 'route_id' not in col_names:
-        conn.execute(
-            "ALTER TABLE migrations ADD COLUMN route_id INTEGER REFERENCES routes(id)"
+        src_cols = [
+            "id", "vhost_id", "bucket", "src_pool_id", "dst_pool_id",
+            "rclone_pid", "objects_total", "objects_done", "bytes_total", "bytes_done",
+            "error_msg", "started_at", "finished_at", "created_at",
+        ]
+        optional_cols = {"mode": "'copy'", "route_id": "NULL"}
+        select_parts = []
+        for c in src_cols:
+            select_parts.append(c if c in col_names_mig else f"NULL AS {c}")
+        for c, default in optional_cols.items():
+            select_parts.append(c if c in col_names_mig else f"{default} AS {c}")
+        phase_expr = (
+            "CASE WHEN phase IN ('purge_source','needs_purge') THEN 'done' ELSE phase END"
         )
+        select_parts.append(f"{phase_expr} AS phase")
+        select_parts.extend(["NULL AS orphaned_source_pool_id",
+                              "NULL AS orphaned_source_prefix",
+                              "NULL AS orphaned_at"])
+        conn.execute(
+            f"INSERT INTO migrations_new SELECT {', '.join(select_parts)} FROM migrations"
+        )
+        conn.execute("DROP TABLE migrations")
+        conn.execute("ALTER TABLE migrations_new RENAME TO migrations")
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys=ON")
+
     # node_configs: ensure ON DELETE CASCADE on member_id FK
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='node_configs'"

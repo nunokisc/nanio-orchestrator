@@ -1,15 +1,15 @@
 """rclone-based migration engine with state machine and crash recovery.
 
 State machine phases:
-  pending → copying (convergence loop) → write_routing → verifying → switching → purge_source → done
+  pending → copying (convergence loop) → write_routing → verifying → switching → done
                                        ↗ (skips write_routing if counts converged in copying)
                                            → error
   Any phase can transition to 'error' or 'cancelled'.
   write_routing: nginx routes writes to dst pool; reads still come from src with 404-fallback.
-  purge_source deletes objects from the source bucket after a successful switch,
-  eliminating orphan copies. Failure is non-fatal: migration is still marked done.
+  On done, orphaned_source_pool_id/prefix/at are recorded — the source data is NEVER deleted
+  automatically; that is the exclusive responsibility of the human operator.
 
-rclone is invoked as a subprocess for the copy/verify/purge phases.
+rclone is invoked as a subprocess for the copy/verify phases.
 A temporary rclone config is generated from pool credentials.
 """
 
@@ -35,7 +35,7 @@ from nanio_orchestrator.nginx.generator import (
     record_file_state,
     write_config_atomic,
 )
-from nanio_orchestrator.s3client import count_objects
+from nanio_orchestrator.s3client import bucket_exists, bucket_has_objects, count_objects, create_bucket
 from nanio_orchestrator.sidecar import write_migration_state, delete_migration_state
 
 logger = logging.getLogger(__name__)
@@ -376,53 +376,6 @@ def _parse_rclone_stats(line: str) -> Optional[dict]:
     return result or None
 
 
-async def _run_rclone_delete(migration_id: int, config_path: str, remote: str, phase: str) -> bool:
-    """Run rclone delete to remove all objects from a remote bucket. Returns True on success."""
-    s = get_settings()
-    cmd = [
-        s.rclone_path, "delete", remote,
-        "--config", config_path,
-        "--log-level", "NOTICE",
-    ]
-    await _log(migration_id, phase, f"Running: {' '.join(cmd)}")
-    logger.info("migration %d [%s]: deleting objects from %s", migration_id, phase, remote)
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        async with get_db_ctx() as db:
-            await db.execute("UPDATE migrations SET rclone_pid=? WHERE id=?", (proc.pid, migration_id))
-            await db.commit()
-
-        async for raw in proc.stdout:
-            line = raw.decode(errors="replace").rstrip()
-            if line:
-                logger.debug("rclone [%d]: %s", migration_id, line)
-                await _log(migration_id, phase, line)
-
-        await proc.wait()
-        async with get_db_ctx() as db:
-            await db.execute("UPDATE migrations SET rclone_pid=NULL WHERE id=?", (migration_id,))
-            await db.commit()
-
-        if proc.returncode == 0:
-            await _log(migration_id, phase, "Source purge completed successfully")
-            logger.info("migration %d [%s]: rclone delete finished OK", migration_id, phase)
-            return True
-        else:
-            await _log(migration_id, phase, f"rclone delete exit code {proc.returncode}")
-            return False
-
-    except FileNotFoundError:
-        await _log(migration_id, phase, f"rclone binary not found at: {s.rclone_path}")
-        return False
-    except Exception as e:
-        await _log(migration_id, phase, f"rclone delete error: {e}")
-        return False
-
 
 async def _restore_nginx_config(migration_id: int, phase: str, filepath: str) -> None:
     """Restore a vhost nginx config from the DB content_snapshot after a failed reload.
@@ -485,8 +438,7 @@ async def run_migration(migration_id: int) -> None:
         if src_pool_id == dst_pool_id:
             msg = (
                 f"Refusing to migrate: source and destination are the same pool "
-                f"(pool_id={src_pool_id}). Migrating to the same pool would copy "
-                "the bucket onto itself and then purge all its content."
+                f"(pool_id={src_pool_id}). Source and destination must be different pools."
             )
             logger.error("Migration %d aborted: %s", migration_id, msg)
             await _set_phase(migration_id, "error", msg)
@@ -528,6 +480,52 @@ async def run_migration(migration_id: int) -> None:
                     f"Pre-flight object count unavailable ({exc}). "
                     "Proceeding — rclone uses its own pool credentials.",
                 )
+
+        # ── Pre-condition: destination bucket must not contain objects ───────
+        # If bucket doesn't exist on dst → create it.
+        # If it exists but has objects → refuse (would cause data conflicts).
+        # If it exists and is empty → proceed.
+        dst_address_precond = await _first_member_endpoint(dst_pool_id)
+        if dst_address_precond:
+            dst_ak_pre, dst_sk_pre, _ = await get_pool_s3_params(dst_pool_id)
+            try:
+                dst_bucket_found = await bucket_exists(
+                    dst_address_precond, bucket,
+                    access_key=dst_ak_pre, secret_key=dst_sk_pre,
+                )
+                if dst_bucket_found:
+                    if await bucket_has_objects(
+                        dst_address_precond, bucket,
+                        access_key=dst_ak_pre, secret_key=dst_sk_pre,
+                    ):
+                        msg = (
+                            f"destination bucket already contains objects, "
+                            "refusing to migrate to avoid data conflicts"
+                        )
+                        logger.error("Migration %d aborted: %s", migration_id, msg)
+                        await _set_phase(migration_id, "error", msg)
+                        return
+                    await _log(migration_id, "copying",
+                               f"Destination bucket '{bucket}' exists and is empty — proceeding")
+                else:
+                    dst_ok, dst_create_msg = await create_bucket(
+                        dst_address_precond, bucket,
+                        access_key=dst_ak_pre, secret_key=dst_sk_pre,
+                    )
+                    if not dst_ok:
+                        msg = f"Failed to create destination bucket '{bucket}': {dst_create_msg}"
+                        logger.error("Migration %d aborted: %s", migration_id, msg)
+                        await _set_phase(migration_id, "error", msg)
+                        return
+                    await _log(migration_id, "copying",
+                               f"Created destination bucket '{bucket}' on pool {dst_pool_id}")
+            except Exception as exc:
+                logger.warning(
+                    "Migration %d: destination bucket pre-check failed (%s) — proceeding",
+                    migration_id, exc,
+                )
+                await _log(migration_id, "copying",
+                           f"Destination bucket pre-check unavailable ({exc}) — proceeding")
 
         # ── Phase: copying (convergence loop) ───────────────────────────
         # Repeat rclone copy until src and dst object counts match, or until
@@ -765,21 +763,26 @@ async def run_migration(migration_id: int) -> None:
                              f"nginx test failed during switching: {test_result.output}")
             return
 
-        # ── Phase: purge_source ───────────────────────────────────────────
-        await _set_phase(migration_id, "purge_source")
-        await _log(migration_id, "purge_source",
-                   "Purging source bucket content to eliminate orphan copies on default pool")
-
-        purge_ok = await _run_rclone_delete(migration_id, config_path, src_remote, "purge_source")
-        if not purge_ok:
-            await _log(migration_id, "purge_source",
-                       "WARNING: Source purge had errors — orphan content may remain on source pool. "
-                       "Use the Orphan Scan on the Buckets page to clean up manually.")
-            logger.warning("Migration %d: source purge had errors (non-fatal)", migration_id)
+        # ── Record orphaned source data ───────────────────────────────────
+        # Source data is NEVER deleted automatically. Track it so operators can
+        # make an informed decision about cleaning up the source bucket.
+        async with get_db_ctx() as db:
+            await db.execute(
+                """UPDATE migrations SET
+                   orphaned_source_pool_id = ?,
+                   orphaned_source_prefix = ?,
+                   orphaned_at = ?
+                   WHERE id = ?""",
+                (src_pool_id, f"/{bucket}/", _now(), migration_id),
+            )
+            await db.commit()
 
         # ── Phase: done ───────────────────────────────────────────────────
         await _set_phase(migration_id, "done")
-        await _log(migration_id, "done", f"Migration completed: {bucket} moved to pool {dst_pool_id}")
+        await _log(migration_id, "done",
+                   f"Migration completed: {bucket} moved to pool {dst_pool_id}. "
+                   f"Source data on pool {src_pool_id} is now orphaned — "
+                   "use GET /api/migrations/orphaned to track.")
         logger.info("Migration %d completed: bucket=%s", migration_id, bucket)
 
     except asyncio.CancelledError:
@@ -878,15 +881,11 @@ async def recover_interrupted_migrations() -> int:
 
     Returns the number of migrations recovered.
     """
-    # Clean up any stale rclone credential dirs from prior crashes
     cleanup_stale_rclone_dirs()
 
     async with get_db_ctx() as db:
         active_rows = await db.execute_fetchall(
             "SELECT id FROM migrations WHERE phase IN ('pending', 'copying', 'verifying')"
-        )
-        purge_rows = await db.execute_fetchall(
-            "SELECT id FROM migrations WHERE phase = 'purge_source'"
         )
         # Migrations stuck in write_routing or switching: nginx and DB state are
         # uncertain — require operator review rather than auto-resuming.
@@ -896,9 +895,6 @@ async def recover_interrupted_migrations() -> int:
 
     count = 0
 
-    # Migrations stuck in write_routing/switching: mark as error for operator review.
-    # The DB route and nginx config may be inconsistent; operator must verify and
-    # either restart the migration or reconcile manually via the config rebuild API.
     for row in stuck_rows:
         mid = row["id"]
         phase = row["phase"]
@@ -912,18 +908,6 @@ async def recover_interrupted_migrations() -> int:
         logger.warning(
             "Migration %d: stuck in %s → error (operator review required)", mid, phase
         )
-        count += 1
-
-    # Handle migrations stuck mid-purge: mark as needs_purge for operator review
-    # instead of silently marking done — the purge may be incomplete.
-    for row in purge_rows:
-        mid = row["id"]
-        await _log(mid, "recovery",
-                   "Found migration stuck in purge_source — marking as needs_purge. "
-                   "Operator review required: verify destination data integrity, then "
-                   "re-trigger purge or mark done manually via the API.")
-        await _set_phase(mid, "needs_purge")
-        logger.warning("Migration %d: purge_source → needs_purge (requires operator review)", mid)
         count += 1
 
     # Restart migrations interrupted during copy/verify

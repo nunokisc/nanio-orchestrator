@@ -167,6 +167,13 @@ def mock_s3():
         "create_bucket": [
             "nanio_orchestrator.s3client.create_bucket",
             "nanio_orchestrator.api.buckets.create_bucket",
+            "nanio_orchestrator.migration_engine.create_bucket",
+        ],
+        "bucket_exists": [
+            "nanio_orchestrator.migration_engine.bucket_exists",
+        ],
+        "bucket_has_objects": [
+            "nanio_orchestrator.migration_engine.bucket_has_objects",
         ],
         "list_objects": [
             "nanio_orchestrator.s3client.list_objects",
@@ -190,6 +197,8 @@ def mock_s3():
     defaults = {
         "list_buckets": [],
         "create_bucket": (True, "created"),
+        "bucket_exists": False,       # dst bucket doesn't exist → will be created
+        "bucket_has_objects": False,  # dst bucket is empty → migration proceeds
         "list_objects": [],
         "count_objects": 1,
         "get_object": b"data",

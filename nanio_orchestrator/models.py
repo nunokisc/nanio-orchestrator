@@ -228,6 +228,7 @@ class RouteOut(BaseModel):
     enabled: bool
     created_at: str
     updated_at: str
+    migration_id: Optional[int] = None
 
 # ── Bucket Sync ────────────────────────────────────────────────────────────────
 
@@ -308,6 +309,20 @@ class RcloneMigrationOut(BaseModel):
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
     created_at: str
+    orphaned_source_pool_id: Optional[int] = None
+    orphaned_source_prefix: Optional[str] = None
+    orphaned_at: Optional[str] = None
+
+
+class OrphanedMigrationOut(BaseModel):
+    migration_id: int
+    bucket: str
+    src_pool_id: int
+    dst_pool_id: int
+    orphaned_source_pool_id: int
+    orphaned_source_prefix: str
+    orphaned_at: str
+    finished_at: Optional[str] = None
 
 
 class MigrationLogEntry(BaseModel):

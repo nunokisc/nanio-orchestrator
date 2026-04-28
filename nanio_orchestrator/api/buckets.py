@@ -357,9 +357,9 @@ async def list_orphans(vhost_id: int):
     """Scan routed buckets for orphan content still on the default pool.
 
     A bucket is an orphan when it has been routed to a dedicated pool but the
-    default pool's copy still contains objects.  This typically happens when a
-    migration completed before the purge_source phase was introduced, or when
-    purge_source failed.
+    default pool's copy still contains objects.  This happens after every migration
+    because source data is never deleted automatically — cleanup is the operator's
+    responsibility.
     """
     async with get_db_ctx() as db:
         vhost = await _require_vhost_with_default_pool(vhost_id, db)
