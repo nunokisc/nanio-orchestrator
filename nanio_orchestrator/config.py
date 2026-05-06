@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -57,6 +58,17 @@ class Settings(BaseSettings):
     db_backup_interval: int = 300  # seconds between timed backups
     db_backup_rotate: int = 3  # keep N backup copies
     dev: bool = DEV_MODE
+
+    @model_validator(mode="before")
+    @classmethod
+    def strip_inline_comments(cls, values: dict) -> dict:
+        """Strip inline shell-style comments from env file values (e.g. '300 # seconds' → '300')."""
+        if isinstance(values, dict):
+            return {
+                k: v.split("#")[0].strip() if isinstance(v, str) else v
+                for k, v in values.items()
+            }
+        return values
 
     @property
     def effective_db_backup_path(self) -> str:
