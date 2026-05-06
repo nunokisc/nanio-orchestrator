@@ -45,6 +45,10 @@ NANIO_ORCHESTRATOR_DB_BACKUP_INTERVAL=300
 NANIO_ORCHESTRATOR_DB_BACKUP_ROTATE=3
 """
 
+SUDOERS_CONTENT = """# Allow nanio-orchestrator to validate and reload nginx without a password
+nanio-orchestrator ALL=(ALL) NOPASSWD: /usr/sbin/nginx -t, /usr/sbin/nginx -s reload
+"""
+
 SYSTEMD_UNIT = """\
 [Unit]
 Description=nanio-orchestrator nginx config manager
@@ -163,6 +167,12 @@ def run_install() -> None:
     for _d in (pools_dir.parent, pools_dir, vhosts_dir, migrations_dir):
         shutil.chown(_d, user="nanio-orchestrator", group="nanio-orchestrator")
     _step(f"Created {pools_dir.parent}/{{pools,vhosts,migrations}}")
+
+    # 5b. Install sudoers drop-in for nginx commands
+    sudoers_path = Path("/etc/sudoers.d/nanio-orchestrator")
+    sudoers_path.write_text(SUDOERS_CONTENT)
+    sudoers_path.chmod(0o440)
+    _step(f"Installed sudoers drop-in → {sudoers_path}")
 
     # 6. Install systemd unit
     unit_path = Path("/etc/systemd/system/nanio-orchestrator.service")

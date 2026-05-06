@@ -54,12 +54,12 @@ async def _run_cmd(cmd: list[str]) -> NginxExecResult:
 
 async def test_config() -> NginxExecResult:
     """Run nginx -t to validate configuration."""
-    return await _run_cmd(["nginx", "-t"])
+    return await _run_cmd(["sudo", "nginx", "-t"])
 
 
 async def reload_nginx() -> NginxExecResult:
     """Run nginx -s reload to apply configuration."""
-    return await _run_cmd(["nginx", "-s", "reload"])
+    return await _run_cmd(["sudo", "nginx", "-s", "reload"])
 
 
 async def test_and_reload() -> NginxExecResult:
