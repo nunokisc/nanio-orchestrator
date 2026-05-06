@@ -41,8 +41,8 @@ NANIO_ORCHESTRATOR_MIGRATION_TRANSFERS=4
 # NANIO_ORCHESTRATOR_S3_SECRET_KEY=
 # Database backup settings
 NANIO_ORCHESTRATOR_DB_BACKUP_PATH=/opt/nanio-orchestrator/data/orchestrator.db.bak
-NANIO_ORCHESTRATOR_DB_BACKUP_INTERVAL=300   # seconds
-NANIO_ORCHESTRATOR_DB_BACKUP_ROTATE=3      # keep N backup copies
+NANIO_ORCHESTRATOR_DB_BACKUP_INTERVAL=300
+NANIO_ORCHESTRATOR_DB_BACKUP_ROTATE=3
 """
 
 SYSTEMD_UNIT = """\
@@ -134,6 +134,7 @@ def run_install() -> None:
     # 3. Create data directory
     data_dir = Path("/opt/nanio-orchestrator/data")
     data_dir.mkdir(parents=True, exist_ok=True)
+    shutil.chown(data_dir, user="nanio-orchestrator", group="nanio-orchestrator")
     _step(f"Created {data_dir}")
 
     # 4. Create config directory and write config.env
@@ -159,6 +160,8 @@ def run_install() -> None:
     pools_dir.mkdir(parents=True, exist_ok=True)
     vhosts_dir.mkdir(parents=True, exist_ok=True)
     migrations_dir.mkdir(parents=True, exist_ok=True)
+    for _d in (pools_dir.parent, pools_dir, vhosts_dir, migrations_dir):
+        shutil.chown(_d, user="nanio-orchestrator", group="nanio-orchestrator")
     _step(f"Created {pools_dir.parent}/{{pools,vhosts,migrations}}")
 
     # 6. Install systemd unit
@@ -188,6 +191,7 @@ def run_install() -> None:
     db_path = "/opt/nanio-orchestrator/data/orchestrator.db"
     set_db_path(db_path)
     init_db_sync()
+    shutil.chown(db_path, user="nanio-orchestrator", group="nanio-orchestrator")
     _step(f"Initialized database at {db_path}")
 
     # 8. Print next steps
