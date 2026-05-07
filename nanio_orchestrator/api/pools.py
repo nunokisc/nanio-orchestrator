@@ -29,6 +29,7 @@ from nanio_orchestrator.nginx.generator import (
     record_file_state,
     render_node_config,
 )
+from nanio_orchestrator.s3client import delete_object, list_objects
 from nanio_orchestrator.s3client import list_buckets as s3_list_buckets
 from nanio_orchestrator.sidecar import delete_pool_sidecar as _delete_pool_sidecar_sync
 from nanio_orchestrator.sidecar import write_pool_sidecar as _write_pool_sidecar_sync
@@ -614,10 +615,10 @@ async def pool_bucket_status(pool_id: int):
     buckets = []
     for b in raw_buckets:
         name = b["name"]
-        if name in orphaned_set:
-            status = "orphaned"
-        elif name in routed:
+        if name in routed:
             status = "routed"
+        elif name in orphaned_set:
+            status = "orphaned"
         elif default_vhosts:
             status = "via_default"
         else:
@@ -643,3 +644,86 @@ async def pool_bucket_status(pool_id: int):
         "buckets": buckets,
         "all_vhosts": all_vhosts,
     }
+
+
+@router.get("/{pool_id}/buckets/{bucket}/objects")
+async def pool_bucket_objects(pool_id: int, bucket: str):
+    """List all objects in a bucket on a specific nanio pool.
+
+    Intended for inspecting orphaned buckets before deciding whether to purge them.
+    """
+    async with get_db_ctx() as db:
+        pool_rows = await db.execute_fetchall("SELECT * FROM pools WHERE id = ?", (pool_id,))
+        if not pool_rows:
+            raise HTTPException(404, "Pool not found")
+        pool = dict(pool_rows[0])
+        if pool["type"] != "nanio":
+            raise HTTPException(400, "Object listing is only available for nanio pools")
+        member_rows = await db.execute_fetchall(
+            "SELECT address FROM pool_members WHERE pool_id = ? AND enabled = 1 ORDER BY id LIMIT 1",
+            (pool_id,),
+        )
+        if not member_rows:
+            raise HTTPException(400, "Pool has no enabled members")
+        member_address = dict(member_rows[0])["address"]
+
+    ak, sk, _ = await get_pool_s3_params(pool_id)
+    try:
+        keys = await list_objects(member_address, bucket, access_key=ak, secret_key=sk)
+    except Exception as exc:
+        raise HTTPException(502, f"Failed to list objects in bucket '{bucket}': {exc}")
+
+    return {"pool_id": pool_id, "bucket": bucket, "objects": keys, "count": len(keys)}
+
+
+@router.post("/{pool_id}/buckets/{bucket}/purge")
+async def pool_bucket_purge(pool_id: int, bucket: str):
+    """Delete all objects in a bucket on a specific nanio pool.
+
+    Use this to clean up orphaned buckets after a migration — the bucket container
+    is preserved so ListBuckets still works; only the object content is removed.
+    """
+    async with get_db_ctx() as db:
+        pool_rows = await db.execute_fetchall("SELECT * FROM pools WHERE id = ?", (pool_id,))
+        if not pool_rows:
+            raise HTTPException(404, "Pool not found")
+        pool = dict(pool_rows[0])
+        if pool["type"] != "nanio":
+            raise HTTPException(400, "Purge is only available for nanio pools")
+        member_rows = await db.execute_fetchall(
+            "SELECT address FROM pool_members WHERE pool_id = ? AND enabled = 1 ORDER BY id LIMIT 1",
+            (pool_id,),
+        )
+        if not member_rows:
+            raise HTTPException(400, "Pool has no enabled members")
+        member_address = dict(member_rows[0])["address"]
+
+    ak, sk, _ = await get_pool_s3_params(pool_id)
+    try:
+        keys = await list_objects(member_address, bucket, access_key=ak, secret_key=sk)
+    except Exception as exc:
+        raise HTTPException(502, f"Failed to list objects in bucket '{bucket}': {exc}")
+
+    deleted = 0
+    errors: list = []
+    for key in keys:
+        try:
+            ok = await delete_object(member_address, bucket, key, access_key=ak, secret_key=sk)
+            if ok:
+                deleted += 1
+            else:
+                errors.append(key)
+        except Exception:
+            errors.append(key)
+
+    async with get_db_ctx() as db:
+        await log_audit(
+            db,
+            "pool_bucket_purge",
+            "pool",
+            pool_id,
+            after={"pool_id": pool_id, "bucket": bucket, "deleted": deleted, "total": len(keys)},
+        )
+        await db.commit()
+
+    return {"ok": True, "pool_id": pool_id, "bucket": bucket, "deleted": deleted, "total": len(keys), "errors": errors}

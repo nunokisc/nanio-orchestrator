@@ -177,6 +177,27 @@
         </div>
     </div>
 </div>
+
+<!-- ─── Pool Bucket Purge Modal ────────────────────────────────────────────── -->
+<div id="pool-purge-modal" class="modal hidden">
+    <div class="modal-content">
+        <h3>Orphaned bucket: <code id="pool-purge-bucket-name"></code></h3>
+        <p style="color:var(--text-muted);font-size:0.9rem">This bucket still has objects on the source pool after the migration. Purge to free space — the bucket container is kept.</p>
+        <div id="pool-purge-results" style="margin:0.8rem 0">
+            <table>
+                <thead><tr><th>Object key</th></tr></thead>
+                <tbody id="pool-purge-list"></tbody>
+            </table>
+        </div>
+        <p id="pool-purge-summary" style="font-size:0.9rem;color:var(--text-muted)"></p>
+        <input type="hidden" id="pool-purge-pool-id">
+        <input type="hidden" id="pool-purge-bucket-val">
+        <div class="modal-actions">
+            <button class="btn btn-danger" id="pool-purge-btn" onclick="purgePoolBucketFromModal(this)">Purge all objects</button>
+            <button class="btn" onclick="hideModal('pool-purge-modal')">Close</button>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -326,11 +347,14 @@ async function scanPoolBuckets(poolId, btn) {
             const routeBtn = canRoute
                 ? `<button class="btn btn-xs btn-primary" onclick="showRouteModalFromPool(${poolId},'${escapeHtml(b.bucket)}')">Route</button>`
                 : '';
+            const orphanBtn = b.status === 'orphaned'
+                ? `<button class="btn btn-xs btn-danger" onclick="scanPoolOrphanObjects(${poolId},'${escapeHtml(b.bucket)}',this)">Scan orphans</button>`
+                : '';
             return `<tr>
                 <td><code>${escapeHtml(b.bucket)}</code></td>
                 <td>${badge}</td>
                 <td style="font-size:0.85rem">${where}</td>
-                <td>${routeBtn}</td>
+                <td style="display:flex;gap:0.3rem;flex-wrap:wrap">${routeBtn} ${orphanBtn}</td>
             </tr>`;
         }).join('');
         container.innerHTML = `<table>
@@ -341,6 +365,55 @@ async function scanPoolBuckets(poolId, btn) {
         container.innerHTML = `<p style="color:var(--danger,#c0392b)">Scan failed: ${escapeHtml(err.message)}</p>`;
     } finally {
         if (btn) { btn.disabled = false; btn.textContent = orig; }
+    }
+}
+
+async function scanPoolOrphanObjects(poolId, bucket, btn) {
+    const orig = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = 'Scanning…'; }
+    try {
+        const res = await fetch(`/api/pools/${poolId}/buckets/${encodeURIComponent(bucket)}/objects`, fetchOpts('GET'));
+        const data = await res.json();
+        if (!res.ok) { alert('Scan failed: ' + (data.detail || JSON.stringify(data))); return; }
+        document.getElementById('pool-purge-pool-id').value = poolId;
+        document.getElementById('pool-purge-bucket-val').value = bucket;
+        document.getElementById('pool-purge-bucket-name').textContent = bucket;
+        const tbody = document.getElementById('pool-purge-list');
+        if (data.count === 0) {
+            tbody.innerHTML = '<tr><td style="color:var(--text-muted)">No objects found.</td></tr>';
+            document.getElementById('pool-purge-btn').disabled = true;
+        } else {
+            tbody.innerHTML = data.objects.map(k => `<tr><td><code>${escapeHtml(k)}</code></td></tr>`).join('');
+            document.getElementById('pool-purge-btn').disabled = false;
+        }
+        document.getElementById('pool-purge-summary').textContent = `${data.count} object(s) found.`;
+        showModal('pool-purge-modal');
+    } catch (err) {
+        alert('Scan failed: ' + err.message);
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = orig; }
+    }
+}
+
+async function purgePoolBucketFromModal(btn) {
+    const poolId = document.getElementById('pool-purge-pool-id').value;
+    const bucket = document.getElementById('pool-purge-bucket-val').value;
+    if (!confirm(`Delete all objects from pool ${poolId} bucket "${bucket}"?\n\nThe bucket container is preserved. Only objects will be deleted.`)) return;
+    const orig = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = 'Purging…'; }
+    try {
+        const res = await fetch(`/api/pools/${poolId}/buckets/${encodeURIComponent(bucket)}/purge`, fetchOpts('POST'));
+        const data = await res.json();
+        if (data.ok) {
+            alert(`Purged ${data.deleted} / ${data.total} object(s) from "${bucket}".`);
+            hideModal('pool-purge-modal');
+        } else {
+            if (btn) { btn.disabled = false; btn.textContent = orig; }
+            alert('Error: ' + (data.detail || data.error || JSON.stringify(data)));
+        }
+    } catch (err) {
+        if (btn) { btn.disabled = false; btn.textContent = orig; }
+        alert('Purge failed: ' + err.message);
     }
 }
 
