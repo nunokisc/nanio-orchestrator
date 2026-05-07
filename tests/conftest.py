@@ -292,7 +292,7 @@ async def create_member(client: AsyncClient, pool_id: int, address: str = "10.0.
 
 async def create_vhost(client: AsyncClient, server_name: str = "test.example.com", **kwargs) -> dict:
     """Helper: create a vhost via API."""
-    body = {"server_name": server_name, **kwargs}
+    body = {"server_name": server_name, "ssl": False, **kwargs}
     resp = await client.post("/api/vhosts", json=body)
     assert resp.status_code == 201, resp.text
     return resp.json()

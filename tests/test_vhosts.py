@@ -6,7 +6,7 @@ from tests.conftest import create_pool, create_member, create_vhost
 
 class TestVhostCRUD:
     async def test_create_vhost(self, client):
-        resp = await client.post("/api/vhosts", json={"server_name": "s3.example.com"})
+        resp = await client.post("/api/vhosts", json={"server_name": "s3.example.com", "ssl": False})
         assert resp.status_code == 201
         assert resp.json()["server_name"] == "s3.example.com"
 
@@ -14,6 +14,7 @@ class TestVhostCRUD:
         pool = await create_pool(client, "vh-pool")
         resp = await client.post("/api/vhosts", json={
             "server_name": "pool.example.com",
+            "ssl": False,
             "default_pool_id": pool["id"],
         })
         assert resp.status_code == 201
@@ -21,7 +22,7 @@ class TestVhostCRUD:
 
     async def test_create_vhost_duplicate(self, client):
         await create_vhost(client, "dup.example.com")
-        resp = await client.post("/api/vhosts", json={"server_name": "dup.example.com"})
+        resp = await client.post("/api/vhosts", json={"server_name": "dup.example.com", "ssl": False})
         assert resp.status_code == 409
 
     async def test_list_vhosts(self, client):

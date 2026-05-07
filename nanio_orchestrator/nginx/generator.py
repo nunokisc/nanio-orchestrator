@@ -53,11 +53,32 @@ def render_upstream(pool: Dict[str, Any], members: List[Dict[str, Any]]) -> str:
 
 def render_vhost(vhost: Dict[str, Any], routes: List[Dict[str, Any]]) -> str:
     """Render a server block for a vhost with all its routes."""
+    import json as _json
     env = _get_jinja_env()
     tpl = env.get_template("vhost.conf.j2")
     # Sort routes by path_prefix length (longest first) for correct nginx matching
     sorted_routes = sorted(routes, key=lambda r: len(r["path_prefix"]), reverse=True)
-    return tpl.render(vhost=vhost, routes=sorted_routes, updated=_now_iso())
+
+    # Parse extra_blocks and split by zone
+    raw_blocks = vhost.get("extra_blocks_json") or vhost.get("extra_blocks") or []
+    if isinstance(raw_blocks, str):
+        try:
+            raw_blocks = _json.loads(raw_blocks)
+        except Exception:
+            raw_blocks = []
+
+    extra_blocks_ssl = [b for b in raw_blocks if b.get("zone") == "ssl"]
+    extra_blocks_proxy = [b for b in raw_blocks if b.get("zone") == "proxy"]
+    extra_blocks_end = [b for b in raw_blocks if b.get("zone") == "end"]
+
+    return tpl.render(
+        vhost=vhost,
+        routes=sorted_routes,
+        updated=_now_iso(),
+        extra_blocks_ssl=extra_blocks_ssl,
+        extra_blocks_proxy=extra_blocks_proxy,
+        extra_blocks_end=extra_blocks_end,
+    )
 
 
 # ── Write config file (atomic: .tmp → rename) ────────────────────────────────

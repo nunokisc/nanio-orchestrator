@@ -14,10 +14,12 @@
         <div class="card-badges">
             <span class="badge">:{{ vhost.listen_port }}</span>
             {% if vhost.ssl %}<span class="badge ok">SSL</span>{% endif %}
+            {% if vhost.default_pool_type %}<span class="badge type-{{ vhost.default_pool_type }}">{{ vhost.default_pool_type }}</span>{% endif %}
             {% if vhost.enabled %}<span class="badge ok">enabled</span>{% else %}<span class="badge warn">disabled</span>{% endif %}
         </div>
         <div class="card-actions">
             <button class="btn btn-sm" onclick="previewVhost({{ vhost.id }})">Preview</button>
+            <button class="btn btn-sm" onclick="showExtraBlocks({{ vhost.id }}, {{ vhost.extra_blocks | tojson }})">Additional Configurations</button>
             <button class="btn btn-sm btn-danger" onclick="deleteVhost({{ vhost.id }}, '{{ vhost.server_name }}')">Delete</button>
         </div>
     </div>
@@ -26,7 +28,15 @@
     <p class="meta">Cert: <code>{{ vhost.ssl_cert_path }}</code></p>
     {% endif %}
     {% if vhost.default_pool_id %}
-    <p class="meta">Default pool (namespace authority): <strong>{{ vhost.default_pool_name or vhost.default_pool_id }}</strong></p>
+    <p class="meta">Default pool: <strong>{{ vhost.default_pool_name or vhost.default_pool_id }}</strong>
+        {% if vhost.default_pool_type %}<span class="badge type-{{ vhost.default_pool_type }}" style="font-size:0.75em">{{ vhost.default_pool_type }}</span>{% endif %}
+    </p>
+    {% endif %}
+
+    {% if vhost.extra_blocks %}
+    <p class="meta" style="font-size:0.85em;color:var(--text-muted)">
+        Extra blocks: {% for b in vhost.extra_blocks %}<span class="badge">{{ b.zone }}</span> {% endfor %}
+    </p>
     {% endif %}
 
     <h4>Routes</h4>
@@ -62,7 +72,7 @@
         {% endif %}
         </tbody>
     </table>
-    <button class="btn btn-sm" onclick="showAddRoute({{ vhost.id }})">+ Add Route</button>
+    <button class="btn btn-sm" onclick="showAddRoute({{ vhost.id }}, '{{ vhost.default_pool_type or '' }}')">+ Add Route</button>
 </div>
 {% endfor %}
 
@@ -79,14 +89,16 @@
         <form id="create-vhost-form" onsubmit="createVhost(event)">
             <label>Server Name <input type="text" name="server_name" required placeholder="s3.xpto.pt"></label>
             <label>Listen Port <input type="number" name="listen_port" value="443" min="1" max="65535"></label>
-            <label><input type="checkbox" name="ssl" checked> SSL</label>
-            <label>SSL Certificate Path <input type="text" name="ssl_cert_path" placeholder="/etc/ssl/s3.xpto.pt/fullchain.pem"></label>
-            <label>SSL Key Path <input type="text" name="ssl_key_path" placeholder="/etc/ssl/s3.xpto.pt/privkey.pem"></label>
-            <label>Default Pool (nanio-default — namespace authority)
+            <label><input type="checkbox" name="ssl" id="create-vhost-ssl" checked onchange="toggleSslCertFields('create-vhost-ssl', 'create-ssl-cert-fields')"> SSL</label>
+            <div id="create-ssl-cert-fields">
+                <label>SSL Certificate Path <input type="text" name="ssl_cert_path" id="create-ssl-cert-path" placeholder="/etc/ssl/s3.xpto.pt/fullchain.pem"></label>
+                <label>SSL Key Path <input type="text" name="ssl_key_path" id="create-ssl-key-path" placeholder="/etc/ssl/s3.xpto.pt/privkey.pem"></label>
+            </div>
+            <label>Default Pool (sets vhost type — nanio or http; all routes must match)
                 <select name="default_pool_id">
                     <option value="">— none —</option>
                     {% for p in pools %}
-                    <option value="{{ p.id }}">{{ p.name }}</option>
+                    <option value="{{ p.id }}" data-type="{{ p.type }}">{{ p.name }} ({{ p.type }})</option>
                     {% endfor %}
                 </select>
             </label>
@@ -105,20 +117,42 @@
         <h3>Add Route</h3>
         <form id="add-route-form" onsubmit="addRoute(event)">
             <input type="hidden" name="vhost_id" id="route-vhost-id">
+            <input type="hidden" id="route-vhost-pool-type" value="">
             <label>Path Prefix <input type="text" name="path_prefix" required placeholder="/2025/"></label>
             <label>Pool
                 <select name="pool_id" id="route-pool-select">
                     {% for p in pools %}
-                    <option value="{{ p.id }}">{{ p.name }}</option>
+                    <option value="{{ p.id }}" data-type="{{ p.type }}">{{ p.name }} ({{ p.type }})</option>
                     {% endfor %}
                 </select>
             </label>
+            <p id="route-pool-type-note" class="meta" style="display:none;font-size:0.85em;color:var(--text-muted)"></p>
             <label>Extra Directives <textarea name="extra_directives" rows="3" placeholder="Optional"></textarea></label>
             <div class="modal-actions">
                 <button type="submit" class="btn btn-primary">Add</button>
                 <button type="button" class="btn" onclick="hideModal('add-route-modal')">Cancel</button>
             </div>
         </form>
+    </div>
+</div>
+
+<!-- Additional Configurations Modal -->
+<div id="extra-blocks-modal" class="modal hidden">
+    <div class="modal-content modal-wide">
+        <h3>Additional Configurations</h3>
+        <input type="hidden" id="extra-blocks-vhost-id">
+        <p class="meta" style="font-size:0.85em;color:var(--text-muted)">
+            Add custom nginx directives to specific zones of this vhost's server block.<br>
+            <strong>ssl</strong> — after SSL certificate directives &nbsp;|&nbsp;
+            <strong>proxy</strong> — after proxy buffering directives &nbsp;|&nbsp;
+            <strong>end</strong> — before the closing <code>}</code>
+        </p>
+        <div id="extra-blocks-list"></div>
+        <button type="button" class="btn btn-sm" onclick="addExtraBlockRow()">+ Add Block</button>
+        <div class="modal-actions" style="margin-top:1rem">
+            <button type="button" class="btn btn-primary" onclick="saveExtraBlocks()">Save</button>
+            <button type="button" class="btn" onclick="hideModal('extra-blocks-modal')">Cancel</button>
+        </div>
     </div>
 </div>
 

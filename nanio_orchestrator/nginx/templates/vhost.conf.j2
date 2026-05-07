@@ -13,6 +13,12 @@ server {
     ssl_certificate     {{ vhost.ssl_cert_path }};
     ssl_certificate_key {{ vhost.ssl_key_path }};
 {% endif %}
+{% if extra_blocks_ssl %}
+{% for block in extra_blocks_ssl %}
+
+    {{ block.content | indent(4) }}
+{% endfor %}
+{% endif %}
 
     client_max_body_size 0;
     proxy_request_buffering off;
@@ -20,6 +26,12 @@ server {
 {% if vhost.extra_directives %}
 
     {{ vhost.extra_directives }}
+{% endif %}
+{% if extra_blocks_proxy %}
+{% for block in extra_blocks_proxy %}
+
+    {{ block.content | indent(4) }}
+{% endfor %}
 {% endif %}
 {% for route in routes %}
 {% if route.enabled %}
@@ -64,4 +76,10 @@ server {
     }
 {% endif %}
 {% endfor %}
+{% if extra_blocks_end %}
+{% for block in extra_blocks_end %}
+
+    {{ block.content | indent(4) }}
+{% endfor %}
+{% endif %}
 }

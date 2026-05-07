@@ -245,16 +245,32 @@ async function generateNodeConfig(e) {
 
 // ── Vhost operations ─────────────────────────────────────────────────────────
 
+function toggleSslCertFields(checkboxId, fieldsId) {
+    const cb = document.getElementById(checkboxId);
+    const fields = document.getElementById(fieldsId);
+    if (!cb || !fields) return;
+    fields.style.display = cb.checked ? '' : 'none';
+}
+
 async function createVhost(e) {
     e.preventDefault();
     const form = e.target;
+    const sslChecked = form.ssl.checked;
+    const certPath = form.ssl_cert_path.value.trim();
+    const keyPath = form.ssl_key_path.value.trim();
+
+    if (sslChecked && (!certPath || !keyPath)) {
+        alert('SSL Certificate Path and SSL Key Path are required when SSL is enabled.');
+        return;
+    }
+
     const rawPoolId = form.default_pool_id ? form.default_pool_id.value : '';
     const data = {
         server_name: form.server_name.value,
         listen_port: parseInt(form.listen_port.value),
-        ssl: form.ssl.checked,
-        ssl_cert_path: form.ssl_cert_path.value || null,
-        ssl_key_path: form.ssl_key_path.value || null,
+        ssl: sslChecked,
+        ssl_cert_path: certPath || null,
+        ssl_key_path: keyPath || null,
         extra_directives: form.extra_directives.value || null,
         default_pool_id: rawPoolId ? parseInt(rawPoolId) : null,
     };
@@ -307,8 +323,36 @@ async function previewVhost(id) {
 
 // ── Route operations ─────────────────────────────────────────────────────────
 
-function showAddRoute(vhostId) {
+function showAddRoute(vhostId, poolType) {
     document.getElementById('route-vhost-id').value = vhostId;
+    document.getElementById('route-vhost-pool-type').value = poolType || '';
+
+    const poolSelect = document.getElementById('route-pool-select');
+    const note = document.getElementById('route-pool-type-note');
+    let firstVisible = null;
+
+    for (const opt of poolSelect.options) {
+        const optType = opt.dataset.type || '';
+        if (poolType) {
+            const visible = optType === poolType;
+            opt.style.display = visible ? '' : 'none';
+            opt.disabled = !visible;
+            if (visible && !firstVisible) firstVisible = opt;
+        } else {
+            opt.style.display = '';
+            opt.disabled = false;
+            if (!firstVisible) firstVisible = opt;
+        }
+    }
+    if (firstVisible) poolSelect.value = firstVisible.value;
+
+    if (poolType && note) {
+        note.textContent = `Only ${poolType} pools are shown — this vhost uses ${poolType} pools exclusively.`;
+        note.style.display = '';
+    } else if (note) {
+        note.style.display = 'none';
+    }
+
     showModal('add-route-modal');
 }
 
@@ -820,6 +864,78 @@ async function deleteCredentials(poolId) {
         } else {
             alert('Error: ' + (data.detail || JSON.stringify(data)));
         }
+    } catch (err) {
+        alert('Error: ' + err.message);
+    }
+}
+
+// ── Extra Blocks (Additional Configurations) ─────────────────────────────────
+
+let _extraBlocksVhostId = null;
+
+function showExtraBlocks(vhostId, existingBlocks) {
+    _extraBlocksVhostId = vhostId;
+    document.getElementById('extra-blocks-vhost-id').value = vhostId;
+    const list = document.getElementById('extra-blocks-list');
+    list.innerHTML = '';
+
+    const blocks = Array.isArray(existingBlocks) ? existingBlocks : [];
+    if (blocks.length === 0) {
+        addExtraBlockRow();
+    } else {
+        blocks.forEach(b => addExtraBlockRow(b.zone, b.content));
+    }
+    showModal('extra-blocks-modal');
+}
+
+function addExtraBlockRow(zone, content) {
+    const list = document.getElementById('extra-blocks-list');
+    const row = document.createElement('div');
+    row.className = 'extra-block-row';
+    row.style.cssText = 'display:flex;gap:0.5rem;align-items:flex-start;margin-bottom:0.75rem';
+    row.innerHTML = `
+        <label style="flex:0 0 auto;margin:0">Zone
+            <select class="block-zone" style="display:block;margin-top:0.25rem">
+                <option value="ssl"${zone === 'ssl' ? ' selected' : ''}>ssl — after SSL certs</option>
+                <option value="proxy"${zone === 'proxy' ? ' selected' : ''}>proxy — after proxy directives</option>
+                <option value="end"${!zone || zone === 'end' ? ' selected' : ''}>end — before closing }</option>
+            </select>
+        </label>
+        <label style="flex:1;margin:0">Content
+            <textarea class="block-content" rows="4" style="display:block;margin-top:0.25rem;width:100%;font-family:monospace"
+                placeholder="nginx directives…">${escapeHtml(content || '')}</textarea>
+        </label>
+        <button type="button" class="btn btn-xs btn-danger" style="margin-top:1.5rem;flex:0 0 auto"
+            onclick="this.closest('.extra-block-row').remove()">×</button>`;
+    list.appendChild(row);
+}
+
+async function saveExtraBlocks() {
+    const vhostId = _extraBlocksVhostId;
+    if (!vhostId) return;
+
+    const rows = document.querySelectorAll('#extra-blocks-list .extra-block-row');
+    const extra_blocks = [];
+    for (const row of rows) {
+        const zone = row.querySelector('.block-zone').value;
+        const content = row.querySelector('.block-content').value.trim();
+        if (content) extra_blocks.push({ zone, content });
+    }
+
+    try {
+        const res = await fetch(`/api/vhosts/${vhostId}`, {
+            method: 'PUT',
+            headers: getHeaders(),
+            credentials: 'same-origin',
+            body: JSON.stringify({ extra_blocks }),
+        });
+        if (!res.ok) {
+            const err = await res.json();
+            alert('Error: ' + formatError(err));
+            return;
+        }
+        hideModal('extra-blocks-modal');
+        location.reload();
     } catch (err) {
         alert('Error: ' + err.message);
     }

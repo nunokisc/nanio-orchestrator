@@ -155,10 +155,11 @@ async def pools_page():
 
 @router.get("/web/vhosts", response_class=HTMLResponse)
 async def vhosts_page():
+    import json as _json
     async with get_db_ctx() as db:
         vhosts = await db.execute_fetchall("SELECT * FROM vhosts ORDER BY server_name")
-        pools = await db.execute_fetchall("SELECT id, name FROM pools ORDER BY name")
-        pool_names = {p["id"]: p["name"] for p in pools}
+        pools = await db.execute_fetchall("SELECT id, name, type FROM pools ORDER BY name")
+        pool_map = {p["id"]: dict(p) for p in pools}
         result = []
         for v in vhosts:
             routes = await db.execute_fetchall(
@@ -170,7 +171,18 @@ async def vhosts_page():
             )
             vhost_dict = dict(v)
             vhost_dict["routes"] = [dict(r) for r in routes]
-            vhost_dict["default_pool_name"] = pool_names.get(v["default_pool_id"]) if v["default_pool_id"] else None
+            dp_info = pool_map.get(v["default_pool_id"]) if v["default_pool_id"] else None
+            vhost_dict["default_pool_name"] = dp_info["name"] if dp_info else None
+            vhost_dict["default_pool_type"] = dp_info["type"] if dp_info else None
+            # Parse extra_blocks for display
+            raw_blocks = vhost_dict.get("extra_blocks_json")
+            if raw_blocks:
+                try:
+                    vhost_dict["extra_blocks"] = _json.loads(raw_blocks)
+                except Exception:
+                    vhost_dict["extra_blocks"] = []
+            else:
+                vhost_dict["extra_blocks"] = []
             result.append(vhost_dict)
     return _render("vhosts.html", vhosts=result, pools=[dict(p) for p in pools])
 
@@ -257,7 +269,10 @@ async def migrations_page():
                LEFT JOIN pools dp ON m.dst_pool_id = dp.id
                ORDER BY m.id DESC LIMIT 100"""
         )
-        pools = await db.execute_fetchall("SELECT id, name FROM pools ORDER BY name")
+        # Migrations are only between nanio pools — filter to nanio type only
+        pools = await db.execute_fetchall(
+            "SELECT id, name FROM pools WHERE type = 'nanio' ORDER BY name"
+        )
     return _render(
         "migrations.html",
         migrations=[dict(r) for r in rows],
