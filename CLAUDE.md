@@ -5,7 +5,7 @@ Read this before making any changes.
 ## What is nanio-orchestrator
 
 A **control-plane tool** for managing nginx as an S3-compatible storage gateway on top of
-[nanio](https://github.com/nunokisc/nanio) instances. It writes nginx config files and signals
+[nanio](https://github.com/apocas/nanio) instances. It writes nginx config files and signals
 nginx to reload — traffic never flows through the orchestrator.
 
 Key design constraints:
