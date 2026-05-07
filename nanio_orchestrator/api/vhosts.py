@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import List, Optional
@@ -29,6 +30,7 @@ from nanio_orchestrator.models import (
     RouteOut,
     RouteUpdate,
     VhostCreate,
+    VhostExtraBlock,
     VhostOut,
     VhostUpdate,
 )
@@ -69,6 +71,35 @@ async def _get_pool_name(db, pool_id: int | None) -> str | None:
         return None
     rows = await db.execute_fetchall("SELECT name FROM pools WHERE id = ?", (pool_id,))
     return rows[0]["name"] if rows else None
+
+
+async def _get_pool_type(db, pool_id: int | None) -> str | None:
+    """Return the type of the given pool, or None if pool_id is None."""
+    if not pool_id:
+        return None
+    rows = await db.execute_fetchall("SELECT type FROM pools WHERE id = ?", (pool_id,))
+    return rows[0]["type"] if rows else None
+
+
+def _serialize_extra_blocks(blocks: list | None) -> str | None:
+    """Serialize a list of VhostExtraBlock to JSON for DB storage."""
+    if not blocks:
+        return None
+    return json.dumps([b.model_dump() for b in blocks])
+
+
+def _deserialize_extra_blocks(json_str: str | None) -> list | None:
+    """Deserialize JSON from DB back to a list of VhostExtraBlock dicts."""
+    if not json_str:
+        return None
+    return json.loads(json_str)
+
+
+def _enrich_vhost(vhost: dict) -> dict:
+    """Parse extra_blocks_json into extra_blocks list for API responses."""
+    blocks_raw = vhost.pop("extra_blocks_json", None)
+    vhost["extra_blocks"] = _deserialize_extra_blocks(blocks_raw)
+    return vhost
 
 
 async def _apply_vhost_config(vhost_id: int, db) -> tuple:
@@ -116,20 +147,27 @@ async def _apply_vhost_config(vhost_id: int, db) -> tuple:
 async def list_vhosts():
     async with get_db_ctx() as db:
         rows = await db.execute_fetchall("SELECT * FROM vhosts ORDER BY server_name")
-        return [dict(r) for r in rows]
+        return [_enrich_vhost(dict(r)) for r in rows]
 
 
 @router.post("", response_model=VhostOut, status_code=201)
 async def create_vhost(body: VhostCreate):
     async with get_db_ctx() as db:
+        # Validate default pool type if provided
+        if body.default_pool_id:
+            pool_type = await _get_pool_type(db, body.default_pool_id)
+            if pool_type is None:
+                raise HTTPException(400, f"Pool {body.default_pool_id} not found")
+
+        extra_blocks_json = _serialize_extra_blocks(body.extra_blocks)
         try:
             cursor = await db.execute(
                 """INSERT INTO vhosts (server_name, listen_port, ssl, ssl_cert_path, ssl_key_path,
-                   extra_directives, enabled, default_pool_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   extra_directives, extra_blocks_json, enabled, default_pool_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (body.server_name, body.listen_port, 1 if body.ssl else 0,
                  body.ssl_cert_path, body.ssl_key_path, body.extra_directives,
-                 1 if body.enabled else 0, body.default_pool_id),
+                 extra_blocks_json, 1 if body.enabled else 0, body.default_pool_id),
             )
             await db.commit()
         except Exception as e:
@@ -159,7 +197,7 @@ async def create_vhost(body: VhostCreate):
                          reload_ok=ok, reload_output=output)
             await db.commit()
 
-        return vhost
+        return _enrich_vhost(vhost)
 
 
 @router.get("/{vhost_id}", response_model=VhostOut)
@@ -168,7 +206,7 @@ async def get_vhost(vhost_id: int):
         rows = await db.execute_fetchall("SELECT * FROM vhosts WHERE id = ?", (vhost_id,))
         if not rows:
             raise HTTPException(404, "Vhost not found")
-        return dict(rows[0])
+        return _enrich_vhost(dict(rows[0]))
 
 
 @router.put("/{vhost_id}", response_model=VhostOut)
@@ -181,7 +219,42 @@ async def update_vhost(vhost_id: int, body: VhostUpdate):
 
         updates = body.model_dump(exclude_none=True)
         if not updates:
-            return before
+            return _enrich_vhost(before)
+
+        # Validate SSL cert requirement when enabling SSL
+        effective_ssl = updates.get("ssl", bool(before.get("ssl")))
+        effective_cert = updates.get("ssl_cert_path", before.get("ssl_cert_path"))
+        effective_key = updates.get("ssl_key_path", before.get("ssl_key_path"))
+        if effective_ssl and (not effective_cert or not effective_key):
+            raise HTTPException(
+                400, "ssl_cert_path and ssl_key_path are required when ssl is enabled"
+            )
+
+        # Validate new default_pool type is consistent with existing routes
+        if "default_pool_id" in updates and updates["default_pool_id"]:
+            new_pool_type = await _get_pool_type(db, updates["default_pool_id"])
+            if new_pool_type is None:
+                raise HTTPException(400, f"Pool {updates['default_pool_id']} not found")
+            # Check existing routes for type conflicts
+            route_rows = await db.execute_fetchall(
+                """SELECT p.type, p.name FROM routes r JOIN pools p ON r.pool_id = p.id
+                   WHERE r.vhost_id = ? AND r.path_prefix != '/'""",
+                (vhost_id,),
+            )
+            for rr in route_rows:
+                if rr["type"] != new_pool_type:
+                    raise HTTPException(
+                        400,
+                        f"Cannot set default pool of type '{new_pool_type}': "
+                        f"existing route uses pool '{rr['name']}' of type '{rr['type']}'. "
+                        "All pools in a vhost must be the same type.",
+                    )
+
+        # Handle extra_blocks serialization
+        if "extra_blocks" in updates:
+            updates["extra_blocks_json"] = _serialize_extra_blocks(updates.pop("extra_blocks"))
+        elif "extra_blocks" in updates:
+            updates.pop("extra_blocks")
 
         if "ssl" in updates:
             updates["ssl"] = 1 if updates["ssl"] else 0
@@ -211,7 +284,7 @@ async def update_vhost(vhost_id: int, body: VhostUpdate):
         default_pool_name = await _get_pool_name(db, after.get("default_pool_id"))
         await write_vhost_sidecar(after["id"], after["server_name"], after.get("default_pool_id"), default_pool_name)
 
-        return after
+        return _enrich_vhost(after)
 
 
 @router.delete("/{vhost_id}", status_code=204)
@@ -280,11 +353,24 @@ async def create_route(vhost_id: int, body: RouteCreate):
         rows = await db.execute_fetchall("SELECT * FROM vhosts WHERE id = ?", (vhost_id,))
         if not rows:
             raise HTTPException(404, "Vhost not found")
-        vhost_default_pool_id: Optional[int] = dict(rows[0]).get("default_pool_id")
+        vhost_row = dict(rows[0])
+        vhost_default_pool_id: Optional[int] = vhost_row.get("default_pool_id")
 
         pool_rows = await db.execute_fetchall("SELECT * FROM pools WHERE id = ?", (body.pool_id,))
         if not pool_rows:
             raise HTTPException(400, f"Pool {body.pool_id} not found")
+        route_pool = dict(pool_rows[0])
+
+        # Enforce type consistency: if the vhost has a default pool, all routes must
+        # use pools of the same type (nanio vhost ↔ nanio pools, http vhost ↔ http pools)
+        if vhost_default_pool_id:
+            default_pool_type = await _get_pool_type(db, vhost_default_pool_id)
+            if default_pool_type and route_pool["type"] != default_pool_type:
+                raise HTTPException(
+                    400,
+                    f"Pool '{route_pool['name']}' is of type '{route_pool['type']}', but this vhost "
+                    f"uses '{default_pool_type}' pools. You cannot mix pool types within a vhost.",
+                )
 
     # The S3 bucket name is the first path segment (e.g. /photos/2025/ → bucket=photos)
     bucket_segment = body.path_prefix.strip("/").split("/")[0]

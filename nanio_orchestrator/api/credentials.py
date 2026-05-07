@@ -45,6 +45,18 @@ async def _require_pool(pool_id: int) -> dict:
     return dict(rows[0])
 
 
+async def _require_nanio_pool(pool_id: int) -> dict:
+    """Require pool exists and is of type 'nanio'. S3 credentials are nanio-only."""
+    pool = await _require_pool(pool_id)
+    if pool["type"] != "nanio":
+        raise HTTPException(
+            400,
+            f"S3 credentials are only supported for nanio pools. "
+            f"Pool '{pool['name']}' is of type '{pool['type']}'.",
+        )
+    return pool
+
+
 @router.get("/{pool_id}/credentials", response_model=CredentialOut)
 async def get_credentials(pool_id: int):
     """Return effective credentials for a pool.
@@ -53,7 +65,7 @@ async def get_credentials(pool_id: int):
     Otherwise falls back to the global S3_ACCESS_KEY / S3_SECRET_KEY from settings,
     with source='global' to indicate no pool-specific override is set.
     """
-    await _require_pool(pool_id)
+    await _require_nanio_pool(pool_id)
     creds = await get_pool_credentials(pool_id)
     if creds:
         return CredentialOut(
@@ -79,7 +91,7 @@ async def get_credentials(pool_id: int):
 @router.put("/{pool_id}/credentials", response_model=CredentialOut)
 async def set_credentials(pool_id: int, body: CredentialSet):
     """Store (or replace) encrypted S3 credentials for a pool."""
-    pool = await _require_pool(pool_id)
+    pool = await _require_nanio_pool(pool_id)
     try:
         access_key_enc, secret_key_enc = await store_pool_credentials(
             pool_id,
@@ -114,7 +126,7 @@ async def set_credentials(pool_id: int, body: CredentialSet):
 @router.delete("/{pool_id}/credentials")
 async def remove_credentials(pool_id: int):
     """Delete stored credentials for a pool."""
-    pool = await _require_pool(pool_id)
+    pool = await _require_nanio_pool(pool_id)
     deleted = await delete_pool_credentials(pool_id)
     if not deleted:
         raise HTTPException(404, "No credentials stored for this pool")

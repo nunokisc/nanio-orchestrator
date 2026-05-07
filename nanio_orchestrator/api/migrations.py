@@ -53,9 +53,16 @@ async def create_migration(body: RcloneMigrationCreate):
 
     async with get_db_ctx() as db:
         for pid, label in [(body.src_pool_id, "Source"), (body.dst_pool_id, "Destination")]:
-            rows = await db.execute_fetchall("SELECT id FROM pools WHERE id = ?", (pid,))
+            rows = await db.execute_fetchall("SELECT id, name, type FROM pools WHERE id = ?", (pid,))
             if not rows:
                 raise HTTPException(400, f"{label} pool {pid} not found")
+            pool_row = dict(rows[0])
+            if pool_row["type"] != "nanio":
+                raise HTTPException(
+                    400,
+                    f"{label} pool '{pool_row['name']}' is of type '{pool_row['type']}'. "
+                    "Migrations can only be performed between nanio pools.",
+                )
 
         # Both pools must have at least one enabled member
         src_member_rows = await db.execute_fetchall(

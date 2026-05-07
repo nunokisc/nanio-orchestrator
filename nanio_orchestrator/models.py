@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 import re
 
@@ -88,6 +88,19 @@ class MemberOut(BaseModel):
     updated_at: str
 
 
+# ── Vhost Extra Block ─────────────────────────────────────────────────────────
+
+
+class VhostExtraBlock(BaseModel):
+    """A freeform nginx config block injected at a specific zone of a vhost."""
+
+    zone: Literal["ssl", "proxy", "end"] = Field(
+        ...,
+        description="Where to inject: 'ssl' after SSL certs, 'proxy' after proxy directives, 'end' before closing brace",
+    )
+    content: str = Field(..., min_length=1)
+
+
 # ── Vhost ─────────────────────────────────────────────────────────────────────
 
 
@@ -98,6 +111,7 @@ class VhostCreate(BaseModel):
     ssl_cert_path: Optional[str] = None
     ssl_key_path: Optional[str] = None
     extra_directives: Optional[str] = None
+    extra_blocks: Optional[List[VhostExtraBlock]] = None
     enabled: bool = True
     default_pool_id: Optional[int] = None
 
@@ -112,6 +126,14 @@ class VhostCreate(BaseModel):
             )
         return v
 
+    @model_validator(mode="after")
+    def require_ssl_certs_when_ssl(self) -> "VhostCreate":
+        if self.ssl and (not self.ssl_cert_path or not self.ssl_key_path):
+            raise ValueError(
+                "ssl_cert_path and ssl_key_path are required when ssl is enabled"
+            )
+        return self
+
 
 class VhostUpdate(BaseModel):
     server_name: Optional[str] = Field(None, min_length=1, max_length=253)
@@ -120,6 +142,7 @@ class VhostUpdate(BaseModel):
     ssl_cert_path: Optional[str] = None
     ssl_key_path: Optional[str] = None
     extra_directives: Optional[str] = None
+    extra_blocks: Optional[List[VhostExtraBlock]] = None
     enabled: Optional[bool] = None
     default_pool_id: Optional[int] = None
 
@@ -145,6 +168,7 @@ class VhostOut(BaseModel):
     ssl_cert_path: Optional[str]
     ssl_key_path: Optional[str]
     extra_directives: Optional[str]
+    extra_blocks: Optional[List[VhostExtraBlock]] = None
     enabled: bool
     default_pool_id: Optional[int] = None
     created_at: str
