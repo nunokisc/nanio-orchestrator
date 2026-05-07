@@ -166,12 +166,12 @@ class TestMigrationDstPrecondition:
     async def test_migration_refused_when_dst_has_objects(
         self, client, mock_nginx, mock_rclone, mock_s3
     ):
-        """Migration must fail immediately when the destination bucket already has objects."""
+        """Sync-mode migration must fail when the destination bucket already has objects."""
         src, dst, vh = await self._setup(
             client, mock_nginx, mock_s3,
             "pre-src1", "pre-dst1", "pre1.example.com", "pre-bk1",
         )
-        # dst bucket exists AND has objects — should refuse
+        # dst bucket exists AND has objects — sync mode should refuse (would risk data loss)
         mock_s3["bucket_exists"].return_value = True
         mock_s3["bucket_has_objects"].return_value = True
 
@@ -179,6 +179,7 @@ class TestMigrationDstPrecondition:
             "bucket": "pre-bk1",
             "src_pool_id": src["id"],
             "dst_pool_id": dst["id"],
+            "mode": "sync",
         })
         assert resp.status_code == 201
         mig_id = resp.json()["id"]
