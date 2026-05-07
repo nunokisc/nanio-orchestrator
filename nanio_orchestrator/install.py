@@ -45,9 +45,11 @@ NANIO_ORCHESTRATOR_DB_BACKUP_INTERVAL=300
 NANIO_ORCHESTRATOR_DB_BACKUP_ROTATE=3
 """
 
-SUDOERS_CONTENT = """# Allow nanio-orchestrator to validate and reload nginx without a password
-nanio-orchestrator ALL=(ALL) NOPASSWD: /usr/sbin/nginx -t, /usr/sbin/nginx -s reload
-"""
+def _sudoers_content(nginx_path: str) -> str:
+    return (
+        "# Allow nanio-orchestrator to validate and reload nginx without a password\n"
+        f"nanio-orchestrator ALL=(ALL) NOPASSWD: {nginx_path} -t, {nginx_path} -s reload\n"
+    )
 
 SYSTEMD_UNIT = """\
 [Unit]
@@ -139,11 +141,15 @@ def run_install() -> None:
     data_dir = Path("/opt/nanio-orchestrator/data")
     data_dir.mkdir(parents=True, exist_ok=True)
     shutil.chown(data_dir, user="nanio-orchestrator", group="nanio-orchestrator")
+    data_dir.chmod(0o700)  # only the service user may read/write the DB
     _step(f"Created {data_dir}")
 
     # 4. Create config directory and write config.env
     config_dir = Path("/etc/nanio-orchestrator")
     config_dir.mkdir(parents=True, exist_ok=True)
+    # root owns the dir; group read/execute so the service user can enter it
+    shutil.chown(config_dir, user="root", group="nanio-orchestrator")
+    config_dir.chmod(0o750)
     config_file = config_dir / "config.env"
     if config_file.exists():
         _step(f"Config exists at {config_file} (not overwritten)")
@@ -156,6 +162,9 @@ def run_install() -> None:
         _step(f"Created {config_file}")
         print(f"\n  ⚠  API key generated: {generated_api_key}")
         print("     Save this key — it will not be shown again.\n")
+    # Ensure config is readable only by root and the service user (contains secrets)
+    shutil.chown(config_file, user="root", group="nanio-orchestrator")
+    config_file.chmod(0o640)
 
     # 5. Create nginx config directories
     pools_dir = Path("/etc/nginx/nanio/pools")
@@ -169,10 +178,13 @@ def run_install() -> None:
     _step(f"Created {pools_dir.parent}/{{pools,vhosts,migrations}}")
 
     # 5b. Install sudoers drop-in for nginx commands
+    # Use the detected nginx path so the rule matches at runtime; fall back to
+    # the most common location if nginx was not found at install time.
+    nginx_bin = nginx_info.get("path") or "/usr/sbin/nginx"
     sudoers_path = Path("/etc/sudoers.d/nanio-orchestrator")
-    sudoers_path.write_text(SUDOERS_CONTENT)
+    sudoers_path.write_text(_sudoers_content(nginx_bin))
     sudoers_path.chmod(0o440)
-    _step(f"Installed sudoers drop-in → {sudoers_path}")
+    _step(f"Installed sudoers drop-in → {sudoers_path} (nginx: {nginx_bin})")
 
     # 6. Install systemd unit
     unit_path = Path("/etc/systemd/system/nanio-orchestrator.service")
@@ -202,6 +214,7 @@ def run_install() -> None:
     set_db_path(db_path)
     init_db_sync()
     shutil.chown(db_path, user="nanio-orchestrator", group="nanio-orchestrator")
+    Path(db_path).chmod(0o600)  # only the service user may read/write the DB file
     _step(f"Initialized database at {db_path}")
 
     # 8. Print next steps

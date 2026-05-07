@@ -52,14 +52,20 @@ async def _run_cmd(cmd: list[str]) -> NginxExecResult:
         return NginxExecResult(ok=False, output=msg, return_code=-1)
 
 
+def _nginx_bin() -> str:
+    """Resolve the nginx binary path, matching what was written into sudoers."""
+    import shutil as _shutil
+    return _shutil.which("nginx") or "/usr/sbin/nginx"
+
+
 async def test_config() -> NginxExecResult:
     """Run nginx -t to validate configuration."""
-    return await _run_cmd(["sudo", "nginx", "-t"])
+    return await _run_cmd(["sudo", _nginx_bin(), "-t"])
 
 
 async def reload_nginx() -> NginxExecResult:
     """Run nginx -s reload to apply configuration."""
-    return await _run_cmd(["sudo", "nginx", "-s", "reload"])
+    return await _run_cmd(["sudo", _nginx_bin(), "-s", "reload"])
 
 
 async def test_and_reload() -> NginxExecResult:
