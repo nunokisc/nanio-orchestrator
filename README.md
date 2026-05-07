@@ -56,6 +56,23 @@ python3 -m venv /opt/nanio-orchestrator/venv
 
 After install, follow the printed instructions to configure and start the service.
 
+### Required nginx.conf Change
+
+The orchestrator writes config files under `/etc/nginx/nanio/` but nginx only loads them if you
+add the following includes to your nginx `http {}` block (e.g. `/etc/nginx/nginx.conf`):
+
+```nginx
+http {
+    # ... existing config ...
+
+    include /etc/nginx/nanio/pools/*.conf;   # upstream blocks
+    include /etc/nginx/nanio/vhosts/*.conf;  # server blocks
+}
+```
+
+> The install command prints this reminder. Without these includes nginx serves no nanio traffic,
+> and `nginx -t` will report "unknown upstream" errors for any vhost that references a pool.
+
 ## Quick Start — Development
 
 ```bash
@@ -256,6 +273,8 @@ Phases: `pending → copying → write_routing → verifying → switching → d
 | POST | `/api/config/rebuild-from-disk` | Reconstruct DB from nginx configs + sidecar files (see [DB Resilience](#db-resilience)) |
 | POST | `/api/config/backup` | Trigger an immediate database backup |
 | GET | `/api/config/settings` | Current effective settings (secrets masked) |
+| PUT | `/api/config/settings/:key` | Update a single setting in the config file (takes effect after restart) |
+| POST | `/api/config/settings/restart` | Restart the service to apply pending config changes (requires sudoers rule installed by `nanio-orchestrator install`) |
 
 ### Health + Audit
 
@@ -478,7 +497,7 @@ The orchestrator never applies a config that fails validation. Check the error o
 in the API response or audit log. Common causes:
 - Missing SSL certificates referenced in the vhost config
 - Upstream pool name conflicts with an existing nginx config
-- `include /etc/nginx/nanio/pools/*.conf;` not added to `nginx.conf`
+- `include /etc/nginx/nanio/pools/*.conf;` and `include /etc/nginx/nanio/vhosts/*.conf;` not added to the `http {}` block in `nginx.conf`
 
 ### Drift detected
 

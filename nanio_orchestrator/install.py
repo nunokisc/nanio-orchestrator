@@ -170,13 +170,11 @@ def run_install() -> None:
     # 5. Create nginx config directories
     pools_dir = Path("/etc/nginx/nanio/pools")
     vhosts_dir = Path("/etc/nginx/nanio/vhosts")
-    migrations_dir = Path("/etc/nginx/nanio/migrations")
     pools_dir.mkdir(parents=True, exist_ok=True)
     vhosts_dir.mkdir(parents=True, exist_ok=True)
-    migrations_dir.mkdir(parents=True, exist_ok=True)
-    for _d in (pools_dir.parent, pools_dir, vhosts_dir, migrations_dir):
+    for _d in (pools_dir.parent, pools_dir, vhosts_dir):
         shutil.chown(_d, user="nanio-orchestrator", group="nanio-orchestrator")
-    _step(f"Created {pools_dir.parent}/{{pools,vhosts,migrations}}")
+    _step(f"Created {pools_dir.parent}/{{pools,vhosts}}")
 
     # 5b. Install sudoers drop-in for nginx commands
     # Use the detected nginx path so the rule matches at runtime; fall back to

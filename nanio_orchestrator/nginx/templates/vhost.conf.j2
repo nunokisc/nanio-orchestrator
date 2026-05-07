@@ -2,7 +2,8 @@
 # vhost_id:{{ vhost.id }} name:{{ vhost.server_name }} updated:{{ updated }}
 server {
 {% if vhost.ssl %}
-    listen {{ vhost.listen_port }} ssl http2;
+    listen {{ vhost.listen_port }} ssl;
+    http2  on;
 {% else %}
     listen {{ vhost.listen_port }};
 {% endif %}
