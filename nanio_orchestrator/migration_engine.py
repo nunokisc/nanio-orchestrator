@@ -503,7 +503,7 @@ async def run_migration(migration_id: int) -> None:
                         access_key=dst_ak_pre, secret_key=dst_sk_pre,
                     ):
                         msg = (
-                            f"destination bucket already contains objects, "
+                            "destination bucket already contains objects, "
                             "refusing to migrate to avoid data conflicts"
                         )
                         logger.error("Migration %d aborted: %s", migration_id, msg)

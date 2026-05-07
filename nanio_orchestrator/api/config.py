@@ -19,10 +19,7 @@ from nanio_orchestrator.nginx.generator import (
     generate_vhost_config,
     record_file_state,
     sha256_str,
-    write_config_atomic,
 )
-from nanio_orchestrator.nginx.parser import is_managed_file
-
 router = APIRouter(prefix="/api/config", tags=["config"])
 
 

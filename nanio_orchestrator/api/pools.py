@@ -269,7 +269,6 @@ async def delete_pool(pool_id: int):
         # Remove config file
         from nanio_orchestrator.config import get_settings
         from nanio_orchestrator.nginx.generator import remove_config_file
-        import os
         s = get_settings()
         filepath = str(s.pools_dir / f"{pool['name']}.conf")
         await remove_config_file(filepath)

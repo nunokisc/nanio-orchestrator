@@ -197,7 +197,7 @@ Tracks buckets discovered on the default pool of each vhost. Background sync run
 |--------|----------|-------------|
 | GET | `/api/vhosts/:id/buckets` | List buckets with routing status (`unrouted`, `routed`, `migrating`, `ignored`). Pass `?fetch_counts=true` to include object counts. |
 | POST | `/api/vhosts/:id/buckets/sync` | Trigger an immediate bucket list sync |
-| POST | `/api/vhosts/:id/buckets/:bucket/promote` | Promote a bucket: create it on the target pool, add an nginx route, optionally start migration |
+| POST | `/api/vhosts/:id/buckets/:bucket/promote` | Promote a bucket: create it on the target pool, add an nginx route, optionally start migration. **If the source bucket has objects, `migrate=true` is required** — routing without migration would make existing data inaccessible. |
 | POST | `/api/vhosts/:id/buckets/:bucket/ignore` | Mark a bucket as ignored |
 | POST | `/api/vhosts/:id/buckets/:bucket/migrate` | Start (or restart) object migration for a routed bucket (uses rclone engine) |
 | GET | `/api/vhosts/:id/buckets/orphans` | Scan routed buckets for orphan objects still on the default pool |
@@ -212,22 +212,30 @@ Phases: `pending → copying → write_routing → verifying → switching → d
 - **copying**: rclone copies data in a convergence loop (up to `MIGRATION_MAX_COPY_PASSES` passes). Ends early if counts stabilise across passes.
 - **write_routing**: nginx is reconfigured so writes go directly to the destination pool while reads still come from the source (with 404-fallback to destination). Freezes new writes to the source.
 - **verifying**: a final copy pass + rclone check to confirm source == destination.
-- **switching**: the nginx route is flipped to the destination pool and the DB is updated atomically.
+- **switching**: the nginx route is flipped to the destination pool and the DB is updated atomically. Fails hard if the route cannot be found — no silent data loss.
 - **done**: migration complete. Source data is **never deleted automatically**. The migration record tracks `orphaned_source_pool_id`, `orphaned_source_prefix`, and `orphaned_at` so operators can locate and clean up the source bucket at their own pace.
 - **error** / **cancelled**: terminal failure states.
 
 > **Source data is never purged automatically.** When a migration reaches `done`, the orchestrator records where the original data lives (pool + prefix + timestamp). Use `nanio-orchestrator orphaned list` or `GET /api/migrations/orphaned` to review, and delete the source objects manually when ready.
 
-A migration started automatically by `POST /api/vhosts/:id/routes` (when the destination pool differs from the vhost default and the source bucket has objects) uses the same engine. The route is initially created pointing to the source pool; the engine flips it to the destination when switching completes.
+> **A route must exist before starting a migration.** Use `POST /api/vhosts/:id/buckets/:bucket/promote` (Buckets page) to create the bucket route first. The Migrations page only accepts buckets that are already routed — it validates that the route exists and points to `src_pool_id` before creating the migration record.
 
 - **copy** mode (default): additive — only copies objects from source to destination, never deletes at the destination.
 - **sync** mode: mirror — destination becomes identical to the source. A pre-flight guard aborts the migration if the source bucket is empty to prevent accidental data loss.
 
+**Pre-flight validation** (at `POST /api/migrations` time):
+- Both pools must have at least one enabled member.
+- A route `/{bucket}/` must exist in the vhost and point to `src_pool_id`.
+- The source bucket must exist and contain at least one object on the source pool.
+- No active migration for the same bucket can already be running.
+
 | Method | Endpoint | Description |
 |--------|----------|--------------|
-| POST | `/api/migrations` | Start a new migration. Body: `{bucket, src_pool_id, dst_pool_id, mode}` where `mode` is `"copy"` (default) or `"sync"` |
+| POST | `/api/migrations` | Start a new migration. Body: `{bucket, src_pool_id, dst_pool_id, mode}` where `mode` is `"copy"` (default) or `"sync"`. Requires an nginx route for the bucket pointing to `src_pool_id`. |
 | GET | `/api/migrations` | List migrations (filter with `?phase=`) |
+| GET | `/api/migrations/stale` | List active migrations that cannot proceed — source pool has no members, or source bucket has disappeared. |
 | GET | `/api/migrations/orphaned` | List completed migrations that have orphaned source data pending manual cleanup |
+| GET | `/api/migrations/source-buckets` | List buckets available to migrate from a given pool (`?pool_id=`). Returns buckets from `bucket_sync` and routed paths. Used by the Migrations UI to populate the bucket selector. |
 | GET | `/api/migrations/:id` | Get migration details (includes `orphaned_source_pool_id`, `orphaned_source_prefix`, `orphaned_at`) |
 | POST | `/api/migrations/:id/cancel` | Cancel a running migration |
 | GET | `/api/migrations/:id/log` | Get migration log entries |
@@ -374,7 +382,7 @@ What is recovered:
 | In-progress migrations | `data/migrations/*.state.json` | ✓ (reset to pending, will auto-resume) |
 | Completed migration records | `data/migrations/*.done.json` | ✓ (orphaned source info preserved) |
 | config_files sha256 records | recomputed from disk | ✓ |
-| bucket_sync | live `ListBuckets` call | ✓ (best-effort) |
+| bucket_sync | live `ListBuckets` call per pool member | ✓ (best-effort — requires pool members to be reachable) |
 | audit_log | — | ✗ (historical only) |
 
 After rebuild, restart the service so migrations resume:
@@ -394,7 +402,7 @@ The web UI is served at `/` and requires a session cookie obtained via `/login`.
 | Vhosts | `/web/vhosts` | Manage vhosts and routes |
 | Buckets | `/web/buckets` or via Vhosts page | Bucket list, promote, migrate, orphan scan and purge per vhost |
 | Config | `/web/config` | Config file drift status, per-file actions |
-| Migrations | `/web/migrations` | Start (copy or sync mode) and monitor rclone migrations |
+| Migrations | `/web/migrations` | Start (copy or sync mode) and monitor rclone migrations. Bucket selector is populated from the source pool's existing routes. Stale migrations (source pool lost members or source bucket disappeared) are flagged. |
 | Audit | `/web/audit` | Last 100 audit log entries |
 | Settings | `/web/settings` | View all current settings (secrets masked) |
 

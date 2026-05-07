@@ -166,8 +166,6 @@ async def promote_bucket(vhost_id: int, bucket: str, body: BucketPromoteRequest)
     2. Creates an nginx route: /{bucket}/ → target pool.
     3. Optionally kicks off object migration.
     """
-    s = get_settings()
-
     async with get_db_ctx() as db:
         vhost = await _require_vhost_with_default_pool(vhost_id, db)
 

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
 
 import aiofiles
 
@@ -27,7 +26,6 @@ async def check_drift_once() -> list[dict]:
     drifted = []
     async with get_db_ctx() as db:
         rows = await db.execute_fetchall("SELECT * FROM config_files")
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         for r in rows:
             filepath = r["path"]

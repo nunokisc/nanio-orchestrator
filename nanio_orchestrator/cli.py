@@ -219,7 +219,7 @@ def rebuild_db(dry_run, force):
             mig = result.get("migrations", 0)
             if mig:
                 print(f"  ✓ {mig} migration(s) in progress")
-            print(f"\n  ⚠ audit_log: not recoverable — historical data only")
+            print("\n  ⚠ audit_log: not recoverable — historical data only")
         else:
             print(f"  Pools:       {result['pools_imported']}")
             print(f"  Members:     {result['members_imported']}")
@@ -229,9 +229,9 @@ def rebuild_db(dry_run, force):
             print(f"  Credentials: {result['credentials_recovered']} recovered")
             for w in result.get("warnings", []):
                 print(f"  ⚠ {w}")
-            print(f"\n  ⚠ audit_log: not recoverable — historical data only")
-            print(f"\nDatabase rebuilt successfully.")
-            print(f"Next: systemctl restart nanio-orchestrator")
+            print("\n  ⚠ audit_log: not recoverable — historical data only")
+            print("\nDatabase rebuilt successfully.")
+            print("Next: systemctl restart nanio-orchestrator")
 
         return True
 
