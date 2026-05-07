@@ -610,6 +610,11 @@ function showRouteModal(vhostId, bucket) {
     document.getElementById('route-bucket-vhost-id').value = vhostId;
     document.getElementById('route-bucket-bucket').value = bucket;
     document.getElementById('route-bucket-name').textContent = bucket;
+    // Reset conflict box and normal actions to initial state
+    document.getElementById('route-conflict-box').style.display = 'none';
+    document.getElementById('route-normal-actions').style.display = '';
+    document.getElementById('route-migrate-cb').checked = true;
+    document.getElementById('route-migrate-warning').style.display = 'none';
     showModal('route-bucket-modal');
 }
 
@@ -635,18 +640,53 @@ async function promoteBucket(e) {
     try {
         let { res, data } = await _doPromoteBucket(vhostId, bucket, poolId, migrate, false);
         if (res.status === 400 && (data.detail || '').includes('allow_orphan')) {
-            // Source has objects but migrate is not checked — ask operator to confirm
-            const confirmed = confirm(
-                `Warning: bucket "${bucket}" already has objects on the source pool.\n\n` +
-                `Routing to the new pool WITHOUT migration means the existing objects will NOT be accessible via this route until manually moved.\n\n` +
-                `Do you want to proceed anyway (data stays on source pool)?`
-            );
-            if (!confirmed) return;
-            ({ res, data } = await _doPromoteBucket(vhostId, bucket, poolId, migrate, true));
+            // Show the inline conflict box with action choices
+            document.getElementById('route-conflict-box').style.display = 'block';
+            document.getElementById('route-normal-actions').style.display = 'none';
+            return;
         }
         hideModal('route-bucket-modal');
         if (data.ok) {
             alert(`Bucket "${bucket}" routed to pool "${data.pool}".${migrate ? '\nMigration started.' : ''}`);
+            location.reload();
+        } else {
+            alert('Error: ' + (data.error || data.detail || JSON.stringify(data)));
+        }
+    } catch (err) {
+        alert('Error: ' + err.message);
+    }
+}
+
+async function promoteBucketEnableMigration() {
+    const form = document.getElementById('route-bucket-form');
+    const vhostId = form.vhost_id.value;
+    const bucket = form.bucket.value;
+    const poolId = parseInt(form.pool_id.value);
+    try {
+        const { res, data } = await _doPromoteBucket(vhostId, bucket, poolId, true, false);
+        hideModal('route-bucket-modal');
+        if (data.ok) {
+            alert(`Bucket "${bucket}" routed with migration started.`);
+            location.reload();
+        } else {
+            alert('Error: ' + (data.error || data.detail || JSON.stringify(data)));
+        }
+    } catch (err) {
+        alert('Error: ' + err.message);
+    }
+}
+
+async function promoteBucketOrphan() {
+    const form = document.getElementById('route-bucket-form');
+    const vhostId = form.vhost_id.value;
+    const bucket = form.bucket.value;
+    const poolId = parseInt(form.pool_id.value);
+    const migrate = form.migrate.checked;
+    try {
+        const { res, data } = await _doPromoteBucket(vhostId, bucket, poolId, migrate, true);
+        hideModal('route-bucket-modal');
+        if (data.ok) {
+            alert(`Bucket "${bucket}" routed. Existing objects remain on the source pool.`);
             location.reload();
         } else {
             alert('Error: ' + (data.error || data.detail || JSON.stringify(data)));

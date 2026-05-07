@@ -98,7 +98,17 @@
             <p id="route-migrate-warning" style="color:var(--danger,#c0392b);font-size:0.85rem;margin:0.3rem 0 0 1.4rem;display:none">
                 ⚠ Without migration, existing objects on the source pool will <strong>not</strong> be accessible via this route — the new pool starts empty. Only proceed if the bucket is empty or you accept that existing data stays on the source pool.
             </p>
-            <div class="modal-actions">
+            <!-- Shown when API confirms the bucket has objects and migrate is unchecked -->
+            <div id="route-conflict-box" style="display:none;margin-top:1rem;padding:0.8rem 1rem;border-left:4px solid var(--danger,#c0392b);background:rgba(192,57,43,0.08);border-radius:4px">
+                <strong style="color:var(--danger,#c0392b)">⚠ Bucket has existing objects on the source pool</strong>
+                <p style="margin:0.4rem 0 0.8rem;font-size:0.9rem">Choose how to proceed:</p>
+                <div style="display:flex;gap:0.5rem;flex-wrap:wrap">
+                    <button type="button" class="btn btn-primary" onclick="promoteBucketEnableMigration()">Enable migration &amp; route</button>
+                    <button type="button" class="btn" style="border-color:var(--danger,#c0392b);color:var(--danger,#c0392b)" onclick="promoteBucketOrphan()">Route without migration (data stays on source)</button>
+                    <button type="button" class="btn" onclick="document.getElementById('route-conflict-box').style.display='none'">Back</button>
+                </div>
+            </div>
+            <div id="route-normal-actions" class="modal-actions">
                 <button type="submit" class="btn btn-primary">Route</button>
                 <button type="button" class="btn" onclick="hideModal('route-bucket-modal')">Cancel</button>
             </div>
