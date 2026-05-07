@@ -159,7 +159,9 @@ def _do_request(
         )
         headers.update(auth_hdrs)
 
-    encoded_path = urllib.parse.quote(path, safe="/-")
+    # Use the same unreserved-character set as SigV4 canonical URI:
+    # RFC 3986 unreserved = A-Z a-z 0-9 - _ . ~  plus / as path separator
+    encoded_path = urllib.parse.quote(path, safe="/-_.~")
     url = f"{encoded_path}?{query}" if query else encoded_path
     conn = http.client.HTTPConnection(host, port, timeout=get_settings().s3_request_timeout)
     try:
@@ -415,9 +417,10 @@ async def delete_object(
     region: str = "us-east-1",
 ) -> bool:
     """Delete an object. Returns True on success (including 404 = already gone)."""
-    encoded_key = urllib.parse.quote(key, safe="/")
+    # Do NOT pre-encode the key here — _do_request handles all percent-encoding.
+    # Pre-encoding would cause double-encoding (%20 → %2520) for keys with spaces.
     status, _ = await asyncio.to_thread(
-        _do_request, "DELETE", address, f"/{bucket}/{encoded_key}", "",
+        _do_request, "DELETE", address, f"/{bucket}/{key}", "",
         b"", access_key, secret_key, region
     )
     return status in (200, 204, 404)

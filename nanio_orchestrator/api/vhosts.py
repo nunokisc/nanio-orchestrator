@@ -579,6 +579,11 @@ async def delete_route(vhost_id: int, route_id: int):
                 "The '/' catch-all route cannot be deleted; set default_pool_id to null on the vhost to remove it",
             )
 
+        # Null-out route_id in any migrations that reference this route
+        # to avoid FK constraint failures (route_id has no ON DELETE SET NULL)
+        await db.execute(
+            "UPDATE migrations SET route_id = NULL WHERE route_id = ?", (route_id,)
+        )
         await db.execute("DELETE FROM routes WHERE id = ?", (route_id,))
         await db.commit()
 
