@@ -258,7 +258,8 @@ async def buckets_page():
                 "server_name": v["server_name"],
                 "buckets": [dict(b) for b in buckets],
             })
-    return _render("buckets.html", vhosts=vhosts, pools=[dict(p) for p in pools])
+    return _render("buckets.html", vhosts=vhosts, pools=[dict(p) for p in pools],
+                   all_pools=[dict(p) for p in pools])
 
 
 @router.get("/web/settings", response_class=HTMLResponse)

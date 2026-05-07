@@ -180,6 +180,7 @@ All endpoints under `/api/*` require the `X-Orchestrator-Key` header, except `/a
 | GET | `/api/pools/:id/members/:mid/node-config` | Generate node config (query params) |
 | POST | `/api/pools/:id/members/:mid/node-config` | Generate node config (body) |
 | GET | `/api/pools/:id/node-config-summary` | Node config summary for all members |
+| GET | `/api/pools/:id/buckets/status` | List all buckets on a nanio pool with routing status. Returns each bucket's status (`routed`, `via_default`, `orphaned`, `unrouted`) and which vhosts serve it. Only available for `nanio` pools. |
 
 ### Pool Credentials
 
@@ -269,7 +270,7 @@ Phases: `pending → copying → write_routing → verifying → switching → d
 
 - **copying**: rclone copies data in a convergence loop (up to `MIGRATION_MAX_COPY_PASSES` passes). Ends early if counts stabilise across passes.
 - **write_routing**: nginx is reconfigured so writes go directly to the destination pool while reads still come from the source (with 404-fallback to destination). Freezes new writes to the source.
-- **verifying**: a final copy pass + rclone check to confirm source == destination.
+- **verifying**: a copy→check convergence loop (up to `MIGRATION_MAX_COPY_PASSES` passes). Each pass does a final `rclone copy` followed by `rclone check`. If check passes cleanly the migration proceeds to switching. If differences are still found, the loop retries — this handles buckets that are still receiving uploads during migration. The loop aborts early if the diff count stops decreasing between passes (source diverging faster than rclone can copy).
 - **switching**: the nginx route is flipped to the destination pool and the DB is updated atomically. Fails hard if the route cannot be found — no silent data loss.
 - **done**: migration complete. Source data is **never deleted automatically**. The migration record tracks `orphaned_source_pool_id`, `orphaned_source_prefix`, and `orphaned_at` so operators can locate and clean up the source bucket at their own pace.
 - **error** / **cancelled**: terminal failure states.

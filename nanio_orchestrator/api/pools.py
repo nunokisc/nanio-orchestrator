@@ -28,6 +28,8 @@ from nanio_orchestrator.models import (
     PoolOut,
     PoolUpdate,
 )
+from nanio_orchestrator.credentials import get_pool_s3_params
+from nanio_orchestrator.s3client import list_buckets as s3_list_buckets
 from nanio_orchestrator.nginx.generator import (
     generate_pool_config,
     node_config_instructions,
@@ -518,3 +520,111 @@ async def pool_node_config_summary(pool_id: int):
                 "recent_configs": [dict(c) for c in configs],
             })
         return result
+
+
+@router.get("/{pool_id}/buckets/status")
+async def pool_bucket_status(pool_id: int):
+    """List all buckets on a nanio pool with their routing status across all vhosts.
+
+    Status values:
+    - ``orphaned``: a migration record marks this pool as the orphaned source for this bucket —
+      data here is stale and should be purged.
+    - ``routed``: a dedicated nginx route in at least one vhost points /{bucket}/ → this pool.
+    - ``via_default``: no dedicated route, but this pool is the default_pool for at least one
+      vhost — traffic reaches this bucket via the catch-all route.
+    - ``unrouted``: the bucket exists on this pool but no vhost serves it from here.
+    """
+    async with get_db_ctx() as db:
+        pool_rows = await db.execute_fetchall("SELECT * FROM pools WHERE id = ?", (pool_id,))
+        if not pool_rows:
+            raise HTTPException(404, "Pool not found")
+        pool = dict(pool_rows[0])
+        if pool["type"] != "nanio":
+            raise HTTPException(400, "Bucket status is only available for nanio pools")
+
+        member_rows = await db.execute_fetchall(
+            "SELECT address FROM pool_members WHERE pool_id = ? AND enabled = 1 ORDER BY id LIMIT 1",
+            (pool_id,),
+        )
+        if not member_rows:
+            raise HTTPException(400, "Pool has no enabled members")
+        member_address = dict(member_rows[0])["address"]
+
+        # Dedicated routes pointing to this pool: bucket_name → [{vhost_id, server_name}]
+        route_rows = await db.execute_fetchall(
+            """SELECT r.path_prefix, v.id AS vhost_id, v.server_name
+               FROM routes r
+               JOIN vhosts v ON r.vhost_id = v.id
+               WHERE r.pool_id = ? AND r.enabled = 1""",
+            (pool_id,),
+        )
+        routed: dict[str, list] = {}
+        for r in route_rows:
+            rd = dict(r)
+            bucket_name = rd["path_prefix"].strip("/")
+            if bucket_name:
+                routed.setdefault(bucket_name, []).append(
+                    {"vhost_id": rd["vhost_id"], "server_name": rd["server_name"]}
+                )
+
+        # Vhosts where this pool is the default
+        default_vhost_rows = await db.execute_fetchall(
+            "SELECT id, server_name FROM vhosts WHERE default_pool_id = ? ORDER BY server_name",
+            (pool_id,),
+        )
+        default_vhosts = [dict(r) for r in default_vhost_rows]
+
+        # Buckets with orphaned migration records pointing to this pool
+        orphan_rows = await db.execute_fetchall(
+            """SELECT DISTINCT bucket FROM migrations
+               WHERE orphaned_source_pool_id = ? AND bucket IS NOT NULL""",
+            (pool_id,),
+        )
+        orphaned_set = {dict(r)["bucket"] for r in orphan_rows}
+
+        # All vhosts (for route modal context)
+        all_vhost_rows = await db.execute_fetchall(
+            """SELECT v.id, v.server_name FROM vhosts v
+               JOIN pools p ON v.default_pool_id = p.id
+               WHERE p.type = 'nanio'
+               ORDER BY v.server_name""",
+        )
+        all_vhosts = [dict(r) for r in all_vhost_rows]
+
+    # ListBuckets via S3 API
+    ak, sk, _ = await get_pool_s3_params(pool_id)
+    try:
+        raw_buckets = await s3_list_buckets(member_address, access_key=ak, secret_key=sk)
+    except Exception as exc:
+        raise HTTPException(502, f"Failed to list buckets on pool '{pool['name']}': {exc}")
+
+    buckets = []
+    for b in raw_buckets:
+        name = b["name"]
+        if name in orphaned_set:
+            status = "orphaned"
+        elif name in routed:
+            status = "routed"
+        elif default_vhosts:
+            status = "via_default"
+        else:
+            status = "unrouted"
+
+        buckets.append({
+            "bucket": name,
+            "status": status,
+            "routed_in": routed.get(name, []),
+            "default_vhosts": default_vhosts if status == "via_default" else [],
+        })
+
+    # Sort: unrouted/orphaned first, then routed, then via_default
+    _order = {"unrouted": 0, "orphaned": 1, "via_default": 2, "routed": 3}
+    buckets.sort(key=lambda x: (_order.get(x["status"], 9), x["bucket"]))
+
+    return {
+        "pool_id": pool_id,
+        "pool_name": pool["name"],
+        "member_address": member_address,
+        "buckets": buckets,
+        "all_vhosts": all_vhosts,
+    }

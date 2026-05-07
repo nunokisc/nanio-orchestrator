@@ -351,6 +351,94 @@ async def _run_rclone(
         return False
 
 
+_DIFF_COUNT_RE = re.compile(r"(\d+)\s+differences?\s+found", re.IGNORECASE)
+
+
+async def _run_rclone_check(
+    migration_id: int,
+    config_path: str,
+    src_remote: str,
+    dst_remote: str,
+) -> tuple[bool, int]:
+    """Run rclone check. Returns (ok, diff_count).
+
+    diff_count is the number of differences reported by rclone check, parsed from
+    the NOTICE output line "N differences found".  Returns 0 if check passes or if
+    the count cannot be parsed.
+    """
+    s = get_settings()
+    cmd = [
+        s.rclone_path, "check", src_remote, dst_remote,
+        "--config", config_path,
+        "--checkers", str(s.migration_checkers),
+        "--transfers", str(s.migration_transfers),
+        "--stats", "5s",
+        "--stats-one-line",
+        "--log-level", "NOTICE",
+    ]
+
+    await _log(migration_id, "verifying", f"Running: {' '.join(cmd)}")
+    logger.info("migration %d [verifying]: starting rclone check %s → %s",
+                migration_id, src_remote, dst_remote)
+
+    diff_count = 0
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+
+        async with get_db_ctx() as db:
+            await db.execute("UPDATE migrations SET rclone_pid=? WHERE id=?",
+                             (proc.pid, migration_id))
+            await db.commit()
+
+        log_buffer: list = []
+
+        async for raw in proc.stdout:
+            line = raw.decode(errors="replace").rstrip()
+            if not line:
+                continue
+            logger.debug("rclone check [%d]: %s", migration_id, line)
+            log_buffer.append((migration_id, "verifying", line))
+            m = _DIFF_COUNT_RE.search(line)
+            if m:
+                diff_count = int(m.group(1))
+
+        if log_buffer:
+            async with get_db_ctx() as db:
+                await db.executemany(
+                    "INSERT INTO migration_log (migration_id, phase, message) VALUES (?, ?, ?)",
+                    log_buffer,
+                )
+                await db.commit()
+
+        await proc.wait()
+
+        async with get_db_ctx() as db:
+            await db.execute("UPDATE migrations SET rclone_pid=NULL WHERE id=?", (migration_id,))
+            await db.commit()
+
+        if proc.returncode == 0:
+            logger.info("migration %d [verifying]: rclone check passed", migration_id)
+            await _log(migration_id, "verifying", "rclone check completed successfully")
+            return True, 0
+        else:
+            logger.warning("migration %d [verifying]: rclone check exit code %d, diffs=%d",
+                           migration_id, proc.returncode, diff_count)
+            await _log(migration_id, "verifying",
+                       f"rclone check exit code {proc.returncode} — {diff_count} difference(s)")
+            return False, diff_count
+
+    except FileNotFoundError:
+        await _log(migration_id, "verifying", f"rclone binary not found at: {s.rclone_path}")
+        return False, 0
+    except Exception as e:
+        await _log(migration_id, "verifying", f"rclone check error: {e}")
+        return False, 0
+
+
 # Matches rclone stats lines such as:
 #   2026/04/16 18:36:06 INFO  : Transferred:   1.234 GiB / 5.678 GiB, 22%, 54 MiB/s, ETA 1m30s
 #   2026/04/16 18:36:06 INFO  : Checks:         1234 / 5678, 22%
@@ -638,23 +726,60 @@ async def run_migration(migration_id: int) -> None:
                 return
 
         # ── Phase: verifying ──────────────────────────────────────────
-        # Source is now frozen (writes go to dst).  Final copy transfers any
-        # objects that arrived between the last convergence pass and the nginx
-        # write-routing switch.  Then rclone check confirms src == dst.
+        # Source may still be receiving writes (not frozen — write-routing was skipped
+        # when counts converged early).  We run copy → check in a loop until check
+        # passes cleanly, or until diff_count stops shrinking (genuinely stuck).
+        #
+        # This handles the common case where an upload is in progress during
+        # migration: rclone check would see a size mismatch on the in-flight file,
+        # but a subsequent copy + check picks it up once the upload completes.
         await _set_phase(migration_id, "verifying")
-        await _log(migration_id, "verifying",
-                   "Final copy pass — source frozen, syncing remaining objects to destination")
-        ok = await _run_rclone(migration_id, config_path, src_remote, dst_remote,
-                               "verifying", mode="copy")
-        if not ok:
-            await _set_phase(migration_id, "error", "Final copy pass failed during verification")
-            return
+        s_verify = get_settings()
+        max_verify_passes = s_verify.migration_max_copy_passes
+        prev_diff_count: Optional[int] = None
 
-        await _log(migration_id, "verifying", "rclone check — verifying src == dst")
-        ok = await _run_rclone(migration_id, config_path, src_remote, dst_remote,
-                               "verifying", check_only=True)
-        if not ok:
-            await _set_phase(migration_id, "error", "rclone check verification failed")
+        for verify_pass in range(1, max_verify_passes + 1):
+            await _log(migration_id, "verifying",
+                       f"Verify pass {verify_pass}/{max_verify_passes}: copy then check")
+
+            ok = await _run_rclone(migration_id, config_path, src_remote, dst_remote,
+                                   "verifying", mode="copy")
+            if not ok:
+                await _set_phase(migration_id, "error",
+                                 f"Verify pass {verify_pass}: copy step failed")
+                return
+
+            await _log(migration_id, "verifying",
+                       f"Verify pass {verify_pass}: rclone check — verifying src == dst")
+            check_ok, diff_count = await _run_rclone_check(
+                migration_id, config_path, src_remote, dst_remote
+            )
+            if check_ok:
+                await _log(migration_id, "verifying",
+                           f"Verify pass {verify_pass}: check passed — src == dst")
+                break
+
+            await _log(migration_id, "verifying",
+                       f"Verify pass {verify_pass}: {diff_count} difference(s) found — will retry")
+
+            if prev_diff_count is not None and diff_count >= prev_diff_count:
+                msg = (
+                    f"Verify pass {verify_pass}: diff count did not decrease "
+                    f"({prev_diff_count} → {diff_count}) — source is diverging faster than "
+                    "we can copy. Failing migration to avoid an infinite loop."
+                )
+                await _log(migration_id, "verifying", msg)
+                await _set_phase(migration_id, "error", msg)
+                return
+
+            prev_diff_count = diff_count
+        else:
+            msg = (
+                f"Verification did not converge after {max_verify_passes} pass(es). "
+                "The source bucket may be receiving objects faster than rclone can copy them."
+            )
+            await _log(migration_id, "verifying", msg)
+            await _set_phase(migration_id, "error", msg)
             return
 
         # ── Phase: switching ──────────────────────────────────────────────
