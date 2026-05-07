@@ -656,6 +656,16 @@ async function loadMigrationBuckets(selectEl) {
     bucketSel.innerHTML = '<option value="">— loading… —</option>';
     bucketSel.disabled = true;
 
+    // Disable the selected source pool in the destination dropdown
+    const dstSel = selectEl.form.dst_pool_id;
+    for (const opt of dstSel.options) {
+        opt.disabled = (opt.value !== '' && opt.value === poolId);
+        if (opt.disabled && opt.selected) {
+            // Pick the first non-disabled option
+            dstSel.value = Array.from(dstSel.options).find(o => !o.disabled && o.value !== '')?.value ?? '';
+        }
+    }
+
     if (!poolId) {
         bucketSel.innerHTML = '<option value="">— select source pool first —</option>';
         return;
@@ -686,10 +696,18 @@ async function loadMigrationBuckets(selectEl) {
 async function createMigration(event) {
     event.preventDefault();
     const form = event.target;
+    const srcId = parseInt(form.src_pool_id.value, 10);
+    const dstId = parseInt(form.dst_pool_id.value, 10);
+
+    if (srcId === dstId) {
+        alert('Source and destination pools must be different.');
+        return;
+    }
+
     const body = {
         bucket: form.bucket.value,
-        src_pool_id: parseInt(form.src_pool_id.value),
-        dst_pool_id: parseInt(form.dst_pool_id.value),
+        src_pool_id: srcId,
+        dst_pool_id: dstId,
         mode: form.mode.value,
     };
     try {
@@ -701,7 +719,7 @@ async function createMigration(event) {
         });
         const data = await res.json();
         if (res.ok) location.reload();
-        else alert('Error: ' + (data.detail || JSON.stringify(data)));
+        else alert('Error: ' + formatError(data));
     } catch (err) {
         alert('Error: ' + err.message);
     }
