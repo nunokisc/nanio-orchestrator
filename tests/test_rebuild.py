@@ -985,7 +985,7 @@ server {
             "target_pool_id": 2,
             "target_pool_name": "pool-dst",
             "status": "copying",
-            "mode": "sync",
+            "mode": "copy",
             "route_id": None,
             "copied_objects": 50,
             "total_objects": 200,
