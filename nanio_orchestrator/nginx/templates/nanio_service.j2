@@ -5,11 +5,25 @@ After=network.target
 
 [Service]
 Type=simple
+User=nanio
+Group=nanio
 ExecStart=/usr/local/bin/nanio serve --options /etc/nanio/options.toml
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths="{{ data_dir }}"
+
 
 [Install]
 WantedBy=multi-user.target
