@@ -1,6 +1,5 @@
 """Tests for web UI routes."""
 
-import pytest
 
 
 class TestWebRoutes:

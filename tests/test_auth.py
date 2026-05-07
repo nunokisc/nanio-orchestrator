@@ -1,6 +1,5 @@
 """Tests for authentication middleware."""
 
-import pytest
 
 
 class TestAuth:

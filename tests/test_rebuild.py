@@ -23,7 +23,7 @@ class TestDatabaseBackup:
 
         os.environ["NANIO_ORCHESTRATOR_DB_PATH"] = tmp_dirs["db_path"]
 
-        from nanio_orchestrator.db import set_db_path, init_db
+        from nanio_orchestrator.db import init_db, set_db_path
         set_db_path(tmp_dirs["db_path"])
         await init_db()
 
@@ -43,7 +43,7 @@ class TestDatabaseBackup:
         os.environ["NANIO_ORCHESTRATOR_DB_PATH"] = tmp_dirs["db_path"]
         os.environ["NANIO_ORCHESTRATOR_DB_BACKUP_ROTATE"] = "3"
 
-        from nanio_orchestrator.db import set_db_path, init_db
+        from nanio_orchestrator.db import init_db, set_db_path
         set_db_path(tmp_dirs["db_path"])
         await init_db()
 
@@ -402,7 +402,7 @@ server {
         os.environ["NANIO_ORCHESTRATOR_NGINX_CONFIG_DIR"] = tmp_dirs["nginx_dir"]
         os.environ["NANIO_ORCHESTRATOR_SECRET"] = "ASsfJ7RCxJiOrjeD9KX0LPlMe-EJtA2lKIh2yk-D6U0="
 
-        from nanio_orchestrator.credentials import reset_fernet, encrypt
+        from nanio_orchestrator.credentials import encrypt, reset_fernet
         reset_fernet()
 
         # Add credentials to sidecar
@@ -564,7 +564,7 @@ upstream no-sidecar {
         os.environ["NANIO_ORCHESTRATOR_DB_PATH"] = tmp_dirs["db_path"]
         os.environ["NANIO_ORCHESTRATOR_NGINX_CONFIG_DIR"] = tmp_dirs["nginx_dir"]
 
-        from nanio_orchestrator.db import set_db_path, init_db
+        from nanio_orchestrator.db import init_db, set_db_path
         set_db_path(tmp_dirs["db_path"])
         await init_db()
 
@@ -597,7 +597,7 @@ upstream no-sidecar {
         os.environ["NANIO_ORCHESTRATOR_DB_PATH"] = tmp_dirs["db_path"]
         os.environ["NANIO_ORCHESTRATOR_NGINX_CONFIG_DIR"] = tmp_dirs["nginx_dir"]
 
-        from nanio_orchestrator.db import set_db_path, get_db_ctx, init_db
+        from nanio_orchestrator.db import get_db_ctx, init_db, set_db_path
         set_db_path(tmp_dirs["db_path"])
         await init_db()
 
@@ -732,7 +732,7 @@ class TestMigrationStateSidecar:
         # migrations_dir is now next to the DB, not inside nginx_dir
         os.makedirs(str(Path(tmp_dirs["db_path"]).parent / "migrations"), exist_ok=True)
 
-        from nanio_orchestrator.db import set_db_path, init_db, get_db_ctx
+        from nanio_orchestrator.db import get_db_ctx, init_db, set_db_path
         set_db_path(tmp_dirs["db_path"])
         await init_db()
 
@@ -772,7 +772,7 @@ class TestMigrationStateSidecar:
         # migrations_dir is now next to the DB, not inside nginx_dir
         os.makedirs(str(Path(tmp_dirs["db_path"]).parent / "migrations"), exist_ok=True)
 
-        from nanio_orchestrator.db import set_db_path, init_db, get_db_ctx
+        from nanio_orchestrator.db import get_db_ctx, init_db, set_db_path
         set_db_path(tmp_dirs["db_path"])
         await init_db()
 
@@ -812,7 +812,7 @@ class TestBackupRotation:
         os.environ["NANIO_ORCHESTRATOR_DB_PATH"] = tmp_dirs["db_path"]
         os.environ["NANIO_ORCHESTRATOR_DB_BACKUP_ROTATE"] = "1"
 
-        from nanio_orchestrator.db import set_db_path, init_db
+        from nanio_orchestrator.db import init_db, set_db_path
         set_db_path(tmp_dirs["db_path"])
         await init_db()
 
@@ -1018,6 +1018,7 @@ server {
     async def test_rebuild_no_purge_references(self, tmp_dirs):
         """rebuild.py must not reference purge_source or needs_purge in any path."""
         import inspect
+
         from nanio_orchestrator.rebuild import rebuild_from_disk
         src = inspect.getsource(rebuild_from_disk)
         assert "purge_source" not in src

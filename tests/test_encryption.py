@@ -1,8 +1,8 @@
 """Tests for Fernet encryption/decryption module."""
 
 import os
+
 import pytest
-from unittest.mock import patch
 
 
 @pytest.fixture(autouse=True)
@@ -22,7 +22,7 @@ def set_secret():
 
 class TestEncryption:
     def test_encrypt_decrypt_roundtrip(self):
-        from nanio_orchestrator.credentials import encrypt, decrypt
+        from nanio_orchestrator.credentials import decrypt, encrypt
         plaintext = "my-secret-access-key-12345"
         token = encrypt(plaintext)
         assert token != plaintext
@@ -42,7 +42,7 @@ class TestEncryption:
         assert t1 != t2
 
     def test_decrypt_with_wrong_key_fails(self, set_secret):
-        from nanio_orchestrator.credentials import encrypt, decrypt, reset_fernet
+        from nanio_orchestrator.credentials import decrypt, encrypt, reset_fernet
         token = encrypt("test-value")
 
         # Change the key

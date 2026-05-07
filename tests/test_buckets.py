@@ -1,8 +1,8 @@
 """Tests for bucket sync functionality."""
 
-import pytest
 from unittest.mock import AsyncMock, patch
-from tests.conftest import create_pool, create_member, create_vhost
+
+from tests.conftest import create_member, create_pool, create_vhost
 
 
 class TestBucketSync:
@@ -288,3 +288,106 @@ class TestMigrationRouteValidation:
             )
         assert rows[0]["route_id"] is not None, \
             "migration record must have route_id bound"
+
+
+class TestOrphanScanAndPurge:
+    """Tests for GET /vhosts/{id}/buckets/orphans and POST /vhosts/{id}/buckets/{bk}/purge-orphan"""
+
+    async def _setup(self, client, mock_nginx, mock_s3, prefix):
+        pool = await create_pool(client, f"{prefix}-pool")
+        await create_member(client, pool["id"], "10.0.0.1:9000")
+        dst = await create_pool(client, f"{prefix}-dst")
+        await create_member(client, dst["id"], "10.0.0.2:9000")
+        vh = await create_vhost(client, f"{prefix}.example.com", default_pool_id=pool["id"])
+        return pool, dst, vh
+
+    async def test_orphan_scan_no_default_pool(self, client):
+        vh = await create_vhost(client, "orp-nopool.example.com")
+        resp = await client.get(f"/api/vhosts/{vh['id']}/buckets/orphans")
+        assert resp.status_code == 400
+
+    async def test_orphan_scan_no_routed_buckets(self, client, mock_nginx, mock_s3):
+        pool, dst, vh = await self._setup(client, mock_nginx, mock_s3, "orp-empty")
+        # No routed buckets → orphan scan returns empty list
+        with patch("nanio_orchestrator.api.buckets.count_objects", new=AsyncMock(return_value=0)), \
+             patch("nanio_orchestrator.api.buckets.get_pool_s3_params", new=AsyncMock(return_value=("ak", "sk", None))):
+            resp = await client.get(f"/api/vhosts/{vh['id']}/buckets/orphans")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["orphans"] == []
+        assert data["checked"] == 0
+
+    async def test_orphan_scan_finds_stale_objects(self, client, mock_nginx, mock_s3):
+        pool, dst, vh = await self._setup(client, mock_nginx, mock_s3, "orp-found")
+        # Sync + promote bucket to dst (creates a routed bucket_sync entry)
+        mock_s3["list_buckets"].return_value = [{"name": "stale-bk", "created": "2025-01-01"}]
+        mock_s3["promote_src_has_objects"].return_value = False
+        await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
+        await client.post(f"/api/vhosts/{vh['id']}/buckets/stale-bk/promote", json={
+            "pool_id": dst["id"], "migrate": False,
+        })
+        # Orphan scan: default pool still has objects in stale-bk
+        with patch("nanio_orchestrator.api.buckets.count_objects", new=AsyncMock(return_value=3)), \
+             patch("nanio_orchestrator.api.buckets.get_pool_s3_params", new=AsyncMock(return_value=("ak", "sk", None))):
+            resp = await client.get(f"/api/vhosts/{vh['id']}/buckets/orphans")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["checked"] == 1
+        assert len(data["orphans"]) == 1
+        assert data["orphans"][0]["bucket"] == "stale-bk"
+        assert data["orphans"][0]["objects"] == 3
+
+    async def test_orphan_scan_skips_clean_buckets(self, client, mock_nginx, mock_s3):
+        pool, dst, vh = await self._setup(client, mock_nginx, mock_s3, "orp-clean")
+        mock_s3["list_buckets"].return_value = [{"name": "clean-bk", "created": "2025-01-01"}]
+        mock_s3["promote_src_has_objects"].return_value = False
+        await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
+        await client.post(f"/api/vhosts/{vh['id']}/buckets/clean-bk/promote", json={
+            "pool_id": dst["id"], "migrate": False,
+        })
+        # Default pool is empty → not in orphan list
+        with patch("nanio_orchestrator.api.buckets.count_objects", new=AsyncMock(return_value=0)), \
+             patch("nanio_orchestrator.api.buckets.get_pool_s3_params", new=AsyncMock(return_value=("ak", "sk", None))):
+            resp = await client.get(f"/api/vhosts/{vh['id']}/buckets/orphans")
+        assert resp.status_code == 200
+        assert resp.json()["orphans"] == []
+
+    async def test_purge_orphan_requires_routed_bucket(self, client, mock_nginx, mock_s3):
+        pool, dst, vh = await self._setup(client, mock_nginx, mock_s3, "orp-purgereq")
+        # Bucket not in bucket_sync at all → 400
+        with patch("nanio_orchestrator.api.buckets.get_pool_s3_params", new=AsyncMock(return_value=("ak", "sk", None))):
+            resp = await client.post(f"/api/vhosts/{vh['id']}/buckets/nonexistent/purge-orphan")
+        assert resp.status_code == 400
+
+    async def test_purge_orphan_deletes_objects(self, client, mock_nginx, mock_s3):
+        pool, dst, vh = await self._setup(client, mock_nginx, mock_s3, "orp-purge")
+        mock_s3["list_buckets"].return_value = [{"name": "purge-bk", "created": "2025-01-01"}]
+        mock_s3["promote_src_has_objects"].return_value = False
+        await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
+        await client.post(f"/api/vhosts/{vh['id']}/buckets/purge-bk/promote", json={
+            "pool_id": dst["id"], "migrate": False,
+        })
+        with patch("nanio_orchestrator.api.buckets.list_objects", new=AsyncMock(return_value=["f1.dat", "f2.dat"])), \
+             patch("nanio_orchestrator.api.buckets.delete_object", new=AsyncMock(return_value=True)), \
+             patch("nanio_orchestrator.api.buckets.get_pool_s3_params", new=AsyncMock(return_value=("ak", "sk", None))):
+            resp = await client.post(f"/api/vhosts/{vh['id']}/buckets/purge-bk/purge-orphan")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["deleted"] == 2
+
+    async def test_purge_orphan_empty_bucket(self, client, mock_nginx, mock_s3):
+        pool, dst, vh = await self._setup(client, mock_nginx, mock_s3, "orp-purgeempty")
+        mock_s3["list_buckets"].return_value = [{"name": "emptypurge-bk", "created": "2025-01-01"}]
+        mock_s3["promote_src_has_objects"].return_value = False
+        await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
+        await client.post(f"/api/vhosts/{vh['id']}/buckets/emptypurge-bk/promote", json={
+            "pool_id": dst["id"], "migrate": False,
+        })
+        with patch("nanio_orchestrator.api.buckets.list_objects", new=AsyncMock(return_value=[])), \
+             patch("nanio_orchestrator.api.buckets.get_pool_s3_params", new=AsyncMock(return_value=("ak", "sk", None))):
+            resp = await client.post(f"/api/vhosts/{vh['id']}/buckets/emptypurge-bk/purge-orphan")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["deleted"] == 0

@@ -1,8 +1,9 @@
 """Tests for pool credentials API (Fernet encryption)."""
 
 import os
+
 import pytest
-from unittest.mock import patch
+
 from tests.conftest import create_pool
 
 

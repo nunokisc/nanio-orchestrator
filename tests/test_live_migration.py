@@ -14,14 +14,12 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
-from typing import AsyncIterator
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
 
-from tests.conftest import create_member, create_pool, create_vhost, create_route
-
+from tests.conftest import create_member, create_pool, create_route, create_vhost
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -415,8 +413,8 @@ class TestNginxStateSidecar:
 
     async def _get_nginx_state(self, migration_id: int, phase: str) -> str:
         """Set phase in DB and return the nginx_state written to the sidecar."""
-        from nanio_orchestrator.migration_engine import _set_phase, _write_state_sidecar
         from nanio_orchestrator.db import get_db_ctx
+        from nanio_orchestrator.migration_engine import _write_state_sidecar
 
         written = {}
 
@@ -535,7 +533,6 @@ class TestGeneratorMigrationMap:
     ):
         """Routes without an active migration in write_routing/verifying have no migration_dst_pool_name."""
         from nanio_orchestrator.nginx.generator import generate_vhost_config
-        from nanio_orchestrator.db import get_db_ctx
 
         vhost_id, prefix, dst_name, src_id, dst_id = await self._setup(
             client, mock_s3, "plain-bk", "plain-src", "plain-dst", "plain.example.com"
@@ -550,8 +547,8 @@ class TestGeneratorMigrationMap:
         self, client, mock_nginx, mock_rclone, mock_s3
     ):
         """When a migration is in write_routing phase, generate_vhost_config injects dst pool name."""
-        from nanio_orchestrator.nginx.generator import generate_vhost_config
         from nanio_orchestrator.db import get_db_ctx
+        from nanio_orchestrator.nginx.generator import generate_vhost_config
 
         vhost_id, prefix, dst_name, src_id, dst_id = await self._setup(
             client, mock_s3, "wr-bk2", "wr-gsrc", "wr-gdst", "wrgen.example.com"
@@ -579,8 +576,8 @@ class TestGeneratorMigrationMap:
         self, client, mock_nginx, mock_rclone, mock_s3
     ):
         """write_routing split config is also generated when migration phase is 'verifying'."""
-        from nanio_orchestrator.nginx.generator import generate_vhost_config
         from nanio_orchestrator.db import get_db_ctx
+        from nanio_orchestrator.nginx.generator import generate_vhost_config
 
         vhost_id, prefix, dst_name, src_id, dst_id = await self._setup(
             client, mock_s3, "ver-bk", "ver-src", "ver-dst", "vergen.example.com"
@@ -605,8 +602,8 @@ class TestGeneratorMigrationMap:
         self, client, mock_nginx, mock_rclone, mock_s3
     ):
         """Migration in copying phase does NOT generate split routing (source not yet frozen)."""
-        from nanio_orchestrator.nginx.generator import generate_vhost_config
         from nanio_orchestrator.db import get_db_ctx
+        from nanio_orchestrator.nginx.generator import generate_vhost_config
 
         vhost_id, prefix, dst_name, src_id, dst_id = await self._setup(
             client, mock_s3, "copy-bk", "copy-src", "copy-dst", "copygen.example.com"

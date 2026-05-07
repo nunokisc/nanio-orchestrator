@@ -1,7 +1,6 @@
 """Tests for node config generation."""
 
-import pytest
-from tests.conftest import create_pool, create_member
+from tests.conftest import create_member, create_pool
 
 
 class TestNodeConfig:

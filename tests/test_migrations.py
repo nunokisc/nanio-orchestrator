@@ -1,9 +1,10 @@
 """Tests for rclone migration API and engine."""
 
 import os
+
 import pytest
-from unittest.mock import AsyncMock, patch
-from tests.conftest import create_pool, create_member, create_vhost, create_route
+
+from tests.conftest import create_member, create_pool, create_route, create_vhost
 
 
 @pytest.fixture(autouse=True)
@@ -369,6 +370,7 @@ class TestMigrationRecovery:
     async def test_recovery_does_not_purge(self):
         """recover_interrupted_migrations must not reference purge phases."""
         import inspect
+
         from nanio_orchestrator.migration_engine import recover_interrupted_migrations
         src = inspect.getsource(recover_interrupted_migrations)
         assert "purge" not in src.lower(), \

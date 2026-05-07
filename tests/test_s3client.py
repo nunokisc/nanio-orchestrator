@@ -1,6 +1,5 @@
 """Tests for S3 client (SigV4 signing, request building)."""
 
-import pytest
 from nanio_orchestrator.s3client import (
     _make_auth_headers,
     _parse_address,

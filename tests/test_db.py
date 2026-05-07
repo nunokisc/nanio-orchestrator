@@ -1,6 +1,5 @@
 """Tests for the database layer."""
 
-import pytest
 
 from nanio_orchestrator.db import get_db_ctx, init_db, set_db_path
 

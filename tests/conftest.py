@@ -4,9 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import tempfile
-from pathlib import Path
-from typing import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -91,7 +88,7 @@ async def db(tmp_dirs):
     import nanio_orchestrator.db as db_mod
     db_mod._db_path = None
 
-    from nanio_orchestrator.db import set_db_path, get_db_ctx, init_db
+    from nanio_orchestrator.db import get_db_ctx, init_db, set_db_path
     set_db_path(tmp_dirs["db_path"])
     await init_db()
 

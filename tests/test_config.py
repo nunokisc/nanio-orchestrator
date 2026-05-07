@@ -1,7 +1,6 @@
 """Tests for nginx config generation."""
 
-import pytest
-from tests.conftest import create_pool, create_member, create_vhost
+from tests.conftest import create_member, create_pool, create_vhost
 
 
 class TestConfigGeneration:
