@@ -12,6 +12,7 @@ import re
 _PATH_PREFIX_RE = re.compile(r"^/[A-Za-z0-9._/@-]+/?$")
 _SERVER_NAME_RE = re.compile(r"^(\*\.)?[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$")
 _NGINX_DANGEROUS_RE = re.compile(r"[;{}\\]")
+_IP_ENTRY_RE = re.compile(r"^[\d:a-fA-F./]+$")  # IPv4, IPv6, CIDR notation
 
 
 # ── Pool ──────────────────────────────────────────────────────────────────────
@@ -94,9 +95,9 @@ class MemberOut(BaseModel):
 class VhostExtraBlock(BaseModel):
     """A freeform nginx config block injected at a specific zone of a vhost."""
 
-    zone: Literal["ssl", "proxy", "end"] = Field(
+    zone: Literal["top", "ssl", "proxy", "end"] = Field(
         ...,
-        description="Where to inject: 'ssl' after SSL certs, 'proxy' after proxy directives, 'end' before closing brace",
+        description="Where to inject: 'top' after server_name, 'ssl' after SSL certs, 'proxy' after proxy directives, 'end' before closing brace",
     )
     content: str = Field(..., min_length=1)
 
@@ -114,6 +115,8 @@ class VhostCreate(BaseModel):
     extra_blocks: Optional[List[VhostExtraBlock]] = None
     enabled: bool = True
     default_pool_id: Optional[int] = None
+    ip_rule_mode: Optional[Literal["allow", "deny"]] = None
+    ip_rule_ips: Optional[List[str]] = None
 
     @field_validator("server_name")
     @classmethod
@@ -132,6 +135,12 @@ class VhostCreate(BaseModel):
             raise ValueError(
                 "ssl_cert_path and ssl_key_path are required when ssl is enabled"
             )
+        if self.ip_rule_mode and not self.ip_rule_ips:
+            raise ValueError("ip_rule_ips must be provided when ip_rule_mode is set")
+        if self.ip_rule_ips:
+            for ip in self.ip_rule_ips:
+                if not _IP_ENTRY_RE.match(ip.strip()):
+                    raise ValueError(f"Invalid IP/CIDR entry: {ip!r}")
         return self
 
 
@@ -145,6 +154,8 @@ class VhostUpdate(BaseModel):
     extra_blocks: Optional[List[VhostExtraBlock]] = None
     enabled: Optional[bool] = None
     default_pool_id: Optional[int] = None
+    ip_rule_mode: Optional[Literal["allow", "deny"]] = None
+    ip_rule_ips: Optional[List[str]] = None
 
     @field_validator("server_name")
     @classmethod
@@ -159,6 +170,16 @@ class VhostUpdate(BaseModel):
             )
         return v
 
+    @model_validator(mode="after")
+    def validate_ip_rules(self) -> "VhostUpdate":
+        if self.ip_rule_mode and not self.ip_rule_ips:
+            raise ValueError("ip_rule_ips must be provided when ip_rule_mode is set")
+        if self.ip_rule_ips:
+            for ip in self.ip_rule_ips:
+                if not _IP_ENTRY_RE.match(ip.strip()):
+                    raise ValueError(f"Invalid IP/CIDR entry: {ip!r}")
+        return self
+
 
 class VhostOut(BaseModel):
     id: int
@@ -171,6 +192,8 @@ class VhostOut(BaseModel):
     extra_blocks: Optional[List[VhostExtraBlock]] = None
     enabled: bool
     default_pool_id: Optional[int] = None
+    ip_rule_mode: Optional[Literal["allow", "deny"]] = None
+    ip_rule_ips: Optional[List[str]] = None
     created_at: str
     updated_at: str
 

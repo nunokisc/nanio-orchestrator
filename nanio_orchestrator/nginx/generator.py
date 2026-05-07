@@ -67,17 +67,26 @@ def render_vhost(vhost: Dict[str, Any], routes: List[Dict[str, Any]]) -> str:
         except Exception:
             raw_blocks = []
 
+    extra_blocks_top = [b for b in raw_blocks if b.get("zone") == "top"]
     extra_blocks_ssl = [b for b in raw_blocks if b.get("zone") == "ssl"]
     extra_blocks_proxy = [b for b in raw_blocks if b.get("zone") == "proxy"]
     extra_blocks_end = [b for b in raw_blocks if b.get("zone") == "end"]
+
+    # IP access control rules
+    ip_rule_mode = vhost.get("ip_rule_mode") or None
+    ip_rule_ips_raw = vhost.get("ip_rule_ips_json") or None
+    ip_rule_ips = _json.loads(ip_rule_ips_raw) if ip_rule_ips_raw else None
 
     return tpl.render(
         vhost=vhost,
         routes=sorted_routes,
         updated=_now_iso(),
+        extra_blocks_top=extra_blocks_top,
         extra_blocks_ssl=extra_blocks_ssl,
         extra_blocks_proxy=extra_blocks_proxy,
         extra_blocks_end=extra_blocks_end,
+        ip_rule_mode=ip_rule_mode,
+        ip_rule_ips=ip_rule_ips,
     )
 
 

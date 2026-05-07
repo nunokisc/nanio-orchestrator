@@ -823,11 +823,17 @@ async function deleteCredentials(poolId) {
 
 let _extraBlocksVhostId = null;
 
-function showExtraBlocks(vhostId, existingBlocks) {
+function showExtraBlocks(vhostId, existingBlocks, ipRuleMode, ipRuleIps) {
     _extraBlocksVhostId = vhostId;
     document.getElementById('extra-blocks-vhost-id').value = vhostId;
     const list = document.getElementById('extra-blocks-list');
     list.innerHTML = '';
+
+    // Populate IP rules section
+    const modeSelect = document.getElementById('ip-rule-mode');
+    modeSelect.value = ipRuleMode || '';
+    document.getElementById('ip-rule-ips').value = (ipRuleIps && ipRuleIps.length) ? ipRuleIps.join('\n') : '';
+    _toggleIpRuleIps();
 
     const blocks = Array.isArray(existingBlocks) ? existingBlocks : [];
     if (blocks.length === 0) {
@@ -838,6 +844,11 @@ function showExtraBlocks(vhostId, existingBlocks) {
     showModal('extra-blocks-modal');
 }
 
+function _toggleIpRuleIps() {
+    const mode = document.getElementById('ip-rule-mode').value;
+    document.getElementById('ip-rule-ips-label').style.display = mode ? '' : 'none';
+}
+
 function addExtraBlockRow(zone, content) {
     const list = document.getElementById('extra-blocks-list');
     const row = document.createElement('div');
@@ -846,9 +857,10 @@ function addExtraBlockRow(zone, content) {
     row.innerHTML = `
         <label style="flex:0 0 auto;margin:0">Zone
             <select class="block-zone" style="display:block;margin-top:0.25rem">
+                <option value="top"${zone === 'top' ? ' selected' : ''}>top — after server_name</option>
                 <option value="ssl"${zone === 'ssl' ? ' selected' : ''}>ssl — after SSL certs</option>
                 <option value="proxy"${zone === 'proxy' ? ' selected' : ''}>proxy — after proxy directives</option>
-                <option value="end"${!zone || zone === 'end' ? ' selected' : ''}>end — before closing }</option>
+                <option value="end"${(!zone || zone === 'end') ? ' selected' : ''}>end — before closing }</option>
             </select>
         </label>
         <label style="flex:1;margin:0">Content
@@ -872,12 +884,19 @@ async function saveExtraBlocks() {
         if (content) extra_blocks.push({ zone, content });
     }
 
+    // IP rules
+    const ipMode = document.getElementById('ip-rule-mode').value || null;
+    const ipRaw = document.getElementById('ip-rule-ips').value;
+    const ipRuleIps = ipMode
+        ? ipRaw.split('\n').map(s => s.trim()).filter(Boolean)
+        : null;
+
     try {
         const res = await fetch(`/api/vhosts/${vhostId}`, {
             method: 'PUT',
             headers: getHeaders(),
             credentials: 'same-origin',
-            body: JSON.stringify({ extra_blocks }),
+            body: JSON.stringify({ extra_blocks, ip_rule_mode: ipMode, ip_rule_ips: ipRuleIps }),
         });
         if (!res.ok) {
             const err = await res.json();

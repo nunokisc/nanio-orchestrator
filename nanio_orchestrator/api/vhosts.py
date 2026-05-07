@@ -99,6 +99,8 @@ def _enrich_vhost(vhost: dict) -> dict:
     """Parse extra_blocks_json into extra_blocks list for API responses."""
     blocks_raw = vhost.pop("extra_blocks_json", None)
     vhost["extra_blocks"] = _deserialize_extra_blocks(blocks_raw)
+    ips_raw = vhost.pop("ip_rule_ips_json", None)
+    vhost["ip_rule_ips"] = json.loads(ips_raw) if ips_raw else None
     return vhost
 
 
@@ -160,14 +162,17 @@ async def create_vhost(body: VhostCreate):
                 raise HTTPException(400, f"Pool {body.default_pool_id} not found")
 
         extra_blocks_json = _serialize_extra_blocks(body.extra_blocks)
+        ip_rule_ips_json = json.dumps(body.ip_rule_ips) if body.ip_rule_ips else None
         try:
             cursor = await db.execute(
                 """INSERT INTO vhosts (server_name, listen_port, ssl, ssl_cert_path, ssl_key_path,
-                   extra_directives, extra_blocks_json, enabled, default_pool_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   extra_directives, extra_blocks_json, enabled, default_pool_id,
+                   ip_rule_mode, ip_rule_ips_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (body.server_name, body.listen_port, 1 if body.ssl else 0,
                  body.ssl_cert_path, body.ssl_key_path, body.extra_directives,
-                 extra_blocks_json, 1 if body.enabled else 0, body.default_pool_id),
+                 extra_blocks_json, 1 if body.enabled else 0, body.default_pool_id,
+                 body.ip_rule_mode, ip_rule_ips_json),
             )
             await db.commit()
         except Exception as e:
@@ -255,6 +260,14 @@ async def update_vhost(vhost_id: int, body: VhostUpdate):
             updates["extra_blocks_json"] = _serialize_extra_blocks(updates.pop("extra_blocks"))
         elif "extra_blocks" in updates:
             updates.pop("extra_blocks")
+
+        # Handle ip_rule fields — include even if None so they can be cleared
+        for field in ("ip_rule_mode", "ip_rule_ips"):
+            if field in body.model_fields_set:
+                updates[field] = getattr(body, field)
+        if "ip_rule_ips" in updates:
+            raw_ips = updates.pop("ip_rule_ips")
+            updates["ip_rule_ips_json"] = json.dumps(raw_ips) if raw_ips else None
 
         if "ssl" in updates:
             updates["ssl"] = 1 if updates["ssl"] else 0

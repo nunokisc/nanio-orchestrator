@@ -19,7 +19,7 @@
         </div>
         <div class="card-actions">
             <button class="btn btn-sm" onclick="previewVhost({{ vhost.id }})">Preview</button>
-            <button class="btn btn-sm" onclick="showExtraBlocks({{ vhost.id }}, {{ vhost.extra_blocks | tojson }})">Additional Configurations</button>
+            <button class="btn btn-sm" onclick="showExtraBlocks({{ vhost.id }}, {{ vhost.extra_blocks | tojson }}, {{ vhost.ip_rule_mode | tojson }}, {{ vhost.ip_rule_ips | tojson }})">Additional Configurations</button>
             <button class="btn btn-sm btn-danger" onclick="deleteVhost({{ vhost.id }}, '{{ vhost.server_name }}')">Delete</button>
         </div>
     </div>
@@ -36,6 +36,12 @@
     {% if vhost.extra_blocks %}
     <p class="meta" style="font-size:0.85em;color:var(--text-muted)">
         Extra blocks: {% for b in vhost.extra_blocks %}<span class="badge">{{ b.zone }}</span> {% endfor %}
+    </p>
+    {% endif %}
+    {% if vhost.ip_rule_mode %}
+    <p class="meta" style="font-size:0.85em;color:var(--text-muted)">
+        IP rules: <span class="badge warn">{{ vhost.ip_rule_mode }}list</span>
+        ({{ vhost.ip_rule_ips | length }} entr{{ 'y' if (vhost.ip_rule_ips | length) == 1 else 'ies' }})
     </p>
     {% endif %}
 
@@ -141,8 +147,35 @@
     <div class="modal-content modal-wide">
         <h3>Additional Configurations</h3>
         <input type="hidden" id="extra-blocks-vhost-id">
+
+        <!-- IP Access Control -->
+        <h4 style="margin:0 0 0.5rem">IP Access Control</h4>
+        <p class="meta" style="font-size:0.85em;color:var(--text-muted);margin-bottom:0.75rem">
+            Restrict access to this vhost by IP address or CIDR range. Directives are placed at the
+            server block level and apply to all routes.
+        </p>
+        <div style="display:flex;gap:1rem;align-items:flex-start;flex-wrap:wrap;margin-bottom:1rem">
+            <label style="flex:0 0 auto">
+                Mode
+                <select id="ip-rule-mode" onchange="_toggleIpRuleIps()" style="display:block;margin-top:0.25rem">
+                    <option value="">— disabled —</option>
+                    <option value="allow">Allowlist — allow only these IPs, deny all others</option>
+                    <option value="deny">Denylist — deny only these IPs, allow everything else</option>
+                </select>
+            </label>
+            <label style="flex:1;min-width:240px" id="ip-rule-ips-label">
+                IPs / CIDRs (one per line)
+                <textarea id="ip-rule-ips" rows="4"
+                    style="display:block;margin-top:0.25rem;width:100%;font-family:monospace"
+                    placeholder="192.168.1.0/24&#10;10.0.0.1"></textarea>
+            </label>
+        </div>
+
+        <!-- Extra nginx blocks -->
+        <h4 style="margin:0 0 0.5rem">Extra nginx Blocks</h4>
         <p class="meta" style="font-size:0.85em;color:var(--text-muted)">
-            Add custom nginx directives to specific zones of this vhost's server block.<br>
+            Inject custom nginx directives into a specific zone of this vhost's server block.<br>
+            <strong>top</strong> — immediately after <code>server_name</code> &nbsp;|&nbsp;
             <strong>ssl</strong> — after SSL certificate directives &nbsp;|&nbsp;
             <strong>proxy</strong> — after proxy buffering directives &nbsp;|&nbsp;
             <strong>end</strong> — before the closing <code>}</code>

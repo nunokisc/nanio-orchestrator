@@ -8,6 +8,26 @@ server {
     listen {{ vhost.listen_port }};
 {% endif %}
     server_name {{ vhost.server_name }};
+{% if extra_blocks_top %}
+{% for block in extra_blocks_top %}
+
+    {{ block.content | indent(4) }}
+{% endfor %}
+{% endif %}
+{% if ip_rule_mode == 'allow' and ip_rule_ips %}
+
+    # IP allowlist — only these addresses may access this vhost
+{% for ip in ip_rule_ips %}
+    allow {{ ip }};
+{% endfor %}
+    deny all;
+{% elif ip_rule_mode == 'deny' and ip_rule_ips %}
+
+    # IP denylist — these addresses are blocked
+{% for ip in ip_rule_ips %}
+    deny {{ ip }};
+{% endfor %}
+{% endif %}
 {% if vhost.ssl and vhost.ssl_cert_path %}
 
     ssl_certificate     {{ vhost.ssl_cert_path }};

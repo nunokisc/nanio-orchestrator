@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS vhosts (
     extra_blocks_json   TEXT,
     enabled             INTEGER NOT NULL DEFAULT 1,
     default_pool_id     INTEGER REFERENCES pools(id),
+    ip_rule_mode        TEXT CHECK (ip_rule_mode IN ('allow', 'deny')),
+    ip_rule_ips_json    TEXT,
     created_at          TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -223,6 +225,13 @@ async def _run_migrations_async(db) -> None:
     if 'extra_blocks_json' not in col_names:
         await db.execute("ALTER TABLE vhosts ADD COLUMN extra_blocks_json TEXT")
 
+    # vhosts.ip_rule_mode + ip_rule_ips_json (per-vhost IP access control)
+    info = await db.execute_fetchall("PRAGMA table_info(vhosts)")
+    col_names = {r['name'] for r in info}
+    if 'ip_rule_mode' not in col_names:
+        await db.execute("ALTER TABLE vhosts ADD COLUMN ip_rule_mode TEXT")
+        await db.execute("ALTER TABLE vhosts ADD COLUMN ip_rule_ips_json TEXT")
+
     # Migration: rename pool type 'cold' → 'http' (cold was an alias with no functional difference)
     await db.execute("UPDATE pools SET type = 'http' WHERE type = 'cold'")
 
@@ -342,6 +351,13 @@ def init_db_sync() -> None:
     col_names = {r[1] for r in info}
     if 'key_prefix' not in col_names:
         conn.execute("ALTER TABLE routes ADD COLUMN key_prefix TEXT")
+
+    # Migration: vhosts.ip_rule_mode + ip_rule_ips_json (per-vhost IP access control)
+    info = conn.execute("PRAGMA table_info(vhosts)").fetchall()
+    col_names = {r[1] for r in info}
+    if 'ip_rule_mode' not in col_names:
+        conn.execute("ALTER TABLE vhosts ADD COLUMN ip_rule_mode TEXT")
+        conn.execute("ALTER TABLE vhosts ADD COLUMN ip_rule_ips_json TEXT")
 
     # Migration: rename pool type 'cold' → 'http' (cold was an alias with no functional difference)
     conn.execute("UPDATE pools SET type = 'http' WHERE type = 'cold'")

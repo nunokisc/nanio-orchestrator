@@ -183,6 +183,9 @@ async def vhosts_page():
                     vhost_dict["extra_blocks"] = []
             else:
                 vhost_dict["extra_blocks"] = []
+            # Parse ip_rule_ips for display
+            raw_ips = vhost_dict.get("ip_rule_ips_json")
+            vhost_dict["ip_rule_ips"] = _json.loads(raw_ips) if raw_ips else None
             result.append(vhost_dict)
     return _render("vhosts.html", vhosts=result, pools=[dict(p) for p in pools])
 
