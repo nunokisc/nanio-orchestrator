@@ -20,10 +20,11 @@
 
 <div id="settings-restart-banner" class="hidden card" style="
     border-left:3px solid var(--warn);margin-bottom:1.2rem;
-    display:flex;align-items:center;gap:0.6rem;
+    display:flex;align-items:center;gap:0.8rem;flex-wrap:wrap;
 ">
     <span style="color:var(--warn);font-size:1.1rem">⚠</span>
-    <span>Unsaved changes written to config file. <strong>Restart the service</strong> for them to take effect.</span>
+    <span id="settings-restart-msg">Changes written to config file. <strong>Restart the service</strong> for them to take effect.</span>
+    <button id="settings-restart-btn" class="btn btn-sm" onclick="restartService()" style="margin-left:auto">Restart Now</button>
 </div>
 
 <div id="settings-body" class="hidden"></div>
@@ -194,14 +195,65 @@ async function saveSetting(key) {
 
         cancelEdit(key);
         showToast(`${key} updated — restart required`, true);
-        document.getElementById("settings-restart-banner").classList.remove("hidden");
-        document.getElementById("settings-restart-banner").style.display = "flex";
+        const banner = document.getElementById("settings-restart-banner");
+        banner.classList.remove("hidden");
+        banner.style.display = "flex";
     } catch (err) {
         showToast("Network error: " + err.message, false);
     } finally {
         saveBtn.disabled = false;
         saveBtn.textContent = "Save";
     }
+}
+
+// ── Service restart ──────────────────────────────────────────────────────────
+
+async function restartService() {
+    const btn = document.getElementById("settings-restart-btn");
+    const msg = document.getElementById("settings-restart-msg");
+    btn.disabled = true;
+    btn.textContent = "Restarting…";
+    msg.textContent = "Restart in progress…";
+
+    try {
+        const res = await fetch("/api/config/settings/restart", fetchOpts("POST"));
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            showToast("Restart failed: " + (err.detail || res.statusText), false);
+            btn.disabled = false;
+            btn.textContent = "Restart Now";
+            msg.textContent = "Changes written to config file. Restart the service for them to take effect.";
+            return;
+        }
+    } catch (err) {
+        // Network error is expected if restart is extremely fast; continue polling
+    }
+
+    // Poll until the service responds again
+    msg.textContent = "Waiting for service to come back online…";
+    let attempts = 0;
+    const maxAttempts = 30;  // 30 × 2 s = 60 s timeout
+    const poll = setInterval(async () => {
+        attempts++;
+        if (attempts > maxAttempts) {
+            clearInterval(poll);
+            showToast("Service did not respond within 60 s — check server logs.", false);
+            btn.disabled = false;
+            btn.textContent = "Restart Now";
+            msg.textContent = "Changes written to config file. Restart the service for them to take effect.";
+            return;
+        }
+        try {
+            const res = await fetch("/api/config/settings", fetchOpts("GET"));
+            if (res.ok) {
+                clearInterval(poll);
+                showToast("Service restarted — settings are now active.", true);
+                location.reload();
+            }
+        } catch (_) {
+            // still restarting, keep polling
+        }
+    }, 2000);
 }
 
 // Enter key submits, Escape cancels

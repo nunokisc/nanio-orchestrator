@@ -608,3 +608,41 @@ async def update_setting(key: str, body: dict = Body(...)):
 
     masked = _mask(value, normalized in _SECRET_FIELDS)
     return {"ok": True, "key": normalized, "value": masked, "restart_required": True}
+
+
+@router.post("/settings/restart")
+async def restart_service():
+    """Schedule a service restart so pending settings changes take effect.
+
+    Returns 202 immediately; the actual ``sudo systemctl restart`` runs 1.5 s
+    later so the HTTP response has time to reach the client before the process
+    is replaced.
+
+    Requires the sudoers drop-in installed by ``nanio-orchestrator install``
+    to include the restart rule.  Not available in dev mode.
+    """
+    import asyncio
+    import shutil
+    import subprocess
+
+    from nanio_orchestrator.config import DEV_MODE
+
+    if DEV_MODE:
+        raise HTTPException(
+            status_code=503,
+            detail="Service restart is not available in dev mode. Restart manually.",
+        )
+
+    systemctl = shutil.which("systemctl") or "/usr/bin/systemctl"
+
+    async def _do_restart() -> None:
+        await asyncio.sleep(1.5)
+        subprocess.Popen(  # noqa: S603 — intentional privileged restart
+            ["sudo", systemctl, "restart", "nanio-orchestrator"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+
+    asyncio.create_task(_do_restart())
+    return {"ok": True, "message": "Service restart scheduled"}

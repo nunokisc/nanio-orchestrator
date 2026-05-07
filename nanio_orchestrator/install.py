@@ -45,10 +45,11 @@ NANIO_ORCHESTRATOR_DB_BACKUP_INTERVAL=300
 NANIO_ORCHESTRATOR_DB_BACKUP_ROTATE=3
 """
 
-def _sudoers_content(nginx_path: str) -> str:
+def _sudoers_content(nginx_path: str, systemctl_path: str = "/usr/bin/systemctl") -> str:
     return (
-        "# Allow nanio-orchestrator to validate and reload nginx without a password\n"
-        f"nanio-orchestrator ALL=(ALL) NOPASSWD: {nginx_path} -t, {nginx_path} -s reload\n"
+        "# Allow nanio-orchestrator to validate/reload nginx and restart itself without a password\n"
+        f"nanio-orchestrator ALL=(ALL) NOPASSWD: {nginx_path} -t, {nginx_path} -s reload,"
+        f" {systemctl_path} restart nanio-orchestrator\n"
     )
 
 SYSTEMD_UNIT = """\
@@ -162,9 +163,9 @@ def run_install() -> None:
         _step(f"Created {config_file}")
         print(f"\n  ⚠  API key generated: {generated_api_key}")
         print("     Save this key — it will not be shown again.\n")
-    # Ensure config is readable only by root and the service user (contains secrets)
+    # Ensure config is readable and writable by root and the service user (contains secrets)
     shutil.chown(config_file, user="root", group="nanio-orchestrator")
-    config_file.chmod(0o640)
+    config_file.chmod(0o660)
 
     # 5. Create nginx config directories
     pools_dir = Path("/etc/nginx/nanio/pools")
@@ -181,10 +182,11 @@ def run_install() -> None:
     # Use the detected nginx path so the rule matches at runtime; fall back to
     # the most common location if nginx was not found at install time.
     nginx_bin = nginx_info.get("path") or "/usr/sbin/nginx"
+    systemctl_bin = shutil.which("systemctl") or "/usr/bin/systemctl"
     sudoers_path = Path("/etc/sudoers.d/nanio-orchestrator")
-    sudoers_path.write_text(_sudoers_content(nginx_bin))
+    sudoers_path.write_text(_sudoers_content(nginx_bin, systemctl_bin))
     sudoers_path.chmod(0o440)
-    _step(f"Installed sudoers drop-in → {sudoers_path} (nginx: {nginx_bin})")
+    _step(f"Installed sudoers drop-in → {sudoers_path} (nginx: {nginx_bin}, systemctl: {systemctl_bin})")
 
     # 6. Install systemd unit
     unit_path = Path("/etc/systemd/system/nanio-orchestrator.service")
