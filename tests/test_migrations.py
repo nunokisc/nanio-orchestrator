@@ -46,25 +46,24 @@ class TestMigrationsAPI:
         assert data["phase"] == "pending"
         assert data["mode"] == "copy"  # default mode
 
-    async def test_create_migration_sync_mode(self, client, mock_nginx, mock_rclone, mock_s3):
-        src = await create_pool(client, "mig-sync-src")
+    async def test_create_migration_default_mode(self, client, mock_nginx, mock_rclone, mock_s3):
+        src = await create_pool(client, "mig-copy-src")
         await create_member(client, src["id"], "10.0.0.1:9000")
-        dst = await create_pool(client, "mig-sync-dst")
+        dst = await create_pool(client, "mig-copy-dst")
         await create_member(client, dst["id"], "10.0.0.2:9000")
-        vh = await create_vhost(client, "mig-sync.example.com", default_pool_id=src["id"])
+        vh = await create_vhost(client, "mig-copy.example.com", default_pool_id=src["id"])
 
-        mock_s3["list_buckets"].return_value = [{"name": "sync-bk", "created": "2025-01-01"}]
+        mock_s3["list_buckets"].return_value = [{"name": "copy-bk", "created": "2025-01-01"}]
         await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
-        await create_route(client, vh["id"], "sync-bk", src["id"])
+        await create_route(client, vh["id"], "copy-bk", src["id"])
 
         resp = await client.post("/api/migrations", json={
-            "bucket": "sync-bk",
+            "bucket": "copy-bk",
             "src_pool_id": src["id"],
             "dst_pool_id": dst["id"],
-            "mode": "sync",
         })
         assert resp.status_code == 201
-        assert resp.json()["mode"] == "sync"
+        assert resp.json()["mode"] == "copy"
 
     async def test_list_migrations(self, client):
         resp = await client.get("/api/migrations")
@@ -163,23 +162,27 @@ class TestMigrationDstPrecondition:
         await create_route(client, vh["id"], bucket_name, src["id"])
         return src, dst, vh
 
-    async def test_migration_refused_when_dst_has_objects(
+    async def test_migration_proceeds_when_dst_has_objects(
         self, client, mock_nginx, mock_rclone, mock_s3
     ):
-        """Sync-mode migration must fail when the destination bucket already has objects."""
+        """Copy-mode migration proceeds even when the destination bucket already has objects.
+
+        copy mode is additive: only missing objects are copied, existing destination
+        objects are preserved. No data is at risk.
+        """
         src, dst, vh = await self._setup(
             client, mock_nginx, mock_s3,
             "pre-src1", "pre-dst1", "pre1.example.com", "pre-bk1",
         )
-        # dst bucket exists AND has objects — sync mode should refuse (would risk data loss)
+        # dst bucket exists AND has objects — copy mode should proceed
         mock_s3["bucket_exists"].return_value = True
         mock_s3["bucket_has_objects"].return_value = True
+        mock_s3["count_objects"].return_value = 5
 
         resp = await client.post("/api/migrations", json={
             "bucket": "pre-bk1",
             "src_pool_id": src["id"],
             "dst_pool_id": dst["id"],
-            "mode": "sync",
         })
         assert resp.status_code == 201
         mig_id = resp.json()["id"]
@@ -193,8 +196,7 @@ class TestMigrationDstPrecondition:
             await asyncio.sleep(0.05)
 
         final = (await client.get(f"/api/migrations/{mig_id}")).json()
-        assert final["phase"] == "error"
-        assert "destination bucket already contains objects" in (final["error_msg"] or "").lower()
+        assert final["phase"] == "done"
 
     async def test_migration_accepted_dst_exists_but_empty(
         self, client, mock_nginx, mock_rclone, mock_s3

@@ -326,7 +326,7 @@ class RcloneMigrationCreate(BaseModel):
     bucket: str = Field(..., min_length=1)
     src_pool_id: int
     dst_pool_id: int
-    mode: str = Field("copy", pattern=r"^(copy|sync)$")
+    mode: str = Field("copy", pattern=r"^copy$")
 
 
 class RcloneMigrationOut(BaseModel):

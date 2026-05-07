@@ -128,7 +128,7 @@ CREATE TABLE IF NOT EXISTS migrations (
     src_pool_id             INTEGER NOT NULL REFERENCES pools(id),
     dst_pool_id             INTEGER NOT NULL REFERENCES pools(id),
     mode                    TEXT NOT NULL DEFAULT 'copy'
-                            CHECK (mode IN ('copy','sync')),
+                            CHECK (mode IN ('copy')),
     phase                   TEXT NOT NULL DEFAULT 'pending'
                             CHECK (phase IN
                                 ('pending','copying','write_routing','verifying',
@@ -268,7 +268,7 @@ async def _run_migrations_async(db) -> None:
             src_pool_id             INTEGER NOT NULL REFERENCES pools(id),
             dst_pool_id             INTEGER NOT NULL REFERENCES pools(id),
             mode                    TEXT NOT NULL DEFAULT 'copy'
-                                    CHECK (mode IN ('copy','sync')),
+                                    CHECK (mode IN ('copy')),
             phase                   TEXT NOT NULL DEFAULT 'pending'
                                     CHECK (phase IN
                                         ('pending','copying','write_routing','verifying',
@@ -397,7 +397,7 @@ def init_db_sync() -> None:
             src_pool_id             INTEGER NOT NULL REFERENCES pools(id),
             dst_pool_id             INTEGER NOT NULL REFERENCES pools(id),
             mode                    TEXT NOT NULL DEFAULT 'copy'
-                                    CHECK (mode IN ('copy','sync')),
+                                    CHECK (mode IN ('copy')),
             phase                   TEXT NOT NULL DEFAULT 'pending'
                                     CHECK (phase IN
                                         ('pending','copying','write_routing','verifying',

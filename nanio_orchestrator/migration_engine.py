@@ -254,7 +254,6 @@ async def _run_rclone(
     dst_remote: str,
     phase: str,
     check_only: bool = False,
-    mode: str = "copy",
 ) -> bool:
     """Run rclone copy or check. Returns True on success."""
     s = get_settings()
@@ -262,8 +261,6 @@ async def _run_rclone(
 
     if check_only:
         cmd += ["check", src_remote, dst_remote]
-    elif mode == "sync":
-        cmd += ["sync", src_remote, dst_remote]
     else:
         cmd += ["copy", src_remote, dst_remote]
 
@@ -627,25 +624,13 @@ async def run_migration(migration_id: int) -> None:
                         access_key=dst_ak_pre,
                         secret_key=dst_sk_pre,
                     ):
-                        if mode == "sync":
-                            # sync mode would overwrite/delete destination content — refuse
-                            msg = (
-                                "destination bucket already contains objects; "
-                                "refusing sync-mode migration to avoid data loss at destination. "
-                                "Use copy mode, or manually empty the destination bucket first."
-                            )
-                            logger.error("Migration %d aborted: %s", migration_id, msg)
-                            await _log(migration_id, "error", msg)
-                            await _set_phase(migration_id, "error", msg)
-                            return
-                        else:
-                            # copy mode is additive — destination objects are preserved
-                            await _log(
-                                migration_id,
-                                "copying",
-                                f"Destination bucket '{bucket}' already has objects — "
-                                "copy mode will add missing objects, existing destination objects are preserved",
-                            )
+                        # copy mode is additive — destination objects are preserved
+                        await _log(
+                            migration_id,
+                            "copying",
+                            f"Destination bucket '{bucket}' already has objects — "
+                            "copy mode will add missing objects, existing destination objects are preserved",
+                        )
                     else:
                         await _log(
                             migration_id, "copying", f"Destination bucket '{bucket}' exists and is empty — proceeding"
@@ -682,10 +667,10 @@ async def run_migration(migration_id: int) -> None:
         prev_src_count: int = -1
         for pass_num in range(1, s.migration_max_copy_passes + 1):
             pass_label = f"pass {pass_num}/{s.migration_max_copy_passes}"
-            await _log(migration_id, "copying", f"Starting rclone {mode} {pass_label}: {src_remote} → {dst_remote}")
-            ok = await _run_rclone(migration_id, config_path, src_remote, dst_remote, "copying", mode=mode)
+            await _log(migration_id, "copying", f"Starting rclone copy {pass_label}: {src_remote} → {dst_remote}")
+            ok = await _run_rclone(migration_id, config_path, src_remote, dst_remote, "copying")
             if not ok:
-                await _set_phase(migration_id, "error", f"rclone {mode} failed ({pass_label})")
+                await _set_phase(migration_id, "error", f"rclone copy failed ({pass_label})")
                 return
 
             # Check convergence by comparing object counts on both sides
@@ -787,7 +772,7 @@ async def run_migration(migration_id: int) -> None:
         for verify_pass in range(1, max_verify_passes + 1):
             await _log(migration_id, "verifying", f"Verify pass {verify_pass}/{max_verify_passes}: copy then check")
 
-            ok = await _run_rclone(migration_id, config_path, src_remote, dst_remote, "verifying", mode="copy")
+            ok = await _run_rclone(migration_id, config_path, src_remote, dst_remote, "verifying")
             if not ok:
                 await _set_phase(migration_id, "error", f"Verify pass {verify_pass}: copy step failed")
                 return
@@ -1193,20 +1178,11 @@ async def recover_interrupted_migrations() -> int:
         mid = row["id"]
         if mid not in _active_tasks:
             await _log(mid, "recovery", "Restarting interrupted migration after crash/restart")
-            # Force mode to 'copy' on recovery: rclone sync could delete
-            # destination objects that were added between the crash and restart
-            # but weren't yet in the source.
-            async with get_db_ctx() as db:
-                await db.execute(
-                    "UPDATE migrations SET mode = 'copy' WHERE id = ? AND mode = 'sync'",
-                    (mid,),
-                )
-                await db.commit()
             await _set_phase(mid, "pending")
             task = asyncio.create_task(run_migration(mid))
             _active_tasks[mid] = task
             count += 1
-            logger.info("Recovered migration %d (forced copy mode)", mid)
+            logger.info("Recovered migration %d", mid)
 
     if count:
         logger.info("Recovered %d interrupted migration(s)", count)
