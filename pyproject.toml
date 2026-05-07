@@ -26,13 +26,6 @@ classifiers = [
   "Topic :: Internet :: Proxy Servers",
   "Topic :: System :: Systems Administration",
 ]
-
-[project.urls]
-Homepage = "https://github.com/nunokisc/nanio-orchestrator"
-Repository = "https://github.com/nunokisc/nanio-orchestrator"
-Documentation = "https://github.com/nunokisc/nanio-orchestrator/tree/main/docs"
-"Bug Tracker" = "https://github.com/nunokisc/nanio-orchestrator/issues"
-
 dependencies = [
   "fastapi>=0.110",
   "uvicorn[standard]>=0.29",
@@ -44,6 +37,12 @@ dependencies = [
   "aiofiles>=23.2",
   "cryptography>=42.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/nunokisc/nanio-orchestrator"
+Repository = "https://github.com/nunokisc/nanio-orchestrator"
+Documentation = "https://github.com/nunokisc/nanio-orchestrator/tree/main/docs"
+"Bug Tracker" = "https://github.com/nunokisc/nanio-orchestrator/issues"
 
 [project.optional-dependencies]
 dev = [
