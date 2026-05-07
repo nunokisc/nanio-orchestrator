@@ -627,25 +627,15 @@ async def run_migration(migration_id: int) -> None:
                         access_key=dst_ak_pre,
                         secret_key=dst_sk_pre,
                     ):
-                        if mode == "sync":
-                            # sync mode would overwrite/delete destination content — refuse
-                            msg = (
-                                "destination bucket already contains objects; "
-                                "refusing sync-mode migration to avoid data loss at destination. "
-                                "Use copy mode, or manually empty the destination bucket first."
-                            )
-                            logger.error("Migration %d aborted: %s", migration_id, msg)
-                            await _log(migration_id, "error", msg)
-                            await _set_phase(migration_id, "error", msg)
-                            return
-                        else:
-                            # copy mode is additive — destination objects are safe
-                            await _log(
-                                migration_id,
-                                "copying",
-                                f"Destination bucket '{bucket}' already has objects — "
-                                "copy mode will add missing objects, existing destination objects are preserved",
-                            )
+                        msg = (
+                            "destination bucket already contains objects; "
+                            "refusing migration to avoid data conflicts at destination. "
+                            "Manually empty the destination bucket first."
+                        )
+                        logger.error("Migration %d aborted: %s", migration_id, msg)
+                        await _log(migration_id, "error", msg)
+                        await _set_phase(migration_id, "error", msg)
+                        return
                     else:
                         await _log(
                             migration_id, "copying", f"Destination bucket '{bucket}' exists and is empty — proceeding"
