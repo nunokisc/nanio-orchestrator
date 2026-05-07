@@ -231,10 +231,17 @@ async def audit_page():
 @router.get("/web/buckets", response_class=HTMLResponse)
 async def buckets_page():
     async with get_db_ctx() as db:
+        # Only show vhosts backed by a nanio pool — http pools have no S3 semantics
         vhost_rows = await db.execute_fetchall(
-            "SELECT id, server_name FROM vhosts WHERE default_pool_id IS NOT NULL ORDER BY server_name"
+            """SELECT v.id, v.server_name FROM vhosts v
+               JOIN pools p ON v.default_pool_id = p.id
+               WHERE p.type = 'nanio'
+               ORDER BY v.server_name"""
         )
-        pools = await db.execute_fetchall("SELECT id, name FROM pools ORDER BY name")
+        # Target pools for routing must also be nanio type
+        pools = await db.execute_fetchall(
+            "SELECT id, name FROM pools WHERE type = 'nanio' ORDER BY name"
+        )
         vhosts = []
         for v in vhost_rows:
             buckets = await db.execute_fetchall(

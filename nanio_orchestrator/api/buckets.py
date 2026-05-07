@@ -218,12 +218,17 @@ async def promote_bucket(vhost_id: int, bucket: str, body: BucketPromoteRequest)
         )
 
     if src_has_data and not body.migrate:
-        raise HTTPException(
-            400,
-            f"Bucket '{bucket}' already has objects on the source pool. "
-            "You must enable 'Migrate existing objects' to avoid making existing data "
-            "inaccessible after routing. Re-submit with migrate=true.",
-        )
+        if body.pool_id == default_pool_id:
+            # Routing to the same pool as the default — no data loss, just creating an explicit route
+            pass
+        elif not body.allow_orphan:
+            raise HTTPException(
+                400,
+                f"Bucket '{bucket}' already has objects on the source pool. "
+                "Routing to a different pool without migration will leave existing data "
+                "inaccessible via this route. Either enable 'Migrate existing objects' "
+                "or re-submit with allow_orphan=true to acknowledge data will remain on the source pool.",
+            )
 
     # ── Ensure bucket stub exists on default pool (required for ListBuckets) ─
     ok_default, msg_default = await create_bucket(

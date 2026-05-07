@@ -96,9 +96,7 @@
                 Migrate existing objects to target pool (required if bucket has data)
             </label>
             <p id="route-migrate-warning" style="color:var(--danger,#c0392b);font-size:0.85rem;margin:0.3rem 0 0 1.4rem;display:none">
-                ⚠ Unchecking migration when the bucket has existing data will make those objects
-                inaccessible — the new pool starts empty. Only uncheck if you are certain the bucket
-                is empty or you intend to start fresh.
+                ⚠ Without migration, existing objects on the source pool will <strong>not</strong> be accessible via this route — the new pool starts empty. Only proceed if the bucket is empty or you accept that existing data stays on the source pool.
             </p>
             <div class="modal-actions">
                 <button type="submit" class="btn btn-primary">Route</button>

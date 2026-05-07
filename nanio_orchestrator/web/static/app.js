@@ -613,6 +613,17 @@ function showRouteModal(vhostId, bucket) {
     showModal('route-bucket-modal');
 }
 
+async function _doPromoteBucket(vhostId, bucket, poolId, migrate, allowOrphan) {
+    const res = await fetch(`/api/vhosts/${vhostId}/buckets/${encodeURIComponent(bucket)}/promote`, {
+        method: 'POST',
+        headers: getHeaders(),
+        credentials: 'same-origin',
+        body: JSON.stringify({ pool_id: poolId, migrate, allow_orphan: allowOrphan }),
+    });
+    const data = await res.json();
+    return { res, data };
+}
+
 async function promoteBucket(e) {
     e.preventDefault();
     const form = e.target;
@@ -622,13 +633,17 @@ async function promoteBucket(e) {
     const migrate = form.migrate.checked;
 
     try {
-        const res = await fetch(`/api/vhosts/${vhostId}/buckets/${encodeURIComponent(bucket)}/promote`, {
-            method: 'POST',
-            headers: getHeaders(),
-            credentials: 'same-origin',
-            body: JSON.stringify({ pool_id: poolId, migrate }),
-        });
-        const data = await res.json();
+        let { res, data } = await _doPromoteBucket(vhostId, bucket, poolId, migrate, false);
+        if (res.status === 400 && (data.detail || '').includes('allow_orphan')) {
+            // Source has objects but migrate is not checked — ask operator to confirm
+            const confirmed = confirm(
+                `Warning: bucket "${bucket}" already has objects on the source pool.\n\n` +
+                `Routing to the new pool WITHOUT migration means the existing objects will NOT be accessible via this route until manually moved.\n\n` +
+                `Do you want to proceed anyway (data stays on source pool)?`
+            );
+            if (!confirmed) return;
+            ({ res, data } = await _doPromoteBucket(vhostId, bucket, poolId, migrate, true));
+        }
         hideModal('route-bucket-modal');
         if (data.ok) {
             alert(`Bucket "${bucket}" routed to pool "${data.pool}".${migrate ? '\nMigration started.' : ''}`);

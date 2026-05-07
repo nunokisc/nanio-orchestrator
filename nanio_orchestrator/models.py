@@ -274,6 +274,7 @@ class BucketListOut(BaseModel):
 class BucketPromoteRequest(BaseModel):
     pool_id: int
     migrate: bool = False
+    allow_orphan: bool = False  # allow routing to a different pool without migration (data stays on source)
 
 
 # ── Pool Credentials ───────────────────────────────────────────────────────────

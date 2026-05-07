@@ -34,6 +34,7 @@ from nanio_orchestrator.nginx.generator import (
     write_config_atomic,
 )
 from nanio_orchestrator.s3client import bucket_exists, bucket_has_objects, count_objects, create_bucket
+from nanio_orchestrator.audit_log import log_audit
 from nanio_orchestrator.sidecar import (
     write_migration_state,
     delete_migration_state,
@@ -445,6 +446,7 @@ async def run_migration(migration_id: int) -> None:
                 f"(pool_id={src_pool_id}). Source and destination must be different pools."
             )
             logger.error("Migration %d aborted: %s", migration_id, msg)
+            await _log(migration_id, "error", msg)
             await _set_phase(migration_id, "error", msg)
             return
 
@@ -471,6 +473,7 @@ async def run_migration(migration_id: int) -> None:
                            "Copying from an empty source would erase any content already "
                            "present at the destination. Verify the source bucket and retry.")
                     logger.error("Migration %d aborted: %s", migration_id, msg)
+                    await _log(migration_id, "error", msg)
                     await _set_phase(migration_id, "error", msg)
                     return
             except (PermissionError, RuntimeError) as exc:
@@ -502,15 +505,25 @@ async def run_migration(migration_id: int) -> None:
                         dst_address_precond, bucket,
                         access_key=dst_ak_pre, secret_key=dst_sk_pre,
                     ):
-                        msg = (
-                            "destination bucket already contains objects, "
-                            "refusing to migrate to avoid data conflicts"
-                        )
-                        logger.error("Migration %d aborted: %s", migration_id, msg)
-                        await _set_phase(migration_id, "error", msg)
-                        return
-                    await _log(migration_id, "copying",
-                               f"Destination bucket '{bucket}' exists and is empty — proceeding")
+                        if mode == "sync":
+                            # sync mode would overwrite/delete destination content — refuse
+                            msg = (
+                                "destination bucket already contains objects; "
+                                "refusing sync-mode migration to avoid data loss at destination. "
+                                "Use copy mode, or manually empty the destination bucket first."
+                            )
+                            logger.error("Migration %d aborted: %s", migration_id, msg)
+                            await _log(migration_id, "error", msg)
+                            await _set_phase(migration_id, "error", msg)
+                            return
+                        else:
+                            # copy mode is additive — destination objects are safe
+                            await _log(migration_id, "copying",
+                                       f"Destination bucket '{bucket}' already has objects — "
+                                       "copy mode will add missing objects, existing destination objects are preserved")
+                    else:
+                        await _log(migration_id, "copying",
+                                   f"Destination bucket '{bucket}' exists and is empty — proceeding")
                 else:
                     dst_ok, dst_create_msg = await create_bucket(
                         dst_address_precond, bucket,
@@ -519,6 +532,7 @@ async def run_migration(migration_id: int) -> None:
                     if not dst_ok:
                         msg = f"Failed to create destination bucket '{bucket}': {dst_create_msg}"
                         logger.error("Migration %d aborted: %s", migration_id, msg)
+                        await _log(migration_id, "error", msg)
                         await _set_phase(migration_id, "error", msg)
                         return
                     await _log(migration_id, "copying",
@@ -827,16 +841,28 @@ async def run_migration(migration_id: int) -> None:
                    f"Migration completed: {bucket} moved to pool {dst_pool_id}. "
                    f"Source data on pool {src_pool_id} is now orphaned — "
                    "use GET /api/migrations/orphaned to track.")
+        async with get_db_ctx() as db:
+            await log_audit(db, "migration_done", "migration", migration_id,
+                            after={"bucket": bucket, "src_pool_id": src_pool_id,
+                                   "dst_pool_id": dst_pool_id, "vhost_id": m["vhost_id"]})
+            await db.commit()
         logger.info("Migration %d completed: bucket=%s", migration_id, bucket)
 
     except asyncio.CancelledError:
         await _set_phase(migration_id, "cancelled", "Migration was cancelled")
         await _log(migration_id, "cancelled", "Migration task cancelled")
+        async with get_db_ctx() as db:
+            await log_audit(db, "migration_cancelled", "migration", migration_id)
+            await db.commit()
         raise
     except Exception as e:
         logger.error("Migration %d error: %s", migration_id, e, exc_info=True)
         await _set_phase(migration_id, "error", str(e)[:500])
         await _log(migration_id, "error", str(e))
+        async with get_db_ctx() as db:
+            await log_audit(db, "migration_error", "migration", migration_id,
+                            after={"error": str(e)[:500]})
+            await db.commit()
     finally:
         _active_tasks.pop(migration_id, None)
         if config_dir:
@@ -874,6 +900,10 @@ async def start_migration(
                 (vhost_id, bucket, src_pool_id, dst_pool_id, mode, route_id),
             )
             migration_id = cursor.lastrowid
+            await log_audit(db, "start_migration", "migration", migration_id,
+                            after={"bucket": bucket, "src_pool_id": src_pool_id,
+                                   "dst_pool_id": dst_pool_id, "mode": mode,
+                                   "vhost_id": vhost_id, "route_id": route_id})
             await db.commit()
 
         task = asyncio.create_task(run_migration(migration_id))

@@ -41,6 +41,14 @@ async def sync_vhost_buckets_once(vhost_id: int) -> dict:
         if not vhost.get("default_pool_id"):
             return {"vhost_id": vhost_id, "skipped": True, "reason": "No default_pool_id configured"}
 
+        # Skip HTTP-type pools — they have no S3 ListBuckets semantics
+        pool_rows = await db.execute_fetchall(
+            "SELECT type FROM pools WHERE id = ?", (vhost["default_pool_id"],)
+        )
+        if not pool_rows or pool_rows[0]["type"] != "nanio":
+            return {"vhost_id": vhost_id, "skipped": True,
+                    "reason": "Default pool is not nanio type — bucket sync skipped"}
+
         member_rows = await db.execute_fetchall(
             """SELECT address FROM pool_members
                WHERE pool_id = ? AND enabled = 1
@@ -214,10 +222,12 @@ async def _reconcile_routed_buckets(vhost_id: int) -> List[dict]:
 
 
 async def sync_all_vhosts() -> List[dict]:
-    """Sync all vhosts that have a default_pool_id configured."""
+    """Sync all vhosts that have a nanio default pool configured."""
     async with get_db_ctx() as db:
         vhosts = await db.execute_fetchall(
-            "SELECT id FROM vhosts WHERE default_pool_id IS NOT NULL"
+            """SELECT v.id FROM vhosts v
+               JOIN pools p ON v.default_pool_id = p.id
+               WHERE p.type = 'nanio'"""
         )
     results = []
     for v in vhosts:
