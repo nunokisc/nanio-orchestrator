@@ -217,6 +217,7 @@ Per-pool S3 credentials, encrypted at rest with Fernet. Requires `SECRET` to be 
 
 ```json
 "extra_blocks": [
+  { "zone": "top",   "content": "add_header X-Frame-Options SAMEORIGIN;" },
   { "zone": "ssl",   "content": "ssl_stapling on;\nssl_stapling_verify on;" },
   { "zone": "proxy", "content": "proxy_read_timeout 300s;" },
   { "zone": "end",   "content": "# custom footer" }
@@ -225,11 +226,29 @@ Per-pool S3 credentials, encrypted at rest with Fernet. Requires `SECRET` to be 
 
 | Zone | Inserted after |
 |------|----------------|
+| `top` | `server_name` directive (and after IP rules, if any) |
 | `ssl` | SSL certificate directives |
 | `proxy` | Proxy buffering directives |
 | `end` | Before the closing `}` of the server block |
 
 This is intended for advanced per-vhost nginx settings that the orchestrator does not model natively. Content is injected verbatim — it must be valid nginx syntax or `nginx -t` will reject the config.
+
+**IP Access Control** (`ip_rule_mode` + `ip_rule_ips`): Per-vhost IP allowlist or denylist, placed at server-block level (applies to all routes):
+
+```json
+{
+  "ip_rule_mode": "allow",
+  "ip_rule_ips": ["10.0.0.0/8", "192.168.1.5"]
+}
+```
+
+| Mode | Generated nginx |
+|------|----------------|
+| `allow` | `allow <ip>; ... deny all;` — only listed IPs can access the vhost |
+| `deny` | `deny <ip>;` — listed IPs are blocked, everything else is allowed |
+| `null` / omitted | No IP restrictions |
+
+Accepted formats: IPv4 (`1.2.3.4`), IPv4 CIDR (`10.0.0.0/8`), IPv6, IPv6 CIDR. Values are validated on write. Both fields are stored in the vhost sidecar `.meta.json` and are fully recovered by the rebuild-from-disk operation.
 
 ### Bucket Sync
 

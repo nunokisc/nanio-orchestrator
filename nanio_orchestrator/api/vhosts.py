@@ -185,7 +185,13 @@ async def create_vhost(body: VhostCreate):
         await log_audit(db, "create", "vhost", vhost["id"], after=vhost)
 
         default_pool_name = await _get_pool_name(db, vhost.get("default_pool_id"))
-        await write_vhost_sidecar(vhost["id"], vhost["server_name"], vhost.get("default_pool_id"), default_pool_name)
+        await write_vhost_sidecar(
+            vhost["id"], vhost["server_name"],
+            vhost.get("default_pool_id"), default_pool_name,
+            extra_blocks_json=vhost.get("extra_blocks_json"),
+            ip_rule_mode=vhost.get("ip_rule_mode"),
+            ip_rule_ips_json=vhost.get("ip_rule_ips_json"),
+        )
 
         # Auto-create the immutable '/' catch-all route pointing to the default pool
         if body.default_pool_id:
@@ -295,7 +301,13 @@ async def update_vhost(vhost_id: int, body: VhostUpdate):
         await db.commit()
 
         default_pool_name = await _get_pool_name(db, after.get("default_pool_id"))
-        await write_vhost_sidecar(after["id"], after["server_name"], after.get("default_pool_id"), default_pool_name)
+        await write_vhost_sidecar(
+            after["id"], after["server_name"],
+            after.get("default_pool_id"), default_pool_name,
+            extra_blocks_json=after.get("extra_blocks_json"),
+            ip_rule_mode=after.get("ip_rule_mode"),
+            ip_rule_ips_json=after.get("ip_rule_ips_json"),
+        )
 
         return _enrich_vhost(after)
 

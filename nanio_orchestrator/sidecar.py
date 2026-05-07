@@ -151,6 +151,9 @@ def write_vhost_sidecar(
     server_name: str,
     default_pool_id: Optional[int] = None,
     default_pool_name: Optional[str] = None,
+    extra_blocks_json: Optional[str] = None,
+    ip_rule_mode: Optional[str] = None,
+    ip_rule_ips_json: Optional[str] = None,
 ) -> None:
     """Write or update a vhost sidecar file."""
     filepath = vhost_sidecar_path(server_name)
@@ -159,6 +162,9 @@ def write_vhost_sidecar(
         "server_name": server_name,
         "default_pool_id": default_pool_id,
         "default_pool_name": default_pool_name,
+        "extra_blocks_json": extra_blocks_json,
+        "ip_rule_mode": ip_rule_mode,
+        "ip_rule_ips_json": ip_rule_ips_json,
         "updated_at": _now_iso(),
     }
     _write_atomic(filepath, data)

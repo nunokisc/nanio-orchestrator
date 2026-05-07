@@ -163,11 +163,15 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
             cursor = await db.execute(
                 """INSERT INTO vhosts
                    (server_name, listen_port, ssl, ssl_cert_path, ssl_key_path,
-                    enabled, default_pool_id)
-                   VALUES (?, ?, ?, ?, ?, 1, ?)""",
+                    enabled, default_pool_id, extra_blocks_json,
+                    ip_rule_mode, ip_rule_ips_json)
+                   VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)""",
                 (server_name, parsed["listen_port"], 1 if parsed["ssl"] else 0,
                  parsed["ssl_cert_path"], parsed["ssl_key_path"],
-                 default_pool_id),
+                 default_pool_id,
+                 sidecar.get("extra_blocks_json"),
+                 sidecar.get("ip_rule_mode"),
+                 sidecar.get("ip_rule_ips_json")),
             )
             vhost_id = cursor.lastrowid
             vhost_count += 1
@@ -439,6 +443,8 @@ async def _dry_run_report(
                 "server_name": parsed["server_name"],
                 "routes": len(parsed["routes"]),
                 "has_default_pool": bool(sidecar.get("default_pool_id") or sidecar.get("default_pool_name")),
+                "has_extra_blocks": bool(sidecar.get("extra_blocks_json")),
+                "has_ip_rules": bool(sidecar.get("ip_rule_mode")),
                 "has_sidecar": bool(sidecar),
             })
 
