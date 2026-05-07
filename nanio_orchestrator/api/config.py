@@ -582,3 +582,32 @@ async def get_settings_endpoint():
     result["dev_mode"] = DEV_MODE
 
     return result
+
+
+@router.put("/settings/{key}")
+async def update_setting(key: str, body: dict = Body(...)):
+    """Update a single setting in the active config file.
+
+    The key may be the short name (e.g. ``log_level``) or the full env-var
+    name (``NANIO_ORCHESTRATOR_LOG_LEVEL``).  Changes are persisted to the
+    config file immediately but only take effect after a service restart.
+    """
+    from nanio_orchestrator.cli import _get_config_path, _set_config_value, _SETTINGS_META
+
+    normalized = key.lower().removeprefix("nanio_orchestrator_")
+    if normalized not in _SETTINGS_META:
+        raise HTTPException(status_code=404, detail=f"Unknown setting: '{key}'")
+
+    if "value" not in body:
+        raise HTTPException(status_code=422, detail="Missing 'value' field")
+
+    value = str(body["value"])
+
+    config_path = _get_config_path()
+    try:
+        _set_config_value(normalized, value, config_path)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to write config: {exc}") from exc
+
+    masked = _mask(value, normalized in _SECRET_FIELDS)
+    return {"ok": True, "key": normalized, "value": masked, "restart_required": True}

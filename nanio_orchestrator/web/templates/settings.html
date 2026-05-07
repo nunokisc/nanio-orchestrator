@@ -3,12 +3,27 @@
 {% block content %}
 <h1>Settings</h1>
 
+<div id="settings-toast" class="hidden" style="
+    position:fixed;top:68px;right:1.5rem;z-index:200;
+    padding:0.6rem 1.1rem;border-radius:6px;font-size:0.9rem;font-weight:500;
+    background:var(--bg-card);border:1px solid var(--border);
+    box-shadow:0 4px 16px rgba(0,0,0,0.4);transition:opacity 0.3s;
+"></div>
+
 <div id="settings-loading" class="empty">Loading…</div>
 <div id="settings-error" class="hidden">
     <div class="card">
         <span class="badge warn">Error</span>
         <span id="settings-error-msg"></span>
     </div>
+</div>
+
+<div id="settings-restart-banner" class="hidden card" style="
+    border-left:3px solid var(--warn);margin-bottom:1.2rem;
+    display:flex;align-items:center;gap:0.6rem;
+">
+    <span style="color:var(--warn);font-size:1.1rem">⚠</span>
+    <span>Unsaved changes written to config file. <strong>Restart the service</strong> for them to take effect.</span>
 </div>
 
 <div id="settings-body" class="hidden"></div>
@@ -49,20 +64,154 @@ const DESCRIPTIONS = {
     migration_transfers:       "rclone --transfers value",
 };
 
-function isSecret(key) {
-    return ["api_key","secret","s3_access_key","s3_secret_key"].includes(key);
+const SECRET_KEYS = new Set(["api_key","secret","s3_access_key","s3_secret_key"]);
+
+// Keys whose values should be treated as editable (excludes meta)
+const READONLY_KEYS = new Set(["config_file","dev_mode"]);
+
+function isSecret(key) { return SECRET_KEYS.has(key); }
+
+function escapeHtml(s) {
+    return String(s ?? "")
+        .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+        .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
 }
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+
+let _toastTimer = null;
+function showToast(msg, ok = true) {
+    const el = document.getElementById("settings-toast");
+    el.textContent = msg;
+    el.style.borderColor = ok ? "var(--ok)" : "var(--error)";
+    el.style.color = ok ? "var(--ok)" : "var(--error)";
+    el.classList.remove("hidden");
+    el.style.opacity = "1";
+    clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(() => { el.style.opacity = "0"; setTimeout(() => el.classList.add("hidden"), 320); }, 3000);
+}
+
+// ── Inline editing state ──────────────────────────────────────────────────────
+
+const _currentValues = {};   // key → current display value (masked for secrets)
 
 function renderValue(key, val) {
     if (val === null || val === undefined || val === "") {
         return `<span class="badge warn">unset</span>`;
     }
-    const s = String(val);
     if (isSecret(key)) {
-        return `<code class="hash">${escapeHtml(s)}</code>`;
+        return `<code class="hash">${escapeHtml(val)}</code>`;
     }
-    return `<code>${escapeHtml(s)}</code>`;
+    return `<code>${escapeHtml(val)}</code>`;
 }
+
+function rowId(key) { return `sr-${key}`; }
+function valueId(key) { return `sv-${key}`; }
+function editAreaId(key) { return `se-${key}`; }
+function inputId(key) { return `si-${key}`; }
+
+function renderRow(key, val, desc) {
+    _currentValues[key] = val;
+    const secret = isSecret(key);
+    return `
+    <tr id="${rowId(key)}">
+        <td style="width:220px"><code>${escapeHtml(key)}</code></td>
+        <td>
+            <span id="${valueId(key)}">${renderValue(key, val)}</span>
+            <span id="${editAreaId(key)}" class="hidden" style="display:none;gap:0.4rem;align-items:center">
+                <input
+                    id="${inputId(key)}"
+                    type="${secret ? 'password' : 'text'}"
+                    style="font-family:var(--mono);font-size:0.85rem;padding:3px 7px;
+                           background:var(--bg-hover);border:1px solid var(--border);
+                           border-radius:4px;color:var(--text);width:300px"
+                    autocomplete="off"
+                    spellcheck="false"
+                />
+                ${secret ? `<button class="btn btn-xs" type="button" onclick="toggleReveal('${key}')" title="Show/hide">👁</button>` : ""}
+                <button class="btn btn-xs btn-primary" onclick="saveSetting('${key}')">Save</button>
+                <button class="btn btn-xs" onclick="cancelEdit('${key}')">Cancel</button>
+            </span>
+        </td>
+        <td style="color:var(--text-muted)">${escapeHtml(desc)}</td>
+        <td style="width:60px;text-align:right">
+            <button class="btn btn-xs" id="edit-btn-${key}" onclick="startEdit('${key}')">Edit</button>
+        </td>
+    </tr>`;
+}
+
+function startEdit(key) {
+    const valEl   = document.getElementById(valueId(key));
+    const editEl  = document.getElementById(editAreaId(key));
+    const inputEl = document.getElementById(inputId(key));
+    const btnEl   = document.getElementById(`edit-btn-${key}`);
+
+    valEl.classList.add("hidden");
+    editEl.style.display = "inline-flex";
+    btnEl.classList.add("hidden");
+
+    // Pre-fill: for secrets the masked value is not the real value,
+    // so we leave the input empty so the operator types a new one.
+    inputEl.value = isSecret(key) ? "" : (_currentValues[key] ?? "");
+    inputEl.focus();
+}
+
+function cancelEdit(key) {
+    const valEl  = document.getElementById(valueId(key));
+    const editEl = document.getElementById(editAreaId(key));
+    const btnEl  = document.getElementById(`edit-btn-${key}`);
+    valEl.classList.remove("hidden");
+    editEl.style.display = "none";
+    btnEl.classList.remove("hidden");
+}
+
+function toggleReveal(key) {
+    const inp = document.getElementById(inputId(key));
+    inp.type = inp.type === "password" ? "text" : "password";
+}
+
+async function saveSetting(key) {
+    const inputEl = document.getElementById(inputId(key));
+    const value = inputEl.value;
+
+    const saveBtn = inputEl.closest("span").querySelector(".btn-primary");
+    saveBtn.disabled = true;
+    saveBtn.textContent = "Saving…";
+
+    try {
+        const res = await fetch(`/api/config/settings/${encodeURIComponent(key)}`,
+            fetchOpts("PUT", { value }));
+        const data = await res.json();
+        if (!res.ok) {
+            showToast("Error: " + (data.detail || res.statusText), false);
+            return;
+        }
+
+        // Update display value
+        _currentValues[key] = data.value;
+        document.getElementById(valueId(key)).innerHTML = renderValue(key, data.value);
+
+        cancelEdit(key);
+        showToast(`${key} updated — restart required`, true);
+        document.getElementById("settings-restart-banner").classList.remove("hidden");
+        document.getElementById("settings-restart-banner").style.display = "flex";
+    } catch (err) {
+        showToast("Network error: " + err.message, false);
+    } finally {
+        saveBtn.disabled = false;
+        saveBtn.textContent = "Save";
+    }
+}
+
+// Enter key submits, Escape cancels
+document.addEventListener("keydown", (e) => {
+    if (!e.target.matches("input[id^='si-']")) return;
+    const key = e.target.id.slice(3);
+    if (e.key === "Enter")  { e.preventDefault(); saveSetting(key); }
+    if (e.key === "Escape") { e.preventDefault(); cancelEdit(key); }
+});
+
+// ── Load ──────────────────────────────────────────────────────────────────────
 
 async function loadSettings() {
     const loadingEl = document.getElementById("settings-loading");
@@ -79,25 +228,25 @@ async function loadSettings() {
         for (const [cat, keys] of CATEGORIES) {
             html += `<div class="card" style="margin-bottom:1.2rem">`;
             html += `<h3 style="margin-top:0;margin-bottom:0.8rem">${escapeHtml(cat)}</h3>`;
-            html += `<table><thead><tr><th style="width:220px">Setting</th><th>Value</th><th>Description</th></tr></thead><tbody>`;
+            html += `<table><thead><tr>
+                <th style="width:220px">Setting</th>
+                <th>Value</th>
+                <th>Description</th>
+                <th style="width:60px"></th>
+            </tr></thead><tbody>`;
             for (const key of keys) {
                 if (!(key in data)) continue;
-                const desc = DESCRIPTIONS[key] || "";
-                html += `<tr>
-                    <td><code>${escapeHtml(key)}</code></td>
-                    <td>${renderValue(key, data[key])}</td>
-                    <td style="color:var(--text-muted)">${escapeHtml(desc)}</td>
-                </tr>`;
+                html += renderRow(key, data[key], DESCRIPTIONS[key] || "");
             }
             html += `</tbody></table></div>`;
         }
 
-        // Meta row
+        // Meta row (read-only)
         html += `<div class="card" style="margin-bottom:1.2rem">`;
         html += `<h3 style="margin-top:0;margin-bottom:0.8rem">Meta</h3>`;
         html += `<table><tbody>`;
-        html += `<tr><td style="width:220px"><code>config_file</code></td><td><code>${escapeHtml(String(data.config_file ?? ""))}</code></td><td style="color:var(--text-muted)">Active config file path</td></tr>`;
-        html += `<tr><td><code>dev_mode</code></td><td>${data.dev_mode ? '<span class="badge dev">DEV</span>' : '<span class="badge ok">production</span>'}</td><td style="color:var(--text-muted)">Runtime mode</td></tr>`;
+        html += `<tr><td style="width:220px"><code>config_file</code></td><td><code>${escapeHtml(String(data.config_file ?? ""))}</code></td><td style="color:var(--text-muted)">Active config file path</td><td></td></tr>`;
+        html += `<tr><td><code>dev_mode</code></td><td>${data.dev_mode ? '<span class="badge dev">DEV</span>' : '<span class="badge ok">production</span>'}</td><td style="color:var(--text-muted)">Runtime mode</td><td></td></tr>`;
         html += `</tbody></table></div>`;
 
         bodyEl.innerHTML = html;
