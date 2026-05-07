@@ -656,16 +656,35 @@ async def run_migration(migration_id: int) -> None:
         # First, generate the target config by temporarily updating DB
         async with get_db_ctx() as db:
             if route_id:
-                await db.execute(
+                cur = await db.execute(
                     "UPDATE routes SET pool_id = ?, updated_at = datetime('now') WHERE id = ?",
                     (dst_pool_id, route_id),
                 )
+                rows_updated = cur.rowcount
             else:
-                await db.execute(
+                cur = await db.execute(
                     """UPDATE routes SET pool_id = ?, updated_at = datetime('now')
                        WHERE vhost_id = ? AND path_prefix = ?""",
                     (dst_pool_id, vhost_id, f"/{bucket}/"),
                 )
+                rows_updated = cur.rowcount
+
+            if rows_updated == 0:
+                # No route to update — cannot safely complete the migration.
+                # The data has been fully copied to dst, but nginx cannot be
+                # reconfigured.  Mark as error so the operator can investigate.
+                msg = (
+                    f"No nginx route found to update for bucket '{bucket}' "
+                    f"(route_id={route_id}, vhost_id={vhost_id}). "
+                    "Data was copied to the destination pool but nginx was NOT updated. "
+                    "Create the route manually via the Buckets page and then "
+                    "verify/clean up the source pool."
+                )
+                logger.error("Migration %d switching aborted: %s", migration_id, msg)
+                await db.rollback()
+                await _set_phase(migration_id, "error", msg)
+                return
+
             await db.execute(
                 """UPDATE bucket_sync SET status = 'routed', routed_pool_id = ?
                    WHERE vhost_id = ? AND bucket = ?""",

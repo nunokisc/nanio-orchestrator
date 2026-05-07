@@ -365,7 +365,9 @@ async def _rebuild_bucket_sync(
 
                 address = members[0]["address"]
                 s = get_settings()
-                buckets = await list_buckets(address, s.s3_access_key, s.s3_secret_key)
+                raw_buckets = await list_buckets(address, s.s3_access_key, s.s3_secret_key)
+                # list_buckets returns [{"name": ..., "created": ...}]
+                bucket_names = [b["name"] for b in raw_buckets if b.get("name")]
 
                 # Get already-routed buckets
                 routes = await db.execute_fetchall(
@@ -379,7 +381,7 @@ async def _rebuild_bucket_sync(
                     if p:
                         routed_prefixes.add(p)
 
-                for bucket_name in buckets:
+                for bucket_name in bucket_names:
                     status = "routed" if bucket_name in routed_prefixes else "unrouted"
                     await db.execute(
                         """INSERT INTO bucket_sync (vhost_id, bucket, status)

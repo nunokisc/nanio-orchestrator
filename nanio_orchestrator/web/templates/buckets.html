@@ -91,7 +91,15 @@
                     {% endfor %}
                 </select>
             </label>
-            <label><input type="checkbox" name="migrate"> Migrate existing objects to target pool</label>
+            <label>
+                <input type="checkbox" name="migrate" id="route-migrate-cb" checked>
+                Migrate existing objects to target pool (required if bucket has data)
+            </label>
+            <p id="route-migrate-warning" style="color:var(--danger,#c0392b);font-size:0.85rem;margin:0.3rem 0 0 1.4rem;display:none">
+                ⚠ Unchecking migration when the bucket has existing data will make those objects
+                inaccessible — the new pool starts empty. Only uncheck if you are certain the bucket
+                is empty or you intend to start fresh.
+            </p>
             <div class="modal-actions">
                 <button type="submit" class="btn btn-primary">Route</button>
                 <button type="button" class="btn" onclick="hideModal('route-bucket-modal')">Cancel</button>

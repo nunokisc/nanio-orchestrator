@@ -23,6 +23,7 @@ from nanio_orchestrator.models import BucketListOut, BucketPromoteRequest
 from nanio_orchestrator.nginx.executor import reload_nginx, test_config
 from nanio_orchestrator.nginx.generator import generate_vhost_config, record_file_state
 from nanio_orchestrator.s3client import (
+    bucket_has_objects,
     count_objects,
     create_bucket,
     delete_object,
@@ -203,6 +204,29 @@ async def promote_bucket(vhost_id: int, bucket: str, body: BucketPromoteRequest)
     default_ak, default_sk, _ = await get_pool_s3_params(default_pool_id)
     target_ak, target_sk, _ = await get_pool_s3_params(body.pool_id)
 
+    # ── Pre-flight: check whether the bucket already has objects on the source pool ──
+    # If it does and the operator did NOT request migration, routing to the new
+    # (empty) pool would make all existing objects inaccessible — data loss.
+    # We refuse the operation and require migration to be explicitly enabled.
+    src_has_data = False
+    try:
+        src_has_data = await bucket_has_objects(
+            default_member, bucket, access_key=default_ak, secret_key=default_sk
+        )
+    except Exception as exc:
+        logger.warning(
+            "promote %s (vhost %d): could not check source bucket contents (%s) — proceeding",
+            bucket, vhost_id, exc,
+        )
+
+    if src_has_data and not body.migrate:
+        raise HTTPException(
+            400,
+            f"Bucket '{bucket}' already has objects on the source pool. "
+            "You must enable 'Migrate existing objects' to avoid making existing data "
+            "inaccessible after routing. Re-submit with migrate=true.",
+        )
+
     # ── Ensure bucket stub exists on default pool (required for ListBuckets) ─
     ok_default, msg_default = await create_bucket(
         default_member, bucket, access_key=default_ak, secret_key=default_sk,
@@ -269,7 +293,7 @@ async def promote_bucket(vhost_id: int, bucket: str, body: BucketPromoteRequest)
     # ── Optionally start migration (via rclone engine) ───────────────────────────
     if body.migrate:
         migration_id = await engine_start_migration(
-            vhost_id, bucket, default_pool_id, body.pool_id
+            vhost_id, bucket, default_pool_id, body.pool_id, route_id=route_id
         )
         result["migration_started"] = True
         result["migration_id"] = migration_id

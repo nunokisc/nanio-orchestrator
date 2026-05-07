@@ -6,15 +6,23 @@
 <div class="card">
     <div class="card-header">
         <h3>Start New Migration</h3>
-    </div>
-    <form id="new-migration-form" onsubmit="createMigration(event)">
+    </div>    <p style="color:var(--text-muted);font-size:0.88rem;margin-bottom:0.75rem">
+        Use this form to move a bucket that is already routed to a dedicated pool from that pool to another.
+        The source pool must be the pool that currently serves the bucket in nginx.
+        If the bucket is not yet routed, use the <a href="/web/buckets">Buckets</a> page to route it first.
+    </p>    <form id="new-migration-form" onsubmit="createMigration(event)">
         <div class="form-row">
-            <label>Bucket <input type="text" name="bucket" required placeholder="my-bucket"></label>
             <label>Source Pool
-                <select name="src_pool_id">
+                <select name="src_pool_id" onchange="loadMigrationBuckets(this)" required>
+                    <option value="">— select source pool —</option>
                     {% for p in pools %}
                     <option value="{{ p.id }}">{{ p.name }}</option>
                     {% endfor %}
+                </select>
+            </label>
+            <label>Bucket
+                <select name="bucket" id="migration-bucket-select" required disabled>
+                    <option value="">— select source pool first —</option>
                 </select>
             </label>
             <label>Destination Pool

@@ -624,6 +624,50 @@ async function cancelMigration(id) {
     }
 }
 
+// Show a warning when the operator unchecks 'migrate' in the Route modal
+document.addEventListener('DOMContentLoaded', () => {
+    const cb = document.getElementById('route-migrate-cb');
+    if (cb) {
+        cb.addEventListener('change', () => {
+            const warn = document.getElementById('route-migrate-warning');
+            if (warn) warn.style.display = cb.checked ? 'none' : 'block';
+        });
+    }
+});
+
+async function loadMigrationBuckets(selectEl) {
+    const poolId = selectEl.value;
+    const bucketSel = document.getElementById('migration-bucket-select');
+    bucketSel.innerHTML = '<option value="">— loading… —</option>';
+    bucketSel.disabled = true;
+
+    if (!poolId) {
+        bucketSel.innerHTML = '<option value="">— select source pool first —</option>';
+        return;
+    }
+
+    try {
+        const res = await fetch(`/api/migrations/source-buckets?pool_id=${encodeURIComponent(poolId)}`, {
+            headers: getHeaders(),
+            credentials: 'same-origin',
+        });
+        if (!res.ok) throw new Error(res.statusText);
+        const data = await res.json();
+        const buckets = data.buckets || [];
+        if (buckets.length === 0) {
+            bucketSel.innerHTML = '<option value="">— no buckets found on this pool —</option>';
+            return;
+        }
+        bucketSel.innerHTML = buckets
+            .map(b => `<option value="${escapeHtml(b)}">${escapeHtml(b)}</option>`)
+            .join('');
+        bucketSel.disabled = false;
+    } catch (err) {
+        bucketSel.innerHTML = '<option value="">— error loading buckets —</option>';
+        console.error('loadMigrationBuckets:', err);
+    }
+}
+
 async function createMigration(event) {
     event.preventDefault();
     const form = event.target;

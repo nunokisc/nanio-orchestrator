@@ -314,6 +314,24 @@ class OrphanedMigrationOut(BaseModel):
     finished_at: Optional[str] = None
 
 
+class StaleMigrationOut(BaseModel):
+    """An active migration that cannot proceed safely.
+
+    reason values:
+      src_no_members     — source pool has no enabled members
+      dst_no_members     — destination pool has no enabled members
+      src_bucket_missing — source bucket no longer exists on the source pool
+    """
+
+    migration_id: int
+    bucket: str
+    src_pool_id: int
+    dst_pool_id: int
+    phase: str
+    reason: str
+    created_at: str
+
+
 class MigrationLogEntry(BaseModel):
     id: int
     migration_id: int

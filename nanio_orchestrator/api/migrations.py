@@ -3,6 +3,8 @@
 Endpoints:
   POST   /api/migrations                        — start a new migration
   GET    /api/migrations                        — list all migrations
+  GET    /api/migrations/stale                  — active migrations that cannot proceed safely
+  GET    /api/migrations/orphaned               — completed migrations with leftover source data
   GET    /api/migrations/{id}                   — get migration details
   POST   /api/migrations/{id}/cancel            — cancel a running migration
   GET    /api/migrations/{id}/log               — get migration log entries
@@ -16,6 +18,7 @@ from typing import List
 from fastapi import APIRouter, HTTPException, Query
 
 from nanio_orchestrator.audit_log import log_audit
+from nanio_orchestrator.credentials import get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator.migration_engine import (
     cancel_migration,
@@ -26,7 +29,9 @@ from nanio_orchestrator.models import (
     OrphanedMigrationOut,
     RcloneMigrationCreate,
     RcloneMigrationOut,
+    StaleMigrationOut,
 )
+from nanio_orchestrator.s3client import bucket_exists, bucket_has_objects
 
 router = APIRouter(prefix="/api/migrations", tags=["migrations"])
 logger = logging.getLogger(__name__)
@@ -44,19 +49,38 @@ async def create_migration(body: RcloneMigrationCreate):
             "Migrating a bucket to the same pool it already lives on is not allowed.",
         )
 
+    src_member: str | None = None
+
     async with get_db_ctx() as db:
         for pid, label in [(body.src_pool_id, "Source"), (body.dst_pool_id, "Destination")]:
             rows = await db.execute_fetchall("SELECT id FROM pools WHERE id = ?", (pid,))
             if not rows:
                 raise HTTPException(400, f"{label} pool {pid} not found")
 
-        # Check we don't already have an active migration for same bucket+vhost
-        # (Find any pending/copying/verifying migration for same vhost+bucket)
-        # We need a vhost_id. The bucket might belong to multiple vhosts, so
-        # we look for the first one. For the API, the caller must know which vhost.
-        # Actually, the bucket's vhost_id can be inferred or must be given.
-        # Let's derive it from bucket_sync if possible, or require the user to pass it.
-        # For now, we'll check if there's already an active migration for any vhost.
+        # Both pools must have at least one enabled member
+        src_member_rows = await db.execute_fetchall(
+            "SELECT address FROM pool_members WHERE pool_id = ? AND enabled = 1 ORDER BY id LIMIT 1",
+            (body.src_pool_id,),
+        )
+        if not src_member_rows:
+            raise HTTPException(
+                400,
+                f"Source pool {body.src_pool_id} has no enabled members — "
+                "cannot validate source bucket before migrating.",
+            )
+        src_member = dict(src_member_rows[0])["address"]
+
+        dst_member_rows = await db.execute_fetchall(
+            "SELECT address FROM pool_members WHERE pool_id = ? AND enabled = 1 ORDER BY id LIMIT 1",
+            (body.dst_pool_id,),
+        )
+        if not dst_member_rows:
+            raise HTTPException(
+                400,
+                f"Destination pool {body.dst_pool_id} has no enabled members.",
+            )
+
+        # Reject if an active migration for the same bucket already exists
         active = await db.execute_fetchall(
             """SELECT id FROM migrations
                WHERE bucket = ? AND phase IN ('pending','copying','verifying','switching')""",
@@ -68,32 +92,95 @@ async def create_migration(body: RcloneMigrationCreate):
                 f"An active migration already exists for bucket '{body.bucket}' (id={active[0]['id']})",
             )
 
-    # Find which vhost this bucket belongs to (from bucket_sync)
-    async with get_db_ctx() as db:
+        # Resolve vhost inside the same DB context
         bs_rows = await db.execute_fetchall(
             "SELECT vhost_id FROM bucket_sync WHERE bucket = ? LIMIT 1",
             (body.bucket,),
         )
-
-    if bs_rows:
-        vhost_id = bs_rows[0]["vhost_id"]
-    else:
-        # No bucket_sync record — try to find a vhost with the source pool as default
-        async with get_db_ctx() as db:
+        if bs_rows:
+            vhost_id: int = bs_rows[0]["vhost_id"]
+        else:
             vh_rows = await db.execute_fetchall(
                 "SELECT id FROM vhosts WHERE default_pool_id = ? LIMIT 1",
                 (body.src_pool_id,),
             )
-        if not vh_rows:
+            if not vh_rows:
+                raise HTTPException(
+                    400,
+                    "Cannot determine vhost for this bucket. "
+                    "Ensure the bucket exists in bucket_sync or the source pool is a vhost default.",
+                )
+            vhost_id = vh_rows[0]["id"]
+
+        # A migration from the Migrations page REQUIRES a route to exist.
+        # The migration engine updates the route during the 'switching' phase;
+        # without a route the nginx config never changes and data becomes orphaned.
+        route_rows = await db.execute_fetchall(
+            "SELECT id, pool_id FROM routes WHERE vhost_id = ? AND path_prefix = ?",
+            (vhost_id, f"/{body.bucket}/"),
+        )
+        if not route_rows:
             raise HTTPException(
                 400,
-                "Cannot determine vhost for this bucket. "
-                "Ensure the bucket exists in bucket_sync or the source pool is a vhost default.",
+                f"No nginx route found for bucket '{body.bucket}' in vhost {vhost_id}. "
+                "Route the bucket first via the Buckets page before creating a migration.",
             )
-        vhost_id = vh_rows[0]["id"]
+        route_row = dict(route_rows[0])
+        resolved_route_id: int = route_row["id"]
+
+        # Source pool must match the pool that the route currently points to.
+        # A mismatch means the data to copy is on a different pool than the one
+        # nginx is proxying requests to — undefined behaviour during switching.
+        if route_row["pool_id"] != body.src_pool_id:
+            pool_name_rows = await db.execute_fetchall(
+                "SELECT name FROM pools WHERE id = ?", (route_row["pool_id"],)
+            )
+            current_pool_name = pool_name_rows[0]["name"] if pool_name_rows else str(route_row["pool_id"])
+            raise HTTPException(
+                400,
+                f"Source pool mismatch: bucket '{body.bucket}' is currently routed to "
+                f"pool '{current_pool_name}' (id={route_row['pool_id']}), not pool {body.src_pool_id}. "
+                "Set src_pool_id to the pool that currently serves this bucket.",
+            )
+
+    # ── S3 pre-flight: verify bucket exists and has data on the source pool ──
+    # This prevents creating migrations that will immediately fail because the
+    # source data is absent or already been moved. Done *outside* the DB context
+    # so no connection is held during network I/O.
+    src_ak, src_sk, _ = await get_pool_s3_params(body.src_pool_id)
+    try:
+        src_bucket_found = await bucket_exists(
+            src_member, body.bucket, access_key=src_ak, secret_key=src_sk
+        )
+        if not src_bucket_found:
+            raise HTTPException(
+                400,
+                f"Bucket '{body.bucket}' does not exist on source pool {body.src_pool_id}. "
+                "Verify the source pool and bucket name before starting a migration.",
+            )
+        src_has_data = await bucket_has_objects(
+            src_member, body.bucket, access_key=src_ak, secret_key=src_sk
+        )
+        if not src_has_data:
+            raise HTTPException(
+                400,
+                f"Bucket '{body.bucket}' is empty on source pool {body.src_pool_id} — "
+                "nothing to migrate. Verify the source pool contains the data to be moved.",
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            503,
+            f"Cannot reach source pool {body.src_pool_id} to validate bucket "
+            f"'{body.bucket}': {exc}",
+        )
 
     try:
-        migration_id = await start_migration(vhost_id, body.bucket, body.src_pool_id, body.dst_pool_id, body.mode)
+        migration_id = await start_migration(
+            vhost_id, body.bucket, body.src_pool_id, body.dst_pool_id,
+            body.mode, route_id=resolved_route_id,
+        )
     except RuntimeError as e:
         raise HTTPException(429, str(e))
 
@@ -103,10 +190,41 @@ async def create_migration(body: RcloneMigrationCreate):
         await log_audit(db, "create_migration", "migration", migration_id,
                         after={"bucket": body.bucket, "src_pool_id": body.src_pool_id,
                                "dst_pool_id": body.dst_pool_id, "mode": body.mode,
-                               "vhost_id": vhost_id})
+                               "vhost_id": vhost_id, "route_id": resolved_route_id})
         await db.commit()
     m = dict(rows[0])
     return _to_out(m)
+
+
+@router.get("/source-buckets")
+async def list_source_buckets(pool_id: int):
+    """Return bucket names currently served by a given pool.
+
+    Used by the UI to populate the bucket select-box when the operator
+    picks a source pool for a new migration.
+
+    A bucket is "served by pool_id" when:
+      • its ``routed_pool_id`` equals pool_id (dedicated route), OR
+      • it is unrouted/migrating/ignored AND the vhost's default_pool_id
+        equals pool_id (falls back to the default pool).
+    """
+    async with get_db_ctx() as db:
+        rows = await db.execute_fetchall(
+            """
+            SELECT DISTINCT bs.bucket
+            FROM bucket_sync bs
+            JOIN vhosts v ON bs.vhost_id = v.id
+            WHERE
+                bs.routed_pool_id = :pid
+                OR (
+                    bs.routed_pool_id IS NULL
+                    AND v.default_pool_id = :pid
+                )
+            ORDER BY bs.bucket
+            """,
+            {"pid": pool_id},
+        )
+    return {"pool_id": pool_id, "buckets": [r["bucket"] for r in rows]}
 
 
 @router.get("/orphaned", response_model=List[OrphanedMigrationOut])
@@ -139,6 +257,102 @@ async def list_orphaned_migrations():
         )
         for r in rows
     ]
+
+
+_ACTIVE_PHASES = ("pending", "copying", "write_routing", "verifying", "switching")
+
+
+@router.get("/stale", response_model=List[StaleMigrationOut])
+async def list_stale_migrations():
+    """List active migrations that cannot proceed safely.
+
+    Checks every migration that is not in a terminal state (done/error/cancelled)
+    for two classes of problem, mirroring the orphan-detection logic used for
+    bucket routing:
+
+    * **DB-level**: source or destination pool has no enabled members — rclone
+      would have nothing to connect to.
+    * **S3-level**: source bucket no longer exists on the source pool — the data
+      to be moved is gone.  S3 checks are skipped for unreachable pools and for
+      phases where the source bucket is no longer the read target (switching).
+
+    Transient network errors during S3 probing are swallowed — the endpoint
+    never marks a migration stale based on a failed probe.
+    """
+    placeholders = ",".join("?" for _ in _ACTIVE_PHASES)
+    async with get_db_ctx() as db:
+        rows = await db.execute_fetchall(
+            f"""SELECT m.id, m.bucket, m.src_pool_id, m.dst_pool_id, m.phase, m.created_at,
+                       (SELECT COUNT(*) FROM pool_members pm
+                        WHERE pm.pool_id = m.src_pool_id AND pm.enabled = 1) AS src_members,
+                       (SELECT COUNT(*) FROM pool_members pm
+                        WHERE pm.pool_id = m.dst_pool_id AND pm.enabled = 1) AS dst_members,
+                       (SELECT pm.address FROM pool_members pm
+                        WHERE pm.pool_id = m.src_pool_id AND pm.enabled = 1
+                        ORDER BY pm.id LIMIT 1) AS src_member_addr
+                FROM migrations m
+                WHERE m.phase IN ({placeholders})
+                ORDER BY m.id DESC""",
+            _ACTIVE_PHASES,
+        )
+
+    stale: list[StaleMigrationOut] = []
+    for r in rows:
+        rd = dict(r)
+        mid = rd["id"]
+        bucket = rd["bucket"]
+
+        if rd["src_members"] == 0:
+            stale.append(StaleMigrationOut(
+                migration_id=mid,
+                bucket=bucket,
+                src_pool_id=rd["src_pool_id"],
+                dst_pool_id=rd["dst_pool_id"],
+                phase=rd["phase"],
+                reason="src_no_members",
+                created_at=rd["created_at"],
+            ))
+            continue
+
+        if rd["dst_members"] == 0:
+            stale.append(StaleMigrationOut(
+                migration_id=mid,
+                bucket=bucket,
+                src_pool_id=rd["src_pool_id"],
+                dst_pool_id=rd["dst_pool_id"],
+                phase=rd["phase"],
+                reason="dst_no_members",
+                created_at=rd["created_at"],
+            ))
+            continue
+
+        # S3-level check: does the source bucket still exist?
+        # Skip for 'switching' phase — writes already go to dst at that point.
+        src_addr = rd.get("src_member_addr")
+        if src_addr and rd["phase"] != "switching":
+            try:
+                src_ak, src_sk, _ = await get_pool_s3_params(rd["src_pool_id"])
+                exists = await bucket_exists(
+                    src_addr, bucket, access_key=src_ak, secret_key=src_sk
+                )
+                if not exists:
+                    stale.append(StaleMigrationOut(
+                        migration_id=mid,
+                        bucket=bucket,
+                        src_pool_id=rd["src_pool_id"],
+                        dst_pool_id=rd["dst_pool_id"],
+                        phase=rd["phase"],
+                        reason="src_bucket_missing",
+                        created_at=rd["created_at"],
+                    ))
+            except Exception:
+                # Transient network error — do not flag as stale to avoid false positives
+                logger.debug(
+                    "migration %d: S3 probe for stale check failed (src=%s bucket=%s), skipping",
+                    mid, src_addr, bucket,
+                )
+
+    return stale
 
 
 @router.get("", response_model=List[RcloneMigrationOut])

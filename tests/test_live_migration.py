@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 import pytest
 import pytest_asyncio
 
-from tests.conftest import create_member, create_pool, create_vhost
+from tests.conftest import create_member, create_pool, create_vhost, create_route
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +95,7 @@ class TestConvergenceLoop:
 
         mock_s3["list_buckets"].return_value = [{"name": "conv-bk1", "created": "2025-01-01"}]
         await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
+        await create_route(client, vh["id"], "conv-bk1", src["id"])
 
         # Both pools report the same count → converged immediately
         mock_s3["count_objects"].return_value = 5
@@ -133,6 +134,7 @@ class TestConvergenceLoop:
 
         mock_s3["list_buckets"].return_value = [{"name": "conv-bk2", "created": "2025-01-01"}]
         await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
+        await create_route(client, vh["id"], "conv-bk2", src["id"])
 
         # First pair of count_objects calls: src=5, dst=3 (not converged)
         # Second pair: src=5, dst=5 (converged)
@@ -179,6 +181,7 @@ class TestConvergenceLoop:
 
         mock_s3["list_buckets"].return_value = [{"name": "conv-bk3", "created": "2025-01-01"}]
         await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
+        await create_route(client, vh["id"], "conv-bk3", src["id"])
 
         # src always 10, dst always 8 → src is stable (no new files), not converged
         call_num = {"n": 0}
@@ -225,6 +228,7 @@ class TestConvergenceLoop:
 
             mock_s3["list_buckets"].return_value = [{"name": "maxp-bk", "created": "2025-01-01"}]
             await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
+            await create_route(client, vh["id"], "maxp-bk", src["id"])
 
             # src always higher than dst — never converges
             call_num = {"n": 0}
@@ -274,6 +278,7 @@ class TestWriteRoutingPhase:
 
         mock_s3["list_buckets"].return_value = [{"name": "wr-bk", "created": "2025-01-01"}]
         await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
+        await create_route(client, vh["id"], "wr-bk", src["id"])
 
         # src=10, dst=8 → never converges  → write_routing must be entered
         call_num = {"n": 0}
@@ -317,6 +322,7 @@ class TestWriteRoutingPhase:
 
         mock_s3["list_buckets"].return_value = [{"name": "wr2-bk", "created": "2025-01-01"}]
         await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
+        await create_route(client, vh["id"], "wr2-bk", src["id"])
 
         # Force write_routing: src stable but != dst
         call_num = {"n": 0}
@@ -372,6 +378,7 @@ class TestWriteRoutingPhase:
 
             mock_s3["list_buckets"].return_value = [{"name": "wr3-bk", "created": "2025-01-01"}]
             await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
+            await create_route(client, vh["id"], "wr3-bk", src["id"])
 
             # Force write_routing path: src stable, dst less
             call_num = {"n": 0}
@@ -435,6 +442,7 @@ class TestNginxStateSidecar:
         vh = await create_vhost(client, "ns.example.com", default_pool_id=src["id"])
         mock_s3["list_buckets"].return_value = [{"name": "ns-bk", "created": "2025-01-01"}]
         await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
+        await create_route(client, vh["id"], "ns-bk", src["id"])
 
         resp = await client.post("/api/migrations", json={
             "bucket": "ns-bk",
@@ -457,6 +465,7 @@ class TestNginxStateSidecar:
         vh = await create_vhost(client, "ns2.example.com", default_pool_id=src["id"])
         mock_s3["list_buckets"].return_value = [{"name": "ns2-bk", "created": "2025-01-01"}]
         await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
+        await create_route(client, vh["id"], "ns2-bk", src["id"])
 
         resp = await client.post("/api/migrations", json={
             "bucket": "ns2-bk",
@@ -479,6 +488,7 @@ class TestNginxStateSidecar:
         vh = await create_vhost(client, "ns3.example.com", default_pool_id=src["id"])
         mock_s3["list_buckets"].return_value = [{"name": "ns3-bk", "created": "2025-01-01"}]
         await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
+        await create_route(client, vh["id"], "ns3-bk", src["id"])
 
         resp = await client.post("/api/migrations", json={
             "bucket": "ns3-bk",

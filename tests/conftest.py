@@ -172,6 +172,20 @@ def mock_s3():
         "bucket_has_objects": [
             "nanio_orchestrator.migration_engine.bucket_has_objects",
         ],
+        # promote endpoint (api/buckets) checks source bucket for data before
+        # allowing route creation without migration.
+        "promote_src_has_objects": [
+            "nanio_orchestrator.api.buckets.bucket_has_objects",
+        ],
+        # Separate keys for the API-layer pre-flight checks so existing tests
+        # that control the *destination* bucket_exists behaviour (engine-level)
+        # don't interfere with the *source* bucket validation in create_migration.
+        "src_bucket_exists": [
+            "nanio_orchestrator.api.migrations.bucket_exists",
+        ],
+        "src_bucket_has_objects": [
+            "nanio_orchestrator.api.migrations.bucket_has_objects",
+        ],
         "list_objects": [
             "nanio_orchestrator.s3client.list_objects",
             "nanio_orchestrator.api.buckets.list_objects",
@@ -193,8 +207,11 @@ def mock_s3():
     defaults = {
         "list_buckets": [],
         "create_bucket": (True, "created"),
-        "bucket_exists": False,       # dst bucket doesn't exist → will be created
-        "bucket_has_objects": False,  # dst bucket is empty → migration proceeds
+        "bucket_exists": False,          # dst bucket doesn't exist → will be created
+        "bucket_has_objects": False,     # dst bucket is empty → migration proceeds
+        "promote_src_has_objects": False, # source bucket is empty → promote without migrate ok
+        "src_bucket_exists": True,       # source bucket exists by default
+        "src_bucket_has_objects": True,  # source bucket has data by default
         "list_objects": [],
         "count_objects": 1,
         "get_object": b"data",
@@ -277,5 +294,15 @@ async def create_vhost(client: AsyncClient, server_name: str = "test.example.com
     """Helper: create a vhost via API."""
     body = {"server_name": server_name, **kwargs}
     resp = await client.post("/api/vhosts", json=body)
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+async def create_route(client: AsyncClient, vhost_id: int, bucket: str, pool_id: int) -> dict:
+    """Helper: create a vhost route for a bucket (required before creating migrations)."""
+    resp = await client.post(f"/api/vhosts/{vhost_id}/routes", json={
+        "path_prefix": f"/{bucket}/",
+        "pool_id": pool_id,
+    })
     assert resp.status_code == 201, resp.text
     return resp.json()
