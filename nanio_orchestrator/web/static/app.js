@@ -7,6 +7,21 @@ function getHeaders() {
     return { 'Content-Type': 'application/json' };
 }
 
+/**
+ * Format an API error response for display.
+ * FastAPI 422 responses have detail as an array of {loc, msg, type} objects.
+ */
+function formatError(err) {
+    if (!err) return 'Unknown error';
+    if (Array.isArray(err.detail)) {
+        return err.detail.map(e => {
+            const field = e.loc ? e.loc.slice(1).join('.') : null;
+            return field ? `${field}: ${e.msg}` : e.msg;
+        }).join('\n');
+    }
+    return err.detail || 'Unknown error';
+}
+
 function fetchOpts(method, body) {
     const opts = { method, headers: getHeaders(), credentials: 'same-origin' };
     if (body !== undefined) opts.body = JSON.stringify(body);
@@ -40,7 +55,7 @@ async function createPool(e) {
         description: form.description.value || null,
         type: form.type.value,
         lb_method: form.lb_method.value,
-        keepalive: parseInt(form.keepalive.value),
+        keepalive: parseInt(form.keepalive.value, 10) || 32,
     };
 
     try {
@@ -51,7 +66,7 @@ async function createPool(e) {
         });
         if (!res.ok) {
             const err = await res.json();
-            alert('Error: ' + (err.detail || res.statusText));
+            alert('Error: ' + formatError(err));
             return;
         }
         location.reload();
@@ -69,7 +84,7 @@ async function deletePool(id, name) {
         });
         if (!res.ok) {
             const err = await res.json();
-            alert('Error: ' + (err.detail || res.statusText));
+            alert('Error: ' + formatError(err));
             return;
         }
         location.reload();
@@ -111,9 +126,9 @@ async function addMember(e) {
     const data = {
         address: form.address.value,
         role: form.role.value,
-        weight: parseInt(form.weight.value),
-        max_fails: parseInt(form.max_fails.value),
-        fail_timeout_s: parseInt(form.fail_timeout_s.value),
+        weight: parseInt(form.weight.value, 10) || 1,
+        max_fails: parseInt(form.max_fails.value, 10) || 0,
+        fail_timeout_s: parseInt(form.fail_timeout_s.value, 10) || 30,
     };
 
     try {
@@ -124,7 +139,7 @@ async function addMember(e) {
         });
         if (!res.ok) {
             const err = await res.json();
-            alert('Error: ' + (err.detail || res.statusText));
+            alert('Error: ' + formatError(err));
             return;
         }
         location.reload();
@@ -142,7 +157,7 @@ async function deleteMember(poolId, memberId) {
         });
         if (!res.ok) {
             const err = await res.json();
-            alert('Error: ' + (err.detail || res.statusText));
+            alert('Error: ' + formatError(err));
             return;
         }
         location.reload();
@@ -208,7 +223,7 @@ async function generateNodeConfig(e) {
         });
         if (!res.ok) {
             const err = await res.json();
-            alert('Error: ' + (err.detail || res.statusText));
+            alert('Error: ' + formatError(err));
             return;
         }
         const result = await res.json();
@@ -252,7 +267,7 @@ async function createVhost(e) {
         });
         if (!res.ok) {
             const err = await res.json();
-            alert('Error: ' + (err.detail || res.statusText));
+            alert('Error: ' + formatError(err));
             return;
         }
         location.reload();
@@ -270,7 +285,7 @@ async function deleteVhost(id, name) {
         });
         if (!res.ok) {
             const err = await res.json();
-            alert('Error: ' + (err.detail || res.statusText));
+            alert('Error: ' + formatError(err));
             return;
         }
         location.reload();
@@ -315,7 +330,7 @@ async function addRoute(e) {
         });
         if (!res.ok) {
             const err = await res.json();
-            alert('Error: ' + (err.detail || res.statusText));
+            alert('Error: ' + formatError(err));
             return;
         }
         const result = await res.json();
@@ -365,7 +380,7 @@ async function deleteRoute(vhostId, routeId) {
         });
         if (!res.ok) {
             const err = await res.json();
-            alert('Error: ' + (err.detail || res.statusText));
+            alert('Error: ' + formatError(err));
             return;
         }
         location.reload();
@@ -726,7 +741,7 @@ async function showCredentials(poolId) {
         });
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
-            alert('Error: ' + (err.detail || res.statusText));
+            alert('Error: ' + formatError(err));
             return;
         }
         const data = await res.json();

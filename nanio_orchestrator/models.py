@@ -18,7 +18,7 @@ _NGINX_DANGEROUS_RE = re.compile(r"[;{}\\]")
 
 
 class PoolCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_-]+$")
+    name: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9._-]+$")
     description: Optional[str] = None
     type: str = Field("nanio", pattern=r"^(nanio|http|cold)$")
     lb_method: str = Field("least_conn", pattern=r"^(round_robin|least_conn|ip_hash)$")
@@ -26,7 +26,7 @@ class PoolCreate(BaseModel):
 
 
 class PoolUpdate(BaseModel):
-    name: Optional[str] = Field(None, min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_-]+$")
+    name: Optional[str] = Field(None, min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9._-]+$")
     description: Optional[str] = None
     type: Optional[str] = Field(None, pattern=r"^(nanio|http|cold)$")
     lb_method: Optional[str] = Field(None, pattern=r"^(round_robin|least_conn|ip_hash)$")
