@@ -55,6 +55,7 @@ async def _run_cmd(cmd: list[str]) -> NginxExecResult:
 def _nginx_bin() -> str:
     """Resolve the nginx binary path, matching what was written into sudoers."""
     import shutil as _shutil
+
     return _shutil.which("nginx") or "/usr/sbin/nginx"
 
 

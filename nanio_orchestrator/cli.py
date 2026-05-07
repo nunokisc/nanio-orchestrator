@@ -12,26 +12,26 @@ import click
 # (field_name, category, description, is_secret)
 
 _SETTINGS_META = {
-    "host":                      ("Core",        "Bind address",                           False),
-    "port":                      ("Core",        "Listen port",                            False),
-    "api_key":                   ("Core",        "API authentication key",                 True),
-    "log_level":                 ("Core",        "Log level (debug/info/warning/error)",   False),
-    "session_ttl":               ("Core",        "Web UI session duration (seconds)",      False),
-    "db_path":                   ("Database",    "SQLite database file path",              False),
-    "db_backup_path":            ("Database",    "Backup path (default: db_path + .bak)",  False),
-    "db_backup_interval":        ("Database",    "Seconds between timed backups",          False),
-    "db_backup_rotate":          ("Database",    "Number of backup copies to keep",        False),
-    "secret":                    ("Security",    "Fernet key for credential encryption",   True),
-    "s3_access_key":             ("S3",          "Global S3 access key",                   True),
-    "s3_secret_key":             ("S3",          "Global S3 secret key",                   True),
-    "bucket_sync_interval":      ("S3",          "Seconds between bucket syncs",           False),
-    "nginx_config_dir":          ("Nginx",       "Root directory for generated configs",   False),
-    "drift_interval":            ("Nginx",       "Seconds between drift checks",           False),
-    "rclone_path":               ("Migrations",  "Path to rclone binary",                  False),
-    "migration_max_parallel":    ("Migrations",  "Max concurrent migrations",              False),
-    "migration_bandwidth_limit": ("Migrations",  "rclone --bwlimit value (e.g. 50M)",     False),
-    "migration_checkers":        ("Migrations",  "rclone --checkers value",                False),
-    "migration_transfers":       ("Migrations",  "rclone --transfers value",               False),
+    "host": ("Core", "Bind address", False),
+    "port": ("Core", "Listen port", False),
+    "api_key": ("Core", "API authentication key", True),
+    "log_level": ("Core", "Log level (debug/info/warning/error)", False),
+    "session_ttl": ("Core", "Web UI session duration (seconds)", False),
+    "db_path": ("Database", "SQLite database file path", False),
+    "db_backup_path": ("Database", "Backup path (default: db_path + .bak)", False),
+    "db_backup_interval": ("Database", "Seconds between timed backups", False),
+    "db_backup_rotate": ("Database", "Number of backup copies to keep", False),
+    "secret": ("Security", "Fernet key for credential encryption", True),
+    "s3_access_key": ("S3", "Global S3 access key", True),
+    "s3_secret_key": ("S3", "Global S3 secret key", True),
+    "bucket_sync_interval": ("S3", "Seconds between bucket syncs", False),
+    "nginx_config_dir": ("Nginx", "Root directory for generated configs", False),
+    "drift_interval": ("Nginx", "Seconds between drift checks", False),
+    "rclone_path": ("Migrations", "Path to rclone binary", False),
+    "migration_max_parallel": ("Migrations", "Max concurrent migrations", False),
+    "migration_bandwidth_limit": ("Migrations", "rclone --bwlimit value (e.g. 50M)", False),
+    "migration_checkers": ("Migrations", "rclone --checkers value", False),
+    "migration_transfers": ("Migrations", "rclone --transfers value", False),
 }
 
 _CATEGORY_ORDER = ["Core", "Database", "Security", "S3", "Nginx", "Migrations"]
@@ -39,6 +39,7 @@ _CATEGORY_ORDER = ["Core", "Database", "Security", "S3", "Nginx", "Migrations"]
 
 def _get_config_path() -> str:
     from nanio_orchestrator.config import DEV_MODE
+
     return "dev.env" if DEV_MODE else "/etc/nanio-orchestrator/config.env"
 
 
@@ -97,6 +98,7 @@ def serve(host, port, do_reload):
 
     # Init DB synchronously before starting
     from nanio_orchestrator.db import init_db_sync
+
     init_db_sync()
 
     import uvicorn
@@ -108,6 +110,7 @@ def serve(host, port, do_reload):
         import logging
         from logging.handlers import RotatingFileHandler
         from pathlib import Path as _Path
+
         _Path(s.log_file).parent.mkdir(parents=True, exist_ok=True)
         _fmt = logging.Formatter(
             "%(asctime)s %(levelname)-8s %(name)s: %(message)s",
@@ -147,12 +150,17 @@ def install():
     Must be run as root.
     """
     from nanio_orchestrator.install import run_install
+
     run_install()
 
 
 @main.command()
-@click.option("--purge", is_flag=True, default=False,
-              help="Also delete data (/opt/nanio-orchestrator) and config (/etc/nanio-orchestrator).")
+@click.option(
+    "--purge",
+    is_flag=True,
+    default=False,
+    help="Also delete data (/opt/nanio-orchestrator) and config (/etc/nanio-orchestrator).",
+)
 @click.option("--yes", "-y", is_flag=True, default=False, help="Skip confirmation prompt.")
 def remove(purge, yes):
     """Remove nanio-orchestrator from the system.
@@ -164,6 +172,7 @@ def remove(purge, yes):
     Must be run as root.
     """
     from nanio_orchestrator.install import run_remove
+
     run_remove(purge=purge, yes=yes)
 
 
@@ -180,7 +189,7 @@ def rebuild_db(dry_run, force):
 
     async def _rebuild():
         from nanio_orchestrator.config import get_settings
-        from nanio_orchestrator.db import init_db, get_db_ctx
+        from nanio_orchestrator.db import get_db_ctx, init_db
 
         s = get_settings()
         s.ensure_dirs()
@@ -197,12 +206,14 @@ def rebuild_db(dry_run, force):
         if not dry_run and force:
             await init_db()
             from nanio_orchestrator.db import CLEAR_TABLES
+
             async with get_db_ctx() as db:
                 for table in CLEAR_TABLES:
                     await db.execute(f"DELETE FROM {table}")
                 await db.commit()
 
         from nanio_orchestrator.rebuild import rebuild_from_disk
+
         print("Rebuilding database from disk...\n")
         result = await rebuild_from_disk(dry_run=dry_run)
 
@@ -248,7 +259,8 @@ def config():
 @config.command("show")
 def config_show():
     """Show all current settings, grouped by category."""
-    from nanio_orchestrator.config import get_settings, DEV_MODE
+    from nanio_orchestrator.config import DEV_MODE, get_settings
+
     s = get_settings()
     config_path = _get_config_path()
 
@@ -278,6 +290,7 @@ def config_show():
 def config_get(key):
     """Print the current value of a single setting (for scripting)."""
     from nanio_orchestrator.config import get_settings
+
     s = get_settings()
     normalized = key.lower().removeprefix("nanio_orchestrator_")
     if normalized == "db_backup_path":
@@ -320,14 +333,14 @@ def config_set(key, value):
 
 
 @config.command("generate-secret")
-@click.option("--set", "do_set", is_flag=True, default=False,
-              help="Also write the generated key to the config file.")
+@click.option("--set", "do_set", is_flag=True, default=False, help="Also write the generated key to the config file.")
 def config_generate_secret(do_set):
     """Generate a Fernet encryption key for NANIO_ORCHESTRATOR_SECRET.
 
     Run with --set to write it directly to the config file.
     """
     from cryptography.fernet import Fernet
+
     key = Fernet.generate_key().decode()
     print(key)
     if do_set:
@@ -349,6 +362,7 @@ def config_edit():
     if not editor:
         for fallback in ("nano", "vi"):
             import shutil
+
             if shutil.which(fallback):
                 editor = fallback
                 break
@@ -364,6 +378,7 @@ def config_edit():
 def config_validate():
     """Run nginx -t to validate configuration."""
     import asyncio
+
     from nanio_orchestrator.nginx.executor import test_config
 
     result = asyncio.run(test_config())
@@ -375,6 +390,7 @@ def config_validate():
 def config_reload():
     """Run nginx -s reload."""
     import asyncio
+
     from nanio_orchestrator.nginx.executor import reload_nginx
 
     result = asyncio.run(reload_nginx())
@@ -396,12 +412,14 @@ def config_rebuild():
         await init_db()
 
         from nanio_orchestrator.nginx.generator import generate_all_configs, write_config_atomic
+
         configs = await generate_all_configs()
         for filepath, content in configs:
             await write_config_atomic(filepath, content)
             print(f"  ✓ {filepath}")
 
         from nanio_orchestrator.nginx.executor import test_and_reload
+
         result = await test_and_reload()
         print(result.output)
         return result.ok
@@ -428,7 +446,7 @@ def orphaned_list():
 
     async def _list():
         from nanio_orchestrator.config import get_settings
-        from nanio_orchestrator.db import init_db, get_db_ctx
+        from nanio_orchestrator.db import get_db_ctx, init_db
 
         s = get_settings()
         s.ensure_dirs()

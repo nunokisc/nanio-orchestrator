@@ -20,6 +20,7 @@ from nanio_orchestrator.nginx.generator import (
     record_file_state,
     sha256_str,
 )
+
 router = APIRouter(prefix="/api/config", tags=["config"])
 
 
@@ -45,13 +46,15 @@ async def config_status():
         for r in rows:
             disk_hash = await _sha256_file(r["path"])
             drifted = disk_hash is not None and r["sha256_db"] is not None and disk_hash != r["sha256_db"]
-            files.append(ConfigFileStatus(
-                path=r["path"],
-                sha256_disk=disk_hash,
-                sha256_db=r["sha256_db"],
-                drifted=drifted,
-                last_synced_at=r["last_synced_at"],
-            ))
+            files.append(
+                ConfigFileStatus(
+                    path=r["path"],
+                    sha256_disk=disk_hash,
+                    sha256_db=r["sha256_db"],
+                    drifted=drifted,
+                    last_synced_at=r["last_synced_at"],
+                )
+            )
 
         # Last reload from audit_log
         reload_rows = await db.execute_fetchall(
@@ -90,8 +93,7 @@ async def reload_config():
     """Run nginx -s reload without config change."""
     result = await reload_nginx()
     async with get_db_ctx() as db:
-        await log_audit(db, "manual_reload", "config", None,
-                        reload_ok=result.ok, reload_output=result.output)
+        await log_audit(db, "manual_reload", "config", None, reload_ok=result.ok, reload_output=result.output)
         await db.commit()
     return NginxResult(ok=result.ok, output=result.output)
 
@@ -108,6 +110,7 @@ async def sync_from_disk():
     at any time; running it twice is idempotent.
     """
     from datetime import datetime, timezone
+
     from nanio_orchestrator.nginx.parser import is_managed_file, parse_upstream_block, parse_vhost_block
     from nanio_orchestrator.sidecar import scan_pool_sidecars, scan_vhost_sidecars
 
@@ -170,23 +173,25 @@ async def sync_from_disk():
                         """INSERT INTO pool_members
                            (pool_id, address, role, weight, max_fails, fail_timeout_s, enabled)
                            VALUES (?,?,?,?,?,?,1)""",
-                        (pool_id, m["address"], m["role"], m["weight"],
-                         m["max_fails"], m["fail_timeout_s"]),
+                        (pool_id, m["address"], m["role"], m["weight"], m["max_fails"], m["fail_timeout_s"]),
                     )
                     members_new += 1
 
             creds = sidecar.get("credentials")
             if creds and creds.get("access_key_enc") and creds.get("secret_key_enc"):
-                no_creds = await db.execute_fetchall(
-                    "SELECT id FROM pool_credentials WHERE pool_id=?", (pool_id,)
-                )
+                no_creds = await db.execute_fetchall("SELECT id FROM pool_credentials WHERE pool_id=?", (pool_id,))
                 if not no_creds:
                     await db.execute(
                         """INSERT INTO pool_credentials
                            (pool_id, access_key_enc, secret_key_enc, endpoint_url, region)
                            VALUES (?,?,?,?,?)""",
-                        (pool_id, creds["access_key_enc"], creds["secret_key_enc"],
-                         creds.get("endpoint_url"), creds.get("region", "us-east-1")),
+                        (
+                            pool_id,
+                            creds["access_key_enc"],
+                            creds["secret_key_enc"],
+                            creds.get("endpoint_url"),
+                            creds.get("region", "us-east-1"),
+                        ),
                     )
 
             h = sha256_str(content)
@@ -226,18 +231,21 @@ async def sync_from_disk():
                     if row:
                         default_pool_id = row[0]["id"]
 
-            existing_v = await db.execute_fetchall(
-                "SELECT id FROM vhosts WHERE server_name=?", (server_name,)
-            )
+            existing_v = await db.execute_fetchall("SELECT id FROM vhosts WHERE server_name=?", (server_name,))
             if existing_v:
                 vhost_id = existing_v[0]["id"]
                 await db.execute(
                     """UPDATE vhosts SET listen_port=?, ssl=?, ssl_cert_path=?, ssl_key_path=?,
                        default_pool_id=COALESCE(?,default_pool_id), updated_at=datetime('now')
                        WHERE id=?""",
-                    (parsed["listen_port"], 1 if parsed["ssl"] else 0,
-                     parsed["ssl_cert_path"], parsed["ssl_key_path"],
-                     default_pool_id, vhost_id),
+                    (
+                        parsed["listen_port"],
+                        1 if parsed["ssl"] else 0,
+                        parsed["ssl_cert_path"],
+                        parsed["ssl_key_path"],
+                        default_pool_id,
+                        vhost_id,
+                    ),
                 )
                 vhosts_updated += 1
             else:
@@ -245,8 +253,14 @@ async def sync_from_disk():
                     """INSERT INTO vhosts
                        (server_name, listen_port, ssl, ssl_cert_path, ssl_key_path, enabled, default_pool_id)
                        VALUES (?,?,?,?,?,1,?)""",
-                    (server_name, parsed["listen_port"], 1 if parsed["ssl"] else 0,
-                     parsed["ssl_cert_path"], parsed["ssl_key_path"], default_pool_id),
+                    (
+                        server_name,
+                        parsed["listen_port"],
+                        1 if parsed["ssl"] else 0,
+                        parsed["ssl_cert_path"],
+                        parsed["ssl_key_path"],
+                        default_pool_id,
+                    ),
                 )
                 vhost_id = cursor.lastrowid
                 vhosts_new += 1
@@ -308,6 +322,7 @@ async def sync_from_disk():
 async def rebuild_all():
     """Rebuild all config files from DB, validate, and reload."""
     import os
+
     configs = await generate_all_configs()
     errors = []
     written = []
@@ -369,8 +384,7 @@ async def rebuild_all():
         for filepath, content in to_write:
             if filepath in written:
                 await record_file_state(db, filepath, content)
-        await log_audit(db, "rebuild", "config", None,
-                        reload_ok=reload_result.ok, reload_output=reload_result.output)
+        await log_audit(db, "rebuild", "config", None, reload_ok=reload_result.ok, reload_output=reload_result.output)
         await db.commit()
 
     return {
@@ -396,6 +410,7 @@ async def absorb_file(path: str = Body(..., embed=True)):
 
     h = sha256_str(content)
     from datetime import datetime, timezone
+
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     async with get_db_ctx() as db:
         await db.execute(
@@ -408,8 +423,7 @@ async def absorb_file(path: str = Body(..., embed=True)):
                  last_synced_at   = excluded.last_synced_at""",
             (path, h, h, content, now),
         )
-        await log_audit(db, "absorb_drift", "config", None,
-                        reload_output=f"Absorbed drift for {path}")
+        await log_audit(db, "absorb_drift", "config", None, reload_output=f"Absorbed drift for {path}")
         await db.commit()
     return {"ok": True, "path": path, "sha256": h}
 
@@ -418,6 +432,7 @@ async def absorb_file(path: str = Body(..., embed=True)):
 async def rewrite_file(path: str = Body(..., embed=True)):
     """Rewrite a single config file from DB state, validate, and reload."""
     import os
+
     s = get_settings()
 
     # Determine if this is a pool or vhost config by matching against DB entries
@@ -425,12 +440,8 @@ async def rewrite_file(path: str = Body(..., embed=True)):
         pools = await db.execute_fetchall("SELECT id, name FROM pools")
         vhosts = await db.execute_fetchall("SELECT id, server_name FROM vhosts")
 
-    pool_match = next(
-        (p for p in pools if str(s.pools_dir / f"{p['name']}.conf") == path), None
-    )
-    vhost_match = next(
-        (v for v in vhosts if str(s.vhosts_dir / f"{v['server_name']}.conf") == path), None
-    )
+    pool_match = next((p for p in pools if str(s.pools_dir / f"{p['name']}.conf") == path), None)
+    vhost_match = next((v for v in vhosts if str(s.vhosts_dir / f"{v['server_name']}.conf") == path), None)
 
     if pool_match:
         filepath, content = await generate_pool_config(pool_match["id"])
@@ -466,8 +477,9 @@ async def rewrite_file(path: str = Body(..., embed=True)):
 
     async with get_db_ctx() as db:
         await record_file_state(db, filepath, content)
-        await log_audit(db, "rewrite_file", "config", None,
-                        reload_ok=reload_result.ok, reload_output=reload_result.output)
+        await log_audit(
+            db, "rewrite_file", "config", None, reload_ok=reload_result.ok, reload_output=reload_result.output
+        )
         await db.commit()
 
     return {"ok": reload_result.ok, "output": reload_result.output, "path": filepath}
@@ -507,8 +519,8 @@ async def rebuild_from_disk_endpoint(dry_run: bool = False, force: bool = False)
       - dry_run: report what would be imported, write nothing
       - force: proceed even if DB has existing data (clears first)
     """
+    from nanio_orchestrator.db import CLEAR_TABLES, get_db_ctx, init_db
     from nanio_orchestrator.rebuild import rebuild_from_disk
-    from nanio_orchestrator.db import get_db_ctx, init_db, CLEAR_TABLES
 
     if not dry_run:
         await init_db()
@@ -518,9 +530,7 @@ async def rebuild_from_disk_endpoint(dry_run: bool = False, force: bool = False)
             pools = await db.execute_fetchall("SELECT COUNT(*) as cnt FROM pools")
             if pools[0]["cnt"] > 0:
                 raise HTTPException(
-                    409,
-                    "Database already contains data. Use force=true to overwrite, "
-                    "or dry_run=true to preview."
+                    409, "Database already contains data. Use force=true to overwrite, or dry_run=true to preview."
                 )
 
     if not dry_run and force:
@@ -540,6 +550,7 @@ async def rebuild_from_disk_endpoint(dry_run: bool = False, force: bool = False)
 async def trigger_backup_endpoint():
     """Trigger an immediate database backup."""
     from nanio_orchestrator.backup import backup_database
+
     path = await backup_database()
     if path:
         return {"ok": True, "backup_path": path}
@@ -564,6 +575,7 @@ def _mask(value, is_secret: bool) -> str | None:
 async def get_settings_endpoint():
     """Return all current settings with secrets masked."""
     from nanio_orchestrator.config import DEV_MODE
+
     s = get_settings()
 
     result = {}
@@ -575,6 +587,7 @@ async def get_settings_endpoint():
     result["db_backup_path"] = s.effective_db_backup_path
 
     from nanio_orchestrator.cli import _get_config_path
+
     result["config_file"] = _get_config_path()
     result["dev_mode"] = DEV_MODE
 
@@ -589,7 +602,7 @@ async def update_setting(key: str, body: dict = Body(...)):
     name (``NANIO_ORCHESTRATOR_LOG_LEVEL``).  Changes are persisted to the
     config file immediately but only take effect after a service restart.
     """
-    from nanio_orchestrator.cli import _get_config_path, _set_config_value, _SETTINGS_META
+    from nanio_orchestrator.cli import _SETTINGS_META, _get_config_path, _set_config_value
 
     normalized = key.lower().removeprefix("nanio_orchestrator_")
     if normalized not in _SETTINGS_META:

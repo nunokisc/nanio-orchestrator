@@ -24,6 +24,7 @@ import tempfile
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
+from nanio_orchestrator.audit_log import log_audit
 from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.credentials import get_pool_credentials, get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
@@ -34,11 +35,10 @@ from nanio_orchestrator.nginx.generator import (
     write_config_atomic,
 )
 from nanio_orchestrator.s3client import bucket_exists, bucket_has_objects, count_objects, create_bucket
-from nanio_orchestrator.audit_log import log_audit
 from nanio_orchestrator.sidecar import (
-    write_migration_state,
     delete_migration_state,
     write_migration_completion,
+    write_migration_state,
 )
 
 logger = logging.getLogger(__name__)
@@ -59,6 +59,7 @@ def cleanup_stale_rclone_dirs() -> None:
     S3 credentials that must not persist on disk after the process exits.
     """
     import glob
+
     for d in glob.glob(os.path.join(tempfile.gettempdir(), "nanio-rclone-*")):
         try:
             shutil.rmtree(d)
@@ -171,9 +172,7 @@ async def _set_phase(migration_id: int, phase: str, error_msg: Optional[str] = N
                 (phase, _now(), migration_id),
             )
         else:
-            await db.execute(
-                "UPDATE migrations SET phase=? WHERE id=?", (phase, migration_id)
-            )
+            await db.execute("UPDATE migrations SET phase=? WHERE id=?", (phase, migration_id))
         await db.commit()
 
         # Write migration state sidecar (for rebuild recovery)
@@ -218,8 +217,10 @@ async def _write_state_sidecar(migration_id: int, db) -> None:
         "started_at": m.get("started_at"),
         "finished_at": m.get("finished_at"),
         "nginx_state": (
-            "source" if m["phase"] in ("pending", "copying")
-            else "split" if m["phase"] in ("write_routing", "verifying")
+            "source"
+            if m["phase"] in ("pending", "copying")
+            else "split"
+            if m["phase"] in ("write_routing", "verifying")
             else "target"
         ),
     }
@@ -267,20 +268,24 @@ async def _run_rclone(
         cmd += ["copy", src_remote, dst_remote]
 
     cmd += [
-        "--config", config_path,
-        "--checkers", str(s.migration_checkers),
-        "--transfers", str(s.migration_transfers),
-        "--stats", "5s",
+        "--config",
+        config_path,
+        "--checkers",
+        str(s.migration_checkers),
+        "--transfers",
+        str(s.migration_transfers),
+        "--stats",
+        "5s",
         "--stats-one-line",
-        "--log-level", "NOTICE",
+        "--log-level",
+        "NOTICE",
     ]
 
     if s.migration_bandwidth_limit and not check_only:
         cmd += ["--bwlimit", s.migration_bandwidth_limit]
 
     await _log(migration_id, phase, f"Running: {' '.join(cmd)}")
-    logger.info("migration %d [%s]: starting rclone %s → %s",
-                migration_id, phase, src_remote, dst_remote)
+    logger.info("migration %d [%s]: starting rclone %s → %s", migration_id, phase, src_remote, dst_remote)
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -368,18 +373,25 @@ async def _run_rclone_check(
     """
     s = get_settings()
     cmd = [
-        s.rclone_path, "check", src_remote, dst_remote,
-        "--config", config_path,
-        "--checkers", str(s.migration_checkers),
-        "--transfers", str(s.migration_transfers),
-        "--stats", "5s",
+        s.rclone_path,
+        "check",
+        src_remote,
+        dst_remote,
+        "--config",
+        config_path,
+        "--checkers",
+        str(s.migration_checkers),
+        "--transfers",
+        str(s.migration_transfers),
+        "--stats",
+        "5s",
         "--stats-one-line",
-        "--log-level", "NOTICE",
+        "--log-level",
+        "NOTICE",
     ]
 
     await _log(migration_id, "verifying", f"Running: {' '.join(cmd)}")
-    logger.info("migration %d [verifying]: starting rclone check %s → %s",
-                migration_id, src_remote, dst_remote)
+    logger.info("migration %d [verifying]: starting rclone check %s → %s", migration_id, src_remote, dst_remote)
 
     diff_count = 0
     try:
@@ -390,8 +402,7 @@ async def _run_rclone_check(
         )
 
         async with get_db_ctx() as db:
-            await db.execute("UPDATE migrations SET rclone_pid=? WHERE id=?",
-                             (proc.pid, migration_id))
+            await db.execute("UPDATE migrations SET rclone_pid=? WHERE id=?", (proc.pid, migration_id))
             await db.commit()
 
         log_buffer: list = []
@@ -425,10 +436,15 @@ async def _run_rclone_check(
             await _log(migration_id, "verifying", "rclone check completed successfully")
             return True, 0
         else:
-            logger.warning("migration %d [verifying]: rclone check exit code %d, diffs=%d",
-                           migration_id, proc.returncode, diff_count)
-            await _log(migration_id, "verifying",
-                       f"rclone check exit code {proc.returncode} — {diff_count} difference(s)")
+            logger.warning(
+                "migration %d [verifying]: rclone check exit code %d, diffs=%d",
+                migration_id,
+                proc.returncode,
+                diff_count,
+            )
+            await _log(
+                migration_id, "verifying", f"rclone check exit code {proc.returncode} — {diff_count} difference(s)"
+            )
             return False, diff_count
 
     except FileNotFoundError:
@@ -442,13 +458,20 @@ async def _run_rclone_check(
 # Matches rclone stats lines such as:
 #   2026/04/16 18:36:06 INFO  : Transferred:   1.234 GiB / 5.678 GiB, 22%, 54 MiB/s, ETA 1m30s
 #   2026/04/16 18:36:06 INFO  : Checks:         1234 / 5678, 22%
-_BYTES_RE = re.compile(
-    r"Transferred:.*?([\d.]+)\s*(\w+)\s*/\s*([\d.]+)\s*(\w+),\s*(\d+)%"
-)
+_BYTES_RE = re.compile(r"Transferred:.*?([\d.]+)\s*(\w+)\s*/\s*([\d.]+)\s*(\w+),\s*(\d+)%")
 _CHECKS_RE = re.compile(r"Checks:\s+(\d+)\s*/\s*(\d+)")
 
-_UNIT_BYTES = {"B": 1, "KiB": 1024, "MiB": 1024**2, "GiB": 1024**3, "TiB": 1024**4,
-               "KB": 1000, "MB": 1000**2, "GB": 1000**3, "TB": 1000**4}
+_UNIT_BYTES = {
+    "B": 1,
+    "KiB": 1024,
+    "MiB": 1024**2,
+    "GiB": 1024**3,
+    "TiB": 1024**4,
+    "KB": 1000,
+    "MB": 1000**2,
+    "GB": 1000**3,
+    "TB": 1000**4,
+}
 
 
 def _to_bytes(value: str, unit: str) -> int:
@@ -469,7 +492,6 @@ def _parse_rclone_stats(line: str) -> Optional[dict]:
     return result or None
 
 
-
 async def _restore_nginx_config(migration_id: int, phase: str, filepath: str) -> None:
     """Restore a vhost nginx config from the DB content_snapshot after a failed reload.
 
@@ -478,29 +500,36 @@ async def _restore_nginx_config(migration_id: int, phase: str, filepath: str) ->
     """
     try:
         async with get_db_ctx() as db:
-            rows = await db.execute_fetchall(
-                "SELECT content_snapshot FROM config_files WHERE path = ?", (filepath,)
-            )
+            rows = await db.execute_fetchall("SELECT content_snapshot FROM config_files WHERE path = ?", (filepath,))
         snapshot = dict(rows[0]).get("content_snapshot") if rows else None
         if snapshot:
             await write_config_atomic(filepath, snapshot)
             await reload_nginx()
             logger.info(
                 "migration %d [%s]: nginx config restored from snapshot (%s)",
-                migration_id, phase, filepath,
+                migration_id,
+                phase,
+                filepath,
             )
         else:
-            await _log(migration_id, phase,
-                       f"WARNING: No config snapshot available to restore {filepath}. "
-                       "Run config rebuild to re-sync nginx configs.")
+            await _log(
+                migration_id,
+                phase,
+                f"WARNING: No config snapshot available to restore {filepath}. "
+                "Run config rebuild to re-sync nginx configs.",
+            )
     except Exception as exc:
         logger.warning(
             "migration %d [%s]: failed to restore nginx config from snapshot: %s",
-            migration_id, phase, exc,
+            migration_id,
+            phase,
+            exc,
         )
-        await _log(migration_id, phase,
-                   f"WARNING: Could not restore nginx config: {exc}. "
-                   "Run config rebuild to re-sync nginx configs.")
+        await _log(
+            migration_id,
+            phase,
+            f"WARNING: Could not restore nginx config: {exc}. Run config rebuild to re-sync nginx configs.",
+        )
 
 
 # ── State machine: run a full migration ──────────────────────────────────────
@@ -513,9 +542,7 @@ async def run_migration(migration_id: int) -> None:
     try:
         # Load migration record
         async with get_db_ctx() as db:
-            rows = await db.execute_fetchall(
-                "SELECT * FROM migrations WHERE id = ?", (migration_id,)
-            )
+            rows = await db.execute_fetchall("SELECT * FROM migrations WHERE id = ?", (migration_id,))
         if not rows:
             logger.error("Migration %d not found", migration_id)
             return
@@ -557,9 +584,11 @@ async def run_migration(migration_id: int) -> None:
             try:
                 src_count = await count_objects(src_address, bucket, access_key=ak, secret_key=sk)
                 if src_count == 0:
-                    msg = (f"Refusing to migrate: source bucket '{bucket}' is empty. "
-                           "Copying from an empty source would erase any content already "
-                           "present at the destination. Verify the source bucket and retry.")
+                    msg = (
+                        f"Refusing to migrate: source bucket '{bucket}' is empty. "
+                        "Copying from an empty source would erase any content already "
+                        "present at the destination. Verify the source bucket and retry."
+                    )
                     logger.error("Migration %d aborted: %s", migration_id, msg)
                     await _log(migration_id, "error", msg)
                     await _set_phase(migration_id, "error", msg)
@@ -568,12 +597,13 @@ async def run_migration(migration_id: int) -> None:
                 logger.warning(
                     "Migration %d: pre-flight ListObjects failed (%s) — "
                     "skipping empty-source guard, rclone will verify independently.",
-                    migration_id, exc,
+                    migration_id,
+                    exc,
                 )
                 await _log(
-                    migration_id, "copying",
-                    f"Pre-flight object count unavailable ({exc}). "
-                    "Proceeding — rclone uses its own pool credentials.",
+                    migration_id,
+                    "copying",
+                    f"Pre-flight object count unavailable ({exc}). Proceeding — rclone uses its own pool credentials.",
                 )
 
         # ── Pre-condition: destination bucket must not contain objects ───────
@@ -585,13 +615,17 @@ async def run_migration(migration_id: int) -> None:
             dst_ak_pre, dst_sk_pre, _ = await get_pool_s3_params(dst_pool_id)
             try:
                 dst_bucket_found = await bucket_exists(
-                    dst_address_precond, bucket,
-                    access_key=dst_ak_pre, secret_key=dst_sk_pre,
+                    dst_address_precond,
+                    bucket,
+                    access_key=dst_ak_pre,
+                    secret_key=dst_sk_pre,
                 )
                 if dst_bucket_found:
                     if await bucket_has_objects(
-                        dst_address_precond, bucket,
-                        access_key=dst_ak_pre, secret_key=dst_sk_pre,
+                        dst_address_precond,
+                        bucket,
+                        access_key=dst_ak_pre,
+                        secret_key=dst_sk_pre,
                     ):
                         if mode == "sync":
                             # sync mode would overwrite/delete destination content — refuse
@@ -606,16 +640,22 @@ async def run_migration(migration_id: int) -> None:
                             return
                         else:
                             # copy mode is additive — destination objects are safe
-                            await _log(migration_id, "copying",
-                                       f"Destination bucket '{bucket}' already has objects — "
-                                       "copy mode will add missing objects, existing destination objects are preserved")
+                            await _log(
+                                migration_id,
+                                "copying",
+                                f"Destination bucket '{bucket}' already has objects — "
+                                "copy mode will add missing objects, existing destination objects are preserved",
+                            )
                     else:
-                        await _log(migration_id, "copying",
-                                   f"Destination bucket '{bucket}' exists and is empty — proceeding")
+                        await _log(
+                            migration_id, "copying", f"Destination bucket '{bucket}' exists and is empty — proceeding"
+                        )
                 else:
                     dst_ok, dst_create_msg = await create_bucket(
-                        dst_address_precond, bucket,
-                        access_key=dst_ak_pre, secret_key=dst_sk_pre,
+                        dst_address_precond,
+                        bucket,
+                        access_key=dst_ak_pre,
+                        secret_key=dst_sk_pre,
                     )
                     if not dst_ok:
                         msg = f"Failed to create destination bucket '{bucket}': {dst_create_msg}"
@@ -623,15 +663,14 @@ async def run_migration(migration_id: int) -> None:
                         await _log(migration_id, "error", msg)
                         await _set_phase(migration_id, "error", msg)
                         return
-                    await _log(migration_id, "copying",
-                               f"Created destination bucket '{bucket}' on pool {dst_pool_id}")
+                    await _log(migration_id, "copying", f"Created destination bucket '{bucket}' on pool {dst_pool_id}")
             except Exception as exc:
                 logger.warning(
                     "Migration %d: destination bucket pre-check failed (%s) — proceeding",
-                    migration_id, exc,
+                    migration_id,
+                    exc,
                 )
-                await _log(migration_id, "copying",
-                           f"Destination bucket pre-check unavailable ({exc}) — proceeding")
+                await _log(migration_id, "copying", f"Destination bucket pre-check unavailable ({exc}) — proceeding")
 
         # ── Phase: copying (convergence loop) ───────────────────────────
         # Repeat rclone copy until src and dst object counts match, or until
@@ -643,10 +682,8 @@ async def run_migration(migration_id: int) -> None:
         prev_src_count: int = -1
         for pass_num in range(1, s.migration_max_copy_passes + 1):
             pass_label = f"pass {pass_num}/{s.migration_max_copy_passes}"
-            await _log(migration_id, "copying",
-                       f"Starting rclone {mode} {pass_label}: {src_remote} → {dst_remote}")
-            ok = await _run_rclone(migration_id, config_path, src_remote, dst_remote,
-                                   "copying", mode=mode)
+            await _log(migration_id, "copying", f"Starting rclone {mode} {pass_label}: {src_remote} → {dst_remote}")
+            ok = await _run_rclone(migration_id, config_path, src_remote, dst_remote, "copying", mode=mode)
             if not ok:
                 await _set_phase(migration_id, "error", f"rclone {mode} failed ({pass_label})")
                 return
@@ -658,30 +695,33 @@ async def run_migration(migration_id: int) -> None:
                 src_addr = await _first_member_endpoint(src_pool_id)
                 dst_addr = await _first_member_endpoint(dst_pool_id)
                 if src_addr and dst_addr:
-                    src_count = await count_objects(src_addr, bucket,
-                                                    access_key=src_ak, secret_key=src_sk)
-                    dst_count = await count_objects(dst_addr, bucket,
-                                                    access_key=dst_ak, secret_key=dst_sk)
-                    await _log(migration_id, "copying",
-                               f"{pass_label}: src={src_count} objects, dst={dst_count} objects")
+                    src_count = await count_objects(src_addr, bucket, access_key=src_ak, secret_key=src_sk)
+                    dst_count = await count_objects(dst_addr, bucket, access_key=dst_ak, secret_key=dst_sk)
+                    await _log(
+                        migration_id, "copying", f"{pass_label}: src={src_count} objects, dst={dst_count} objects"
+                    )
                     if src_count == dst_count:
-                        await _log(migration_id, "copying",
-                                   f"Converged after {pass_num} pass(es) — skipping write-routing")
+                        await _log(
+                            migration_id, "copying", f"Converged after {pass_num} pass(es) — skipping write-routing"
+                        )
                         converged = True
                         break
                     if src_count == prev_src_count:
-                        await _log(migration_id, "copying",
-                                   f"Source count stable at {src_count} objects — entering write-routing")
+                        await _log(
+                            migration_id,
+                            "copying",
+                            f"Source count stable at {src_count} objects — entering write-routing",
+                        )
                         break
                     prev_src_count = src_count
             except Exception as exc:
-                await _log(migration_id, "copying",
-                           f"Object count unavailable ({exc}) — entering write-routing")
+                await _log(migration_id, "copying", f"Object count unavailable ({exc}) — entering write-routing")
                 break  # cannot measure convergence, proceed to write-routing
 
         if not converged:
-            await _log(migration_id, "copying",
-                       "Source still receiving writes — entering write-routing to freeze source")
+            await _log(
+                migration_id, "copying", "Source still receiving writes — entering write-routing to freeze source"
+            )
 
         # ── Phase: write_routing ───────────────────────────────────────
         # nginx routes client writes (PUT/POST/DELETE) directly to the dst
@@ -689,8 +729,9 @@ async def run_migration(migration_id: int) -> None:
         # The source is frozen for new objects from this point on.
         if not converged:
             await _set_phase(migration_id, "write_routing")
-            await _log(migration_id, "write_routing",
-                       "nginx: writes → dst pool | reads → src pool (404-fallback to dst)")
+            await _log(
+                migration_id, "write_routing", "nginx: writes → dst pool | reads → src pool (404-fallback to dst)"
+            )
             vhost_id = m["vhost_id"]
             filepath, content_ng = await generate_vhost_config(vhost_id)
             tmp_path = filepath + ".tmp"
@@ -698,31 +739,36 @@ async def run_migration(migration_id: int) -> None:
             wr_test = await test_config()
             if wr_test.ok:
                 import os as _os
+
                 _os.rename(tmp_path, filepath)
                 reload_result = await reload_nginx()
                 if reload_result.ok:
                     async with get_db_ctx() as db:
                         await record_file_state(db, filepath, content_ng)
                         await db.commit()
-                    await _log(migration_id, "write_routing",
-                               "nginx reloaded with write-routing split config")
+                    await _log(migration_id, "write_routing", "nginx reloaded with write-routing split config")
                 else:
-                    await _log(migration_id, "write_routing",
-                               f"nginx reload failed — restoring previous config: {reload_result.output}")
+                    await _log(
+                        migration_id,
+                        "write_routing",
+                        f"nginx reload failed — restoring previous config: {reload_result.output}",
+                    )
                     await _restore_nginx_config(migration_id, "write_routing", filepath)
-                    await _set_phase(migration_id, "error",
-                                     f"nginx reload failed during write_routing: {reload_result.output}")
+                    await _set_phase(
+                        migration_id, "error", f"nginx reload failed during write_routing: {reload_result.output}"
+                    )
                     return
             else:
                 try:
                     import os as _os
+
                     _os.unlink(tmp_path)
                 except OSError:
                     pass
-                await _log(migration_id, "write_routing",
-                           f"nginx test failed — write-routing not active: {wr_test.output}")
-                await _set_phase(migration_id, "error",
-                                 f"nginx test failed during write_routing: {wr_test.output}")
+                await _log(
+                    migration_id, "write_routing", f"nginx test failed — write-routing not active: {wr_test.output}"
+                )
+                await _set_phase(migration_id, "error", f"nginx test failed during write_routing: {wr_test.output}")
                 return
 
         # ── Phase: verifying ──────────────────────────────────────────
@@ -739,28 +785,22 @@ async def run_migration(migration_id: int) -> None:
         prev_diff_count: Optional[int] = None
 
         for verify_pass in range(1, max_verify_passes + 1):
-            await _log(migration_id, "verifying",
-                       f"Verify pass {verify_pass}/{max_verify_passes}: copy then check")
+            await _log(migration_id, "verifying", f"Verify pass {verify_pass}/{max_verify_passes}: copy then check")
 
-            ok = await _run_rclone(migration_id, config_path, src_remote, dst_remote,
-                                   "verifying", mode="copy")
+            ok = await _run_rclone(migration_id, config_path, src_remote, dst_remote, "verifying", mode="copy")
             if not ok:
-                await _set_phase(migration_id, "error",
-                                 f"Verify pass {verify_pass}: copy step failed")
+                await _set_phase(migration_id, "error", f"Verify pass {verify_pass}: copy step failed")
                 return
 
-            await _log(migration_id, "verifying",
-                       f"Verify pass {verify_pass}: rclone check — verifying src == dst")
-            check_ok, diff_count = await _run_rclone_check(
-                migration_id, config_path, src_remote, dst_remote
-            )
+            await _log(migration_id, "verifying", f"Verify pass {verify_pass}: rclone check — verifying src == dst")
+            check_ok, diff_count = await _run_rclone_check(migration_id, config_path, src_remote, dst_remote)
             if check_ok:
-                await _log(migration_id, "verifying",
-                           f"Verify pass {verify_pass}: check passed — src == dst")
+                await _log(migration_id, "verifying", f"Verify pass {verify_pass}: check passed — src == dst")
                 break
 
-            await _log(migration_id, "verifying",
-                       f"Verify pass {verify_pass}: {diff_count} difference(s) found — will retry")
+            await _log(
+                migration_id, "verifying", f"Verify pass {verify_pass}: {diff_count} difference(s) found — will retry"
+            )
 
             if prev_diff_count is not None and diff_count >= prev_diff_count:
                 msg = (
@@ -840,6 +880,7 @@ async def run_migration(migration_id: int) -> None:
         test_result = await test_config()
         if test_result.ok:
             import os as _os
+
             _os.rename(tmp_path, filepath)
             reload_result = await reload_nginx()
             if reload_result.ok:
@@ -851,8 +892,11 @@ async def run_migration(migration_id: int) -> None:
                 # Reload failed — rollback DB route to source pool, then regenerate
                 # correct nginx config (pointing to src) so the broken file doesn't
                 # affect future nginx reloads.
-                await _log(migration_id, "switching",
-                           f"nginx reload failed: {reload_result.output} — rolling back route and restoring config")
+                await _log(
+                    migration_id,
+                    "switching",
+                    f"nginx reload failed: {reload_result.output} — rolling back route and restoring config",
+                )
                 async with get_db_ctx() as db:
                     if route_id:
                         await db.execute(
@@ -881,25 +925,31 @@ async def run_migration(migration_id: int) -> None:
                         async with get_db_ctx() as db:
                             await record_file_state(db, restored_fp, restored_content)
                             await db.commit()
-                        await _log(migration_id, "switching",
-                                   "nginx config restored and reloaded (pointing to source pool)")
+                        await _log(
+                            migration_id, "switching", "nginx config restored and reloaded (pointing to source pool)"
+                        )
                     else:
-                        await _log(migration_id, "switching",
-                                   f"WARNING: Config restoration reload also failed: {restore_reload.output}. "
-                                   "Run config rebuild to re-sync nginx configs.")
+                        await _log(
+                            migration_id,
+                            "switching",
+                            f"WARNING: Config restoration reload also failed: {restore_reload.output}. "
+                            "Run config rebuild to re-sync nginx configs.",
+                        )
                 except Exception as restore_exc:
-                    await _log(migration_id, "switching",
-                               f"WARNING: Could not restore nginx config: {restore_exc}. "
-                               "Run config rebuild to re-sync nginx configs.")
-                await _set_phase(migration_id, "error",
-                                 f"nginx reload failed during switching: {reload_result.output}")
+                    await _log(
+                        migration_id,
+                        "switching",
+                        f"WARNING: Could not restore nginx config: {restore_exc}. "
+                        "Run config rebuild to re-sync nginx configs.",
+                    )
+                await _set_phase(migration_id, "error", f"nginx reload failed during switching: {reload_result.output}")
                 return
         else:
             # nginx -t failed — rollback DB route to source pool, remove .tmp
-            await _log(migration_id, "switching",
-                       f"nginx test failed: {test_result.output} — rolling back route")
+            await _log(migration_id, "switching", f"nginx test failed: {test_result.output} — rolling back route")
             try:
                 import os as _os
+
                 _os.unlink(tmp_path)
             except OSError:
                 pass
@@ -921,8 +971,7 @@ async def run_migration(migration_id: int) -> None:
                     (vhost_id, bucket),
                 )
                 await db.commit()
-            await _set_phase(migration_id, "error",
-                             f"nginx test failed during switching: {test_result.output}")
+            await _set_phase(migration_id, "error", f"nginx test failed during switching: {test_result.output}")
             return
 
         # ── Record orphaned source data ───────────────────────────────────
@@ -940,36 +989,51 @@ async def run_migration(migration_id: int) -> None:
             )
             await db.commit()
             pool_rows = await db.execute_fetchall(
-                "SELECT id, name FROM pools WHERE id IN (?, ?)", (src_pool_id, dst_pool_id),
+                "SELECT id, name FROM pools WHERE id IN (?, ?)",
+                (src_pool_id, dst_pool_id),
             )
 
         pool_names = {r["id"]: r["name"] for r in pool_rows}
-        write_migration_completion({
-            "migration_id": migration_id,
-            "vhost_id": m["vhost_id"],
-            "bucket": bucket,
-            "source_pool_id": src_pool_id,
-            "source_pool_name": pool_names.get(src_pool_id),
-            "target_pool_id": dst_pool_id,
-            "target_pool_name": pool_names.get(dst_pool_id),
-            "mode": mode,
-            "route_id": route_id,
-            "status": "done",
-            "orphaned_source_pool_id": src_pool_id,
-            "orphaned_source_prefix": f"/{bucket}/",
-            "orphaned_at": orphaned_at,
-        })
+        write_migration_completion(
+            {
+                "migration_id": migration_id,
+                "vhost_id": m["vhost_id"],
+                "bucket": bucket,
+                "source_pool_id": src_pool_id,
+                "source_pool_name": pool_names.get(src_pool_id),
+                "target_pool_id": dst_pool_id,
+                "target_pool_name": pool_names.get(dst_pool_id),
+                "mode": mode,
+                "route_id": route_id,
+                "status": "done",
+                "orphaned_source_pool_id": src_pool_id,
+                "orphaned_source_prefix": f"/{bucket}/",
+                "orphaned_at": orphaned_at,
+            }
+        )
 
         # ── Phase: done ───────────────────────────────────────────────────
         await _set_phase(migration_id, "done")
-        await _log(migration_id, "done",
-                   f"Migration completed: {bucket} moved to pool {dst_pool_id}. "
-                   f"Source data on pool {src_pool_id} is now orphaned — "
-                   "use GET /api/migrations/orphaned to track.")
+        await _log(
+            migration_id,
+            "done",
+            f"Migration completed: {bucket} moved to pool {dst_pool_id}. "
+            f"Source data on pool {src_pool_id} is now orphaned — "
+            "use GET /api/migrations/orphaned to track.",
+        )
         async with get_db_ctx() as db:
-            await log_audit(db, "migration_done", "migration", migration_id,
-                            after={"bucket": bucket, "src_pool_id": src_pool_id,
-                                   "dst_pool_id": dst_pool_id, "vhost_id": m["vhost_id"]})
+            await log_audit(
+                db,
+                "migration_done",
+                "migration",
+                migration_id,
+                after={
+                    "bucket": bucket,
+                    "src_pool_id": src_pool_id,
+                    "dst_pool_id": dst_pool_id,
+                    "vhost_id": m["vhost_id"],
+                },
+            )
             await db.commit()
         logger.info("Migration %d completed: bucket=%s", migration_id, bucket)
 
@@ -985,8 +1049,7 @@ async def run_migration(migration_id: int) -> None:
         await _set_phase(migration_id, "error", str(e)[:500])
         await _log(migration_id, "error", str(e))
         async with get_db_ctx() as db:
-            await log_audit(db, "migration_error", "migration", migration_id,
-                            after={"error": str(e)[:500]})
+            await log_audit(db, "migration_error", "migration", migration_id, after={"error": str(e)[:500]})
             await db.commit()
     finally:
         _active_tasks.pop(migration_id, None)
@@ -998,8 +1061,12 @@ async def run_migration(migration_id: int) -> None:
 
 
 async def start_migration(
-    vhost_id: int, bucket: str, src_pool_id: int, dst_pool_id: int,
-    mode: str = "copy", route_id: Optional[int] = None,
+    vhost_id: int,
+    bucket: str,
+    src_pool_id: int,
+    dst_pool_id: int,
+    mode: str = "copy",
+    route_id: Optional[int] = None,
 ) -> int:
     """Create a migration record and launch the background task. Returns migration id.
 
@@ -1025,10 +1092,20 @@ async def start_migration(
                 (vhost_id, bucket, src_pool_id, dst_pool_id, mode, route_id),
             )
             migration_id = cursor.lastrowid
-            await log_audit(db, "start_migration", "migration", migration_id,
-                            after={"bucket": bucket, "src_pool_id": src_pool_id,
-                                   "dst_pool_id": dst_pool_id, "mode": mode,
-                                   "vhost_id": vhost_id, "route_id": route_id})
+            await log_audit(
+                db,
+                "start_migration",
+                "migration",
+                migration_id,
+                after={
+                    "bucket": bucket,
+                    "src_pool_id": src_pool_id,
+                    "dst_pool_id": dst_pool_id,
+                    "mode": mode,
+                    "vhost_id": vhost_id,
+                    "route_id": route_id,
+                },
+            )
             await db.commit()
 
         task = asyncio.create_task(run_migration(migration_id))
@@ -1040,9 +1117,7 @@ async def cancel_migration(migration_id: int) -> bool:
     """Cancel a running migration. Returns True if cancellation was attempted."""
     # Kill rclone process if running — SIGTERM first, SIGKILL after 10s
     async with get_db_ctx() as db:
-        rows = await db.execute_fetchall(
-            "SELECT rclone_pid FROM migrations WHERE id = ?", (migration_id,)
-        )
+        rows = await db.execute_fetchall("SELECT rclone_pid FROM migrations WHERE id = ?", (migration_id,))
         if rows:
             pid = dict(rows[0]).get("rclone_pid")
             if pid:
@@ -1097,16 +1172,20 @@ async def recover_interrupted_migrations() -> int:
     for row in stuck_rows:
         mid = row["id"]
         phase = row["phase"]
-        await _log(mid, "recovery",
-                   f"Found migration stuck in '{phase}' phase (process restart). "
-                   "Marking as error — operator review required. "
-                   "Verify nginx config and route state, then restart or cancel.")
-        await _set_phase(mid, "error",
-                         f"Interrupted during {phase} phase (process restart). "
-                         "Operator review required: check nginx config and routes.")
-        logger.warning(
-            "Migration %d: stuck in %s → error (operator review required)", mid, phase
+        await _log(
+            mid,
+            "recovery",
+            f"Found migration stuck in '{phase}' phase (process restart). "
+            "Marking as error — operator review required. "
+            "Verify nginx config and route state, then restart or cancel.",
         )
+        await _set_phase(
+            mid,
+            "error",
+            f"Interrupted during {phase} phase (process restart). "
+            "Operator review required: check nginx config and routes.",
+        )
+        logger.warning("Migration %d: stuck in %s → error (operator review required)", mid, phase)
         count += 1
 
     # Restart migrations interrupted during copy/verify

@@ -19,7 +19,6 @@ from typing import Dict, List, Optional, Tuple
 
 from nanio_orchestrator.config import get_settings
 
-
 # ── SigV4 helpers ─────────────────────────────────────────────────────────────
 
 
@@ -44,11 +43,7 @@ def _canonicalize_query_string(query: str) -> str:
         return ""
     pairs = urllib.parse.parse_qsl(query, keep_blank_values=True)
     sorted_pairs = sorted(pairs, key=lambda p: (p[0], p[1]))
-    return "&".join(
-        f"{urllib.parse.quote(k, safe='~')}"
-        f"={urllib.parse.quote(v, safe='~')}"
-        for k, v in sorted_pairs
-    )
+    return "&".join(f"{urllib.parse.quote(k, safe='~')}={urllib.parse.quote(v, safe='~')}" for k, v in sorted_pairs)
 
 
 def _make_auth_headers(
@@ -81,22 +76,26 @@ def _make_auth_headers(
     canonical_headers = "".join(f"{k}:{signed_hdrs[k]}\n" for k in sorted_keys)
     signed_headers_str = ";".join(sorted_keys)
 
-    canonical_request = "\n".join([
-        method.upper(),
-        urllib.parse.quote(path, safe="/-_.~"),
-        _canonicalize_query_string(query),
-        canonical_headers,
-        signed_headers_str,
-        body_hash,
-    ])
+    canonical_request = "\n".join(
+        [
+            method.upper(),
+            urllib.parse.quote(path, safe="/-_.~"),
+            _canonicalize_query_string(query),
+            canonical_headers,
+            signed_headers_str,
+            body_hash,
+        ]
+    )
 
     credential_scope = f"{date_stamp}/{region}/s3/aws4_request"
-    string_to_sign = "\n".join([
-        "AWS4-HMAC-SHA256",
-        amz_date,
-        credential_scope,
-        _sha256_hex(canonical_request.encode()),
-    ])
+    string_to_sign = "\n".join(
+        [
+            "AWS4-HMAC-SHA256",
+            amz_date,
+            credential_scope,
+            _sha256_hex(canonical_request.encode()),
+        ]
+    )
 
     sig = hmac.new(
         _signing_key(secret_key, date_stamp, region, "s3"),
@@ -153,8 +152,14 @@ def _do_request(
 
     if access_key and secret_key:
         auth_hdrs = _make_auth_headers(
-            method, full_host, path, query, body,
-            access_key, secret_key, region,
+            method,
+            full_host,
+            path,
+            query,
+            body,
+            access_key,
+            secret_key,
+            region,
             extra_headers=extra_headers,
         )
         headers.update(auth_hdrs)
@@ -189,9 +194,7 @@ async def list_buckets(
     region: str = "us-east-1",
 ) -> List[Dict[str, str]]:
     """Return list of buckets: [{"name": str, "created": str}]."""
-    status, body = await asyncio.to_thread(
-        _do_request, "GET", address, "/", "", b"", access_key, secret_key, region
-    )
+    status, body = await asyncio.to_thread(_do_request, "GET", address, "/", "", b"", access_key, secret_key, region)
     if status not in (200, 206):
         raise RuntimeError(f"ListBuckets HTTP {status}: {body[:300].decode(errors='replace')}")
 
@@ -247,8 +250,7 @@ async def bucket_exists(
 ) -> bool:
     """Return True if bucket exists. Raises RuntimeError on unexpected status codes."""
     status, body = await asyncio.to_thread(
-        _do_request, "GET", address, f"/{bucket}", "list-type=2&max-keys=1",
-        b"", access_key, secret_key, region
+        _do_request, "GET", address, f"/{bucket}", "list-type=2&max-keys=1", b"", access_key, secret_key, region
     )
     if status == 200:
         return True
@@ -269,15 +271,13 @@ async def bucket_has_objects(
     Returns False for non-existent buckets (404). Raises RuntimeError on other errors.
     """
     status, body = await asyncio.to_thread(
-        _do_request, "GET", address, f"/{bucket}", "list-type=2&max-keys=1",
-        b"", access_key, secret_key, region
+        _do_request, "GET", address, f"/{bucket}", "list-type=2&max-keys=1", b"", access_key, secret_key, region
     )
     if status == 404:
         return False
     if status != 200:
         raise RuntimeError(
-            f"ListObjects HTTP {status} for bucket '{bucket}' at {address}: "
-            f"{body[:200].decode(errors='replace')}"
+            f"ListObjects HTTP {status} for bucket '{bucket}' at {address}: {body[:200].decode(errors='replace')}"
         )
     root = ET.fromstring(body)
     for elem in root.iter():
@@ -306,8 +306,7 @@ async def count_objects(
             query += "&continuation-token=" + urllib.parse.quote(continuation_token)
 
         status, body = await asyncio.to_thread(
-            _do_request, "GET", address, f"/{bucket}", query,
-            b"", access_key, secret_key, region
+            _do_request, "GET", address, f"/{bucket}", query, b"", access_key, secret_key, region
         )
         if status == 403:
             raise PermissionError(
@@ -316,8 +315,7 @@ async def count_objects(
             )
         if status != 200:
             raise RuntimeError(
-                f"ListObjects HTTP {status} for bucket '{bucket}' at {address}: "
-                f"{body[:200].decode(errors='replace')}"
+                f"ListObjects HTTP {status} for bucket '{bucket}' at {address}: {body[:200].decode(errors='replace')}"
             )
         root = ET.fromstring(body)
         page_count = 0
@@ -362,13 +360,11 @@ async def list_objects(
             query += "&continuation-token=" + urllib.parse.quote(continuation_token)
 
         status, body = await asyncio.to_thread(
-            _do_request, "GET", address, f"/{bucket}", query,
-            b"", access_key, secret_key, region
+            _do_request, "GET", address, f"/{bucket}", query, b"", access_key, secret_key, region
         )
         if status != 200:
             raise RuntimeError(
-                f"ListObjects HTTP {status} for bucket '{bucket}' at {address}: "
-                f"{body[:200].decode(errors='replace')}"
+                f"ListObjects HTTP {status} for bucket '{bucket}' at {address}: {body[:200].decode(errors='replace')}"
             )
 
         root = ET.fromstring(body)
@@ -402,8 +398,7 @@ async def get_object(
 ) -> Optional[bytes]:
     """Download an object. Returns bytes or None on error."""
     status, body = await asyncio.to_thread(
-        _do_request, "GET", address, f"/{bucket}/{key}", "",
-        b"", access_key, secret_key, region
+        _do_request, "GET", address, f"/{bucket}/{key}", "", b"", access_key, secret_key, region
     )
     return body if status == 200 else None
 
@@ -420,8 +415,7 @@ async def delete_object(
     # Do NOT pre-encode the key here — _do_request handles all percent-encoding.
     # Pre-encoding would cause double-encoding (%20 → %2520) for keys with spaces.
     status, _ = await asyncio.to_thread(
-        _do_request, "DELETE", address, f"/{bucket}/{key}", "",
-        b"", access_key, secret_key, region
+        _do_request, "DELETE", address, f"/{bucket}/{key}", "", b"", access_key, secret_key, region
     )
     return status in (200, 204, 404)
 
@@ -437,8 +431,15 @@ async def put_object(
 ) -> bool:
     """Upload an object. Returns True on success."""
     status, _ = await asyncio.to_thread(
-        _do_request, "PUT", address, f"/{bucket}/{key}", "", data,
-        access_key, secret_key, region,
+        _do_request,
+        "PUT",
+        address,
+        f"/{bucket}/{key}",
+        "",
+        data,
+        access_key,
+        secret_key,
+        region,
         extra_headers={"Content-Type": "application/octet-stream"},
     )
     return status in (200, 204)

@@ -130,7 +130,9 @@ CREATE TABLE IF NOT EXISTS migrations (
     mode                    TEXT NOT NULL DEFAULT 'copy'
                             CHECK (mode IN ('copy','sync')),
     phase                   TEXT NOT NULL DEFAULT 'pending'
-                            CHECK (phase IN ('pending','copying','write_routing','verifying','switching','done','error','cancelled')),
+                            CHECK (phase IN
+                                ('pending','copying','write_routing','verifying',
+                                 'switching','done','error','cancelled')),
     rclone_pid              INTEGER,
     objects_total           INTEGER NOT NULL DEFAULT 0,
     objects_done            INTEGER NOT NULL DEFAULT 0,
@@ -158,10 +160,17 @@ CREATE TABLE IF NOT EXISTS migration_log (
 
 # Tables to truncate when clearing all data (order respects FK constraints)
 CLEAR_TABLES = [
-    "migration_log", "migrations",
-    "node_configs", "bucket_sync", "pool_credentials",
-    "routes", "pool_members", "audit_log", "config_files",
-    "vhosts", "pools",
+    "migration_log",
+    "migrations",
+    "node_configs",
+    "bucket_sync",
+    "pool_credentials",
+    "routes",
+    "pool_members",
+    "audit_log",
+    "config_files",
+    "vhosts",
+    "pools",
 ]
 
 
@@ -208,27 +217,25 @@ async def _run_migrations_async(db) -> None:
     """Add columns/indexes that may be missing in existing databases."""
     # vhosts.default_pool_id (added in bucket-sync feature)
     info = await db.execute_fetchall("PRAGMA table_info(vhosts)")
-    col_names = {r['name'] for r in info}
-    if 'default_pool_id' not in col_names:
-        await db.execute(
-            "ALTER TABLE vhosts ADD COLUMN default_pool_id INTEGER REFERENCES pools(id)"
-        )
+    col_names = {r["name"] for r in info}
+    if "default_pool_id" not in col_names:
+        await db.execute("ALTER TABLE vhosts ADD COLUMN default_pool_id INTEGER REFERENCES pools(id)")
     # routes.key_prefix (added for sub-folder routing)
     info = await db.execute_fetchall("PRAGMA table_info(routes)")
-    col_names = {r['name'] for r in info}
-    if 'key_prefix' not in col_names:
+    col_names = {r["name"] for r in info}
+    if "key_prefix" not in col_names:
         await db.execute("ALTER TABLE routes ADD COLUMN key_prefix TEXT")
 
     # vhosts.extra_blocks_json (structured extra nginx blocks per zone)
     info = await db.execute_fetchall("PRAGMA table_info(vhosts)")
-    col_names = {r['name'] for r in info}
-    if 'extra_blocks_json' not in col_names:
+    col_names = {r["name"] for r in info}
+    if "extra_blocks_json" not in col_names:
         await db.execute("ALTER TABLE vhosts ADD COLUMN extra_blocks_json TEXT")
 
     # vhosts.ip_rule_mode + ip_rule_ips_json (per-vhost IP access control)
     info = await db.execute_fetchall("PRAGMA table_info(vhosts)")
-    col_names = {r['name'] for r in info}
-    if 'ip_rule_mode' not in col_names:
+    col_names = {r["name"] for r in info}
+    if "ip_rule_mode" not in col_names:
         await db.execute("ALTER TABLE vhosts ADD COLUMN ip_rule_mode TEXT")
         await db.execute("ALTER TABLE vhosts ADD COLUMN ip_rule_ips_json TEXT")
 
@@ -242,10 +249,8 @@ async def _run_migrations_async(db) -> None:
     # - Any existing purge_source/needs_purge records are converted to 'done' (switching already
     #   completed, data is safe on dst; source data is now orphaned and tracked)
     info = await db.execute_fetchall("PRAGMA table_info(migrations)")
-    col_names = {r['name'] for r in info}
-    row = await db.execute_fetchall(
-        "SELECT sql FROM sqlite_master WHERE type='table' AND name='migrations'"
-    )
+    col_names = {r["name"] for r in info}
+    row = await db.execute_fetchall("SELECT sql FROM sqlite_master WHERE type='table' AND name='migrations'")
     migrations_sql = row[0]["sql"] if row else ""
     needs_rebuild = (
         "purge_source" in migrations_sql
@@ -265,7 +270,9 @@ async def _run_migrations_async(db) -> None:
             mode                    TEXT NOT NULL DEFAULT 'copy'
                                     CHECK (mode IN ('copy','sync')),
             phase                   TEXT NOT NULL DEFAULT 'pending'
-                                    CHECK (phase IN ('pending','copying','write_routing','verifying','switching','done','error','cancelled')),
+                                    CHECK (phase IN
+                                        ('pending','copying','write_routing','verifying',
+                                         'switching','done','error','cancelled')),
             rclone_pid              INTEGER,
             objects_total           INTEGER NOT NULL DEFAULT 0,
             objects_done            INTEGER NOT NULL DEFAULT 0,
@@ -281,11 +288,22 @@ async def _run_migrations_async(db) -> None:
             created_at              TEXT NOT NULL DEFAULT (datetime('now'))
         )""")
         # Migrate existing data; remap purge phases to 'done' (data is safe on dst)
-        existing_cols = {r['name'] for r in await db.execute_fetchall("PRAGMA table_info(migrations)")}
+        existing_cols = {r["name"] for r in await db.execute_fetchall("PRAGMA table_info(migrations)")}
         src_cols = [
-            "id", "vhost_id", "bucket", "src_pool_id", "dst_pool_id",
-            "rclone_pid", "objects_total", "objects_done", "bytes_total", "bytes_done",
-            "error_msg", "started_at", "finished_at", "created_at",
+            "id",
+            "vhost_id",
+            "bucket",
+            "src_pool_id",
+            "dst_pool_id",
+            "rclone_pid",
+            "objects_total",
+            "objects_done",
+            "bytes_total",
+            "bytes_done",
+            "error_msg",
+            "started_at",
+            "finished_at",
+            "created_at",
         ]
         optional_cols = {
             "mode": "'copy'",
@@ -297,26 +315,20 @@ async def _run_migrations_async(db) -> None:
         for c, default in optional_cols.items():
             select_parts.append(c if c in existing_cols else f"{default} AS {c}")
         # Phase remapping: purge_source/needs_purge → done
-        phase_expr = (
-            "CASE WHEN phase IN ('purge_source','needs_purge') THEN 'done' ELSE phase END"
-        )
+        phase_expr = "CASE WHEN phase IN ('purge_source','needs_purge') THEN 'done' ELSE phase END"
         select_parts.append(f"{phase_expr} AS phase")
         # orphaned_* always NULL for pre-existing records (unknown)
-        select_parts.extend(["NULL AS orphaned_source_pool_id",
-                              "NULL AS orphaned_source_prefix",
-                              "NULL AS orphaned_at"])
-        await db.execute(
-            f"INSERT INTO migrations_new SELECT {', '.join(select_parts)} FROM migrations"
+        select_parts.extend(
+            ["NULL AS orphaned_source_pool_id", "NULL AS orphaned_source_prefix", "NULL AS orphaned_at"]
         )
+        await db.execute(f"INSERT INTO migrations_new SELECT {', '.join(select_parts)} FROM migrations")
         await db.execute("DROP TABLE migrations")
         await db.execute("ALTER TABLE migrations_new RENAME TO migrations")
         await db.commit()
         await db.execute("PRAGMA foreign_keys=ON")
 
     # node_configs: ensure ON DELETE CASCADE on member_id FK
-    row = await db.execute_fetchall(
-        "SELECT sql FROM sqlite_master WHERE type='table' AND name='node_configs'"
-    )
+    row = await db.execute_fetchall("SELECT sql FROM sqlite_master WHERE type='table' AND name='node_configs'")
     if row and "ON DELETE CASCADE" not in (row[0]["sql"] or ""):
         await db.execute("PRAGMA foreign_keys=OFF")
         await db.execute("""CREATE TABLE node_configs_new (
@@ -342,20 +354,18 @@ def init_db_sync() -> None:
     # Migration: vhosts.default_pool_id
     info = conn.execute("PRAGMA table_info(vhosts)").fetchall()
     col_names = {r[1] for r in info}
-    if 'default_pool_id' not in col_names:
-        conn.execute(
-            "ALTER TABLE vhosts ADD COLUMN default_pool_id INTEGER REFERENCES pools(id)"
-        )
+    if "default_pool_id" not in col_names:
+        conn.execute("ALTER TABLE vhosts ADD COLUMN default_pool_id INTEGER REFERENCES pools(id)")
     # Migration: routes.key_prefix
     info = conn.execute("PRAGMA table_info(routes)").fetchall()
     col_names = {r[1] for r in info}
-    if 'key_prefix' not in col_names:
+    if "key_prefix" not in col_names:
         conn.execute("ALTER TABLE routes ADD COLUMN key_prefix TEXT")
 
     # Migration: vhosts.ip_rule_mode + ip_rule_ips_json (per-vhost IP access control)
     info = conn.execute("PRAGMA table_info(vhosts)").fetchall()
     col_names = {r[1] for r in info}
-    if 'ip_rule_mode' not in col_names:
+    if "ip_rule_mode" not in col_names:
         conn.execute("ALTER TABLE vhosts ADD COLUMN ip_rule_mode TEXT")
         conn.execute("ALTER TABLE vhosts ADD COLUMN ip_rule_ips_json TEXT")
 
@@ -369,9 +379,7 @@ def init_db_sync() -> None:
     # - Any existing purge_source/needs_purge records are converted to 'done'
     info = conn.execute("PRAGMA table_info(migrations)").fetchall()
     col_names_mig = {r[1] for r in info}
-    row = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type='table' AND name='migrations'"
-    ).fetchone()
+    row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='migrations'").fetchone()
     migrations_sql = row[0] if row else ""
     needs_rebuild = (
         "purge_source" in migrations_sql
@@ -391,7 +399,9 @@ def init_db_sync() -> None:
             mode                    TEXT NOT NULL DEFAULT 'copy'
                                     CHECK (mode IN ('copy','sync')),
             phase                   TEXT NOT NULL DEFAULT 'pending'
-                                    CHECK (phase IN ('pending','copying','write_routing','verifying','switching','done','error','cancelled')),
+                                    CHECK (phase IN
+                                        ('pending','copying','write_routing','verifying',
+                                         'switching','done','error','cancelled')),
             rclone_pid              INTEGER,
             objects_total           INTEGER NOT NULL DEFAULT 0,
             objects_done            INTEGER NOT NULL DEFAULT 0,
@@ -407,9 +417,20 @@ def init_db_sync() -> None:
             created_at              TEXT NOT NULL DEFAULT (datetime('now'))
         )""")
         src_cols = [
-            "id", "vhost_id", "bucket", "src_pool_id", "dst_pool_id",
-            "rclone_pid", "objects_total", "objects_done", "bytes_total", "bytes_done",
-            "error_msg", "started_at", "finished_at", "created_at",
+            "id",
+            "vhost_id",
+            "bucket",
+            "src_pool_id",
+            "dst_pool_id",
+            "rclone_pid",
+            "objects_total",
+            "objects_done",
+            "bytes_total",
+            "bytes_done",
+            "error_msg",
+            "started_at",
+            "finished_at",
+            "created_at",
         ]
         optional_cols = {"mode": "'copy'", "route_id": "NULL"}
         select_parts = []
@@ -417,25 +438,19 @@ def init_db_sync() -> None:
             select_parts.append(c if c in col_names_mig else f"NULL AS {c}")
         for c, default in optional_cols.items():
             select_parts.append(c if c in col_names_mig else f"{default} AS {c}")
-        phase_expr = (
-            "CASE WHEN phase IN ('purge_source','needs_purge') THEN 'done' ELSE phase END"
-        )
+        phase_expr = "CASE WHEN phase IN ('purge_source','needs_purge') THEN 'done' ELSE phase END"
         select_parts.append(f"{phase_expr} AS phase")
-        select_parts.extend(["NULL AS orphaned_source_pool_id",
-                              "NULL AS orphaned_source_prefix",
-                              "NULL AS orphaned_at"])
-        conn.execute(
-            f"INSERT INTO migrations_new SELECT {', '.join(select_parts)} FROM migrations"
+        select_parts.extend(
+            ["NULL AS orphaned_source_pool_id", "NULL AS orphaned_source_prefix", "NULL AS orphaned_at"]
         )
+        conn.execute(f"INSERT INTO migrations_new SELECT {', '.join(select_parts)} FROM migrations")
         conn.execute("DROP TABLE migrations")
         conn.execute("ALTER TABLE migrations_new RENAME TO migrations")
         conn.commit()
         conn.execute("PRAGMA foreign_keys=ON")
 
     # node_configs: ensure ON DELETE CASCADE on member_id FK
-    row = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type='table' AND name='node_configs'"
-    ).fetchone()
+    row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='node_configs'").fetchone()
     if row and "ON DELETE CASCADE" not in (row[0] or ""):
         conn.execute("PRAGMA foreign_keys=OFF")
         conn.execute("""CREATE TABLE node_configs_new (

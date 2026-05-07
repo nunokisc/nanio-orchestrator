@@ -34,7 +34,6 @@ router = APIRouter(prefix="/api/vhosts", tags=["buckets"])
 logger = logging.getLogger(__name__)
 
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -118,19 +117,23 @@ async def list_vhost_buckets(vhost_id: int, fetch_counts: bool = False):
         if fetch_counts and rd["status"] in ("unrouted", "migrating"):
             try:
                 obj_count = await count_objects(
-                    default_member, rd["bucket"],
-                    access_key=s.s3_access_key, secret_key=s.s3_secret_key,
+                    default_member,
+                    rd["bucket"],
+                    access_key=s.s3_access_key,
+                    secret_key=s.s3_secret_key,
                 )
             except Exception:
                 pass
-        buckets.append({
-            "name": rd["bucket"],
-            "status": rd["status"],
-            "pool_name": rd.get("pool_name"),
-            "routed_pool_id": rd.get("routed_pool_id"),
-            "object_count": obj_count,
-            "discovered_at": rd["discovered_at"],
-        })
+        buckets.append(
+            {
+                "name": rd["bucket"],
+                "status": rd["status"],
+                "pool_name": rd.get("pool_name"),
+                "routed_pool_id": rd.get("routed_pool_id"),
+                "object_count": obj_count,
+                "discovered_at": rd["discovered_at"],
+            }
+        )
         if last_synced is None or (rd["discovered_at"] and rd["discovered_at"] > last_synced):
             last_synced = rd["discovered_at"]
 
@@ -149,8 +152,9 @@ async def trigger_bucket_sync(vhost_id: int):
             raise HTTPException(404, "Vhost not found")
     result = await sync_vhost_buckets_once(vhost_id)
     async with get_db_ctx() as db:
-        await log_audit(db, "sync_buckets", "vhost", vhost_id,
-                        after={"found": result.get("found"), "new": result.get("new")})
+        await log_audit(
+            db, "sync_buckets", "vhost", vhost_id, after={"found": result.get("found"), "new": result.get("new")}
+        )
         await db.commit()
     return result
 
@@ -208,13 +212,13 @@ async def promote_bucket(vhost_id: int, bucket: str, body: BucketPromoteRequest)
     # We refuse the operation and require migration to be explicitly enabled.
     src_has_data = False
     try:
-        src_has_data = await bucket_has_objects(
-            default_member, bucket, access_key=default_ak, secret_key=default_sk
-        )
+        src_has_data = await bucket_has_objects(default_member, bucket, access_key=default_ak, secret_key=default_sk)
     except Exception as exc:
         logger.warning(
             "promote %s (vhost %d): could not check source bucket contents (%s) — proceeding",
-            bucket, vhost_id, exc,
+            bucket,
+            vhost_id,
+            exc,
         )
 
     if src_has_data and not body.migrate:
@@ -232,7 +236,10 @@ async def promote_bucket(vhost_id: int, bucket: str, body: BucketPromoteRequest)
 
     # ── Ensure bucket stub exists on default pool (required for ListBuckets) ─
     ok_default, msg_default = await create_bucket(
-        default_member, bucket, access_key=default_ak, secret_key=default_sk,
+        default_member,
+        bucket,
+        access_key=default_ak,
+        secret_key=default_sk,
     )
     if not ok_default:
         return {"ok": False, "error": f"Failed to create bucket stub on default pool: {msg_default}"}
@@ -266,11 +273,20 @@ async def promote_bucket(vhost_id: int, bucket: str, body: BucketPromoteRequest)
         await db.commit()
 
         ok, output = await _apply_vhost_config(vhost_id, db)
-        await log_audit(db, "promote_bucket", "route", route_id,
-                        after={"bucket": bucket, "pool_id": body.pool_id,
-                               "initial_route_pool_id": initial_route_pool_id,
-                               "migrate": body.migrate},
-                        reload_ok=ok, reload_output=output)
+        await log_audit(
+            db,
+            "promote_bucket",
+            "route",
+            route_id,
+            after={
+                "bucket": bucket,
+                "pool_id": body.pool_id,
+                "initial_route_pool_id": initial_route_pool_id,
+                "migrate": body.migrate,
+            },
+            reload_ok=ok,
+            reload_output=output,
+        )
 
         # Update bucket_sync status
         await db.execute(
@@ -295,9 +311,7 @@ async def promote_bucket(vhost_id: int, bucket: str, body: BucketPromoteRequest)
 
     # ── Optionally start migration (via rclone engine) ───────────────────────────
     if body.migrate:
-        migration_id = await engine_start_migration(
-            vhost_id, bucket, default_pool_id, body.pool_id, route_id=route_id
-        )
+        migration_id = await engine_start_migration(vhost_id, bucket, default_pool_id, body.pool_id, route_id=route_id)
         result["migration_started"] = True
         result["migration_id"] = migration_id
 
@@ -321,8 +335,7 @@ async def ignore_bucket(vhost_id: int, bucket: str):
                ON CONFLICT(vhost_id, bucket) DO UPDATE SET status = 'ignored'""",
             (vhost_id, bucket, _now()),
         )
-        await log_audit(db, "ignore_bucket", "bucket", None,
-                        after={"vhost_id": vhost_id, "bucket": bucket})
+        await log_audit(db, "ignore_bucket", "bucket", None, after={"vhost_id": vhost_id, "bucket": bucket})
         await db.commit()
     return {"ok": True, "bucket": bucket, "status": "ignored"}
 
@@ -334,6 +347,7 @@ async def ignore_bucket(vhost_id: int, bucket: str):
 async def start_migration(vhost_id: int, bucket: str):
     """Start (or restart) object migration for a routed bucket via rclone engine."""
     from nanio_orchestrator.migration_engine import get_active_count
+
     s = get_settings()
 
     async with get_db_ctx() as db:
@@ -366,9 +380,13 @@ async def start_migration(vhost_id: int, bucket: str):
 
     migration_id = await engine_start_migration(vhost_id, bucket, src_pool_id, dst_pool_id)
     async with get_db_ctx() as db:
-        await log_audit(db, "start_migration", "migration", migration_id,
-                        after={"vhost_id": vhost_id, "bucket": bucket,
-                               "src_pool_id": src_pool_id, "dst_pool_id": dst_pool_id})
+        await log_audit(
+            db,
+            "start_migration",
+            "migration",
+            migration_id,
+            after={"vhost_id": vhost_id, "bucket": bucket, "src_pool_id": src_pool_id, "dst_pool_id": dst_pool_id},
+        )
         await db.commit()
     return {"ok": True, "migration_id": migration_id, "bucket": bucket}
 
@@ -404,7 +422,10 @@ async def list_orphans(vhost_id: int):
         bucket_name = row["bucket"]
         try:
             obj_count = await count_objects(
-                default_member, bucket_name, access_key=default_ak, secret_key=default_sk,
+                default_member,
+                bucket_name,
+                access_key=default_ak,
+                secret_key=default_sk,
             )
             if obj_count > 0:
                 orphans.append({"bucket": bucket_name, "objects": obj_count})
@@ -459,13 +480,27 @@ async def purge_orphan(vhost_id: int, bucket: str):
 
     logger.info(
         "purge_orphan: vhost %d bucket '%s': deleted %d/%d objects (%d errors)",
-        vhost_id, bucket, deleted, len(keys), len(errors),
+        vhost_id,
+        bucket,
+        deleted,
+        len(keys),
+        len(errors),
     )
 
     async with get_db_ctx() as db:
-        await log_audit(db, "purge_orphan", "bucket", None,
-                        after={"vhost_id": vhost_id, "bucket": bucket,
-                               "deleted": deleted, "total": len(keys), "errors": len(errors)})
+        await log_audit(
+            db,
+            "purge_orphan",
+            "bucket",
+            None,
+            after={
+                "vhost_id": vhost_id,
+                "bucket": bucket,
+                "deleted": deleted,
+                "total": len(keys),
+                "errors": len(errors),
+            },
+        )
         await db.commit()
 
     return {

@@ -28,7 +28,8 @@ def _get_fernet() -> Fernet:
         if not secret:
             raise RuntimeError(
                 "NANIO_ORCHESTRATOR_SECRET is not set. "
-                "Generate one with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+                "Generate one with: python -c "
+                '"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"'
             )
         _fernet = Fernet(secret.encode("utf-8"))
     return _fernet
@@ -89,9 +90,7 @@ async def store_pool_credentials(
 async def get_pool_credentials(pool_id: int) -> Optional[dict]:
     """Retrieve and decrypt credentials for a pool. Returns None if not set."""
     async with get_db_ctx() as db:
-        rows = await db.execute_fetchall(
-            "SELECT * FROM pool_credentials WHERE pool_id = ?", (pool_id,)
-        )
+        rows = await db.execute_fetchall("SELECT * FROM pool_credentials WHERE pool_id = ?", (pool_id,))
     if not rows:
         return None
 
@@ -110,9 +109,7 @@ async def get_pool_credentials(pool_id: int) -> Optional[dict]:
 async def delete_pool_credentials(pool_id: int) -> bool:
     """Delete credentials for a pool. Returns True if a row was deleted."""
     async with get_db_ctx() as db:
-        cursor = await db.execute(
-            "DELETE FROM pool_credentials WHERE pool_id = ?", (pool_id,)
-        )
+        cursor = await db.execute("DELETE FROM pool_credentials WHERE pool_id = ?", (pool_id,))
         await db.commit()
         return cursor.rowcount > 0
 

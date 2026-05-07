@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-
-import re
 
 # Patterns for nginx-safe values
 _PATH_PREFIX_RE = re.compile(r"^/[A-Za-z0-9._/@-]+/?$")
@@ -97,7 +96,10 @@ class VhostExtraBlock(BaseModel):
 
     zone: Literal["top", "ssl", "proxy", "end"] = Field(
         ...,
-        description="Where to inject: 'top' after server_name, 'ssl' after SSL certs, 'proxy' after proxy directives, 'end' before closing brace",
+        description=(
+            "Where to inject: 'top' after server_name, 'ssl' after SSL certs,"
+            " 'proxy' after proxy directives, 'end' before closing brace"
+        ),
     )
     content: str = Field(..., min_length=1)
 
@@ -132,9 +134,7 @@ class VhostCreate(BaseModel):
     @model_validator(mode="after")
     def require_ssl_certs_when_ssl(self) -> "VhostCreate":
         if self.ssl and (not self.ssl_cert_path or not self.ssl_key_path):
-            raise ValueError(
-                "ssl_cert_path and ssl_key_path are required when ssl is enabled"
-            )
+            raise ValueError("ssl_cert_path and ssl_key_path are required when ssl is enabled")
         if self.ip_rule_mode and not self.ip_rule_ips:
             raise ValueError("ip_rule_ips must be provided when ip_rule_mode is set")
         if self.ip_rule_ips:
@@ -215,8 +215,7 @@ class RouteCreate(BaseModel):
             raise ValueError("path_prefix must start with /")
         if not _PATH_PREFIX_RE.match(v):
             raise ValueError(
-                "path_prefix must match /[A-Za-z0-9._/@-]+/? — "
-                "characters ; { } \\ and spaces are not allowed"
+                "path_prefix must match /[A-Za-z0-9._/@-]+/? — characters ; { } \\ and spaces are not allowed"
             )
         return v
 
@@ -247,8 +246,7 @@ class RouteUpdate(BaseModel):
             raise ValueError("path_prefix must start with /")
         if not _PATH_PREFIX_RE.match(v):
             raise ValueError(
-                "path_prefix must match /[A-Za-z0-9._/@-]+/? — "
-                "characters ; { } \\ and spaces are not allowed"
+                "path_prefix must match /[A-Za-z0-9._/@-]+/? — characters ; { } \\ and spaces are not allowed"
             )
         return v
 
@@ -275,6 +273,7 @@ class RouteOut(BaseModel):
     created_at: str
     updated_at: str
     migration_id: Optional[int] = None
+
 
 # ── Bucket Sync ────────────────────────────────────────────────────────────────
 
@@ -387,6 +386,7 @@ class MigrationLogEntry(BaseModel):
     message: str
     created_at: str
 
+
 # ── Config Status ─────────────────────────────────────────────────────────────
 
 
@@ -460,5 +460,3 @@ class HealthOut(BaseModel):
     db_ok: bool
     nginx_config_dir: str
     drift_alerts: int = 0
-
-

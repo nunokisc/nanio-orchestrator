@@ -14,7 +14,6 @@ from pathlib import Path
 
 from nanio_orchestrator.nginx.executor import detect_nginx
 
-
 CONFIG_ENV_CONTENT = """\
 # nanio-orchestrator configuration
 NANIO_ORCHESTRATOR_HOST=0.0.0.0
@@ -45,12 +44,14 @@ NANIO_ORCHESTRATOR_DB_BACKUP_INTERVAL=300
 NANIO_ORCHESTRATOR_DB_BACKUP_ROTATE=3
 """
 
+
 def _sudoers_content(nginx_path: str, systemctl_path: str = "/usr/bin/systemctl") -> str:
     return (
         "# Allow nanio-orchestrator to validate/reload nginx and restart itself without a password\n"
         f"nanio-orchestrator ALL=(ALL) NOPASSWD: {nginx_path} -t, {nginx_path} -s reload,"
         f" {systemctl_path} restart nanio-orchestrator\n"
     )
+
 
 SYSTEMD_UNIT = """\
 [Unit]
@@ -115,16 +116,17 @@ def run_install() -> None:
 
     # 2. Create service user
     import subprocess
+
     try:
         subprocess.run(
             ["id", "nanio-orchestrator"],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         _step("Service user 'nanio-orchestrator' exists")
     except subprocess.CalledProcessError:
         subprocess.run(
-            ["useradd", "--system", "--no-create-home", "--shell", "/usr/sbin/nologin",
-             "nanio-orchestrator"],
+            ["useradd", "--system", "--no-create-home", "--shell", "/usr/sbin/nologin", "nanio-orchestrator"],
             check=True,
         )
         _step("Created service user 'nanio-orchestrator'")
@@ -156,9 +158,7 @@ def run_install() -> None:
         _step(f"Config exists at {config_file} (not overwritten)")
     else:
         generated_api_key = secrets.token_urlsafe(32)
-        config_content = CONFIG_ENV_CONTENT.replace(
-            "{generated_api_key}", generated_api_key
-        )
+        config_content = CONFIG_ENV_CONTENT.replace("{generated_api_key}", generated_api_key)
         config_file.write_text(config_content)
         _step(f"Created {config_file}")
         print(f"\n  ⚠  API key generated: {generated_api_key}")
@@ -209,7 +209,8 @@ def run_install() -> None:
     _step(f"Installed systemd unit → {unit_path}")
 
     # 7. Initialize database
-    from nanio_orchestrator.db import set_db_path, init_db_sync
+    from nanio_orchestrator.db import init_db_sync, set_db_path
+
     db_path = "/opt/nanio-orchestrator/data/orchestrator.db"
     set_db_path(db_path)
     init_db_sync()

@@ -139,9 +139,7 @@ async def create_migration(body: RcloneMigrationCreate):
         # A mismatch means the data to copy is on a different pool than the one
         # nginx is proxying requests to — undefined behaviour during switching.
         if route_row["pool_id"] != body.src_pool_id:
-            pool_name_rows = await db.execute_fetchall(
-                "SELECT name FROM pools WHERE id = ?", (route_row["pool_id"],)
-            )
+            pool_name_rows = await db.execute_fetchall("SELECT name FROM pools WHERE id = ?", (route_row["pool_id"],))
             current_pool_name = pool_name_rows[0]["name"] if pool_name_rows else str(route_row["pool_id"])
             raise HTTPException(
                 400,
@@ -156,18 +154,14 @@ async def create_migration(body: RcloneMigrationCreate):
     # so no connection is held during network I/O.
     src_ak, src_sk, _ = await get_pool_s3_params(body.src_pool_id)
     try:
-        src_bucket_found = await bucket_exists(
-            src_member, body.bucket, access_key=src_ak, secret_key=src_sk
-        )
+        src_bucket_found = await bucket_exists(src_member, body.bucket, access_key=src_ak, secret_key=src_sk)
         if not src_bucket_found:
             raise HTTPException(
                 400,
                 f"Bucket '{body.bucket}' does not exist on source pool {body.src_pool_id}. "
                 "Verify the source pool and bucket name before starting a migration.",
             )
-        src_has_data = await bucket_has_objects(
-            src_member, body.bucket, access_key=src_ak, secret_key=src_sk
-        )
+        src_has_data = await bucket_has_objects(src_member, body.bucket, access_key=src_ak, secret_key=src_sk)
         if not src_has_data:
             raise HTTPException(
                 400,
@@ -179,14 +173,17 @@ async def create_migration(body: RcloneMigrationCreate):
     except Exception as exc:
         raise HTTPException(
             503,
-            f"Cannot reach source pool {body.src_pool_id} to validate bucket "
-            f"'{body.bucket}': {exc}",
+            f"Cannot reach source pool {body.src_pool_id} to validate bucket '{body.bucket}': {exc}",
         )
 
     try:
         migration_id = await start_migration(
-            vhost_id, body.bucket, body.src_pool_id, body.dst_pool_id,
-            body.mode, route_id=resolved_route_id,
+            vhost_id,
+            body.bucket,
+            body.src_pool_id,
+            body.dst_pool_id,
+            body.mode,
+            route_id=resolved_route_id,
         )
     except RuntimeError as e:
         raise HTTPException(429, str(e))
@@ -194,10 +191,20 @@ async def create_migration(body: RcloneMigrationCreate):
     # Return the created migration
     async with get_db_ctx() as db:
         rows = await db.execute_fetchall("SELECT * FROM migrations WHERE id = ?", (migration_id,))
-        await log_audit(db, "create_migration", "migration", migration_id,
-                        after={"bucket": body.bucket, "src_pool_id": body.src_pool_id,
-                               "dst_pool_id": body.dst_pool_id, "mode": body.mode,
-                               "vhost_id": vhost_id, "route_id": resolved_route_id})
+        await log_audit(
+            db,
+            "create_migration",
+            "migration",
+            migration_id,
+            after={
+                "bucket": body.bucket,
+                "src_pool_id": body.src_pool_id,
+                "dst_pool_id": body.dst_pool_id,
+                "mode": body.mode,
+                "vhost_id": vhost_id,
+                "route_id": resolved_route_id,
+            },
+        )
         await db.commit()
     m = dict(rows[0])
     return _to_out(m)
@@ -310,27 +317,31 @@ async def list_stale_migrations():
         bucket = rd["bucket"]
 
         if rd["src_members"] == 0:
-            stale.append(StaleMigrationOut(
-                migration_id=mid,
-                bucket=bucket,
-                src_pool_id=rd["src_pool_id"],
-                dst_pool_id=rd["dst_pool_id"],
-                phase=rd["phase"],
-                reason="src_no_members",
-                created_at=rd["created_at"],
-            ))
+            stale.append(
+                StaleMigrationOut(
+                    migration_id=mid,
+                    bucket=bucket,
+                    src_pool_id=rd["src_pool_id"],
+                    dst_pool_id=rd["dst_pool_id"],
+                    phase=rd["phase"],
+                    reason="src_no_members",
+                    created_at=rd["created_at"],
+                )
+            )
             continue
 
         if rd["dst_members"] == 0:
-            stale.append(StaleMigrationOut(
-                migration_id=mid,
-                bucket=bucket,
-                src_pool_id=rd["src_pool_id"],
-                dst_pool_id=rd["dst_pool_id"],
-                phase=rd["phase"],
-                reason="dst_no_members",
-                created_at=rd["created_at"],
-            ))
+            stale.append(
+                StaleMigrationOut(
+                    migration_id=mid,
+                    bucket=bucket,
+                    src_pool_id=rd["src_pool_id"],
+                    dst_pool_id=rd["dst_pool_id"],
+                    phase=rd["phase"],
+                    reason="dst_no_members",
+                    created_at=rd["created_at"],
+                )
+            )
             continue
 
         # S3-level check: does the source bucket still exist?
@@ -339,24 +350,26 @@ async def list_stale_migrations():
         if src_addr and rd["phase"] != "switching":
             try:
                 src_ak, src_sk, _ = await get_pool_s3_params(rd["src_pool_id"])
-                exists = await bucket_exists(
-                    src_addr, bucket, access_key=src_ak, secret_key=src_sk
-                )
+                exists = await bucket_exists(src_addr, bucket, access_key=src_ak, secret_key=src_sk)
                 if not exists:
-                    stale.append(StaleMigrationOut(
-                        migration_id=mid,
-                        bucket=bucket,
-                        src_pool_id=rd["src_pool_id"],
-                        dst_pool_id=rd["dst_pool_id"],
-                        phase=rd["phase"],
-                        reason="src_bucket_missing",
-                        created_at=rd["created_at"],
-                    ))
+                    stale.append(
+                        StaleMigrationOut(
+                            migration_id=mid,
+                            bucket=bucket,
+                            src_pool_id=rd["src_pool_id"],
+                            dst_pool_id=rd["dst_pool_id"],
+                            phase=rd["phase"],
+                            reason="src_bucket_missing",
+                            created_at=rd["created_at"],
+                        )
+                    )
             except Exception:
                 # Transient network error — do not flag as stale to avoid false positives
                 logger.debug(
                     "migration %d: S3 probe for stale check failed (src=%s bucket=%s), skipping",
-                    mid, src_addr, bucket,
+                    mid,
+                    src_addr,
+                    bucket,
                 )
 
     return stale
@@ -375,9 +388,7 @@ async def list_migrations(
                 (phase, limit),
             )
         else:
-            rows = await db.execute_fetchall(
-                "SELECT * FROM migrations ORDER BY id DESC LIMIT ?", (limit,)
-            )
+            rows = await db.execute_fetchall("SELECT * FROM migrations ORDER BY id DESC LIMIT ?", (limit,))
     return [_to_out(dict(r)) for r in rows]
 
 
@@ -385,9 +396,7 @@ async def list_migrations(
 async def get_migration(migration_id: int):
     """Get details of a single migration."""
     async with get_db_ctx() as db:
-        rows = await db.execute_fetchall(
-            "SELECT * FROM migrations WHERE id = ?", (migration_id,)
-        )
+        rows = await db.execute_fetchall("SELECT * FROM migrations WHERE id = ?", (migration_id,))
     if not rows:
         raise HTTPException(404, "Migration not found")
     return _to_out(dict(rows[0]))
@@ -397,9 +406,7 @@ async def get_migration(migration_id: int):
 async def cancel(migration_id: int):
     """Cancel a running migration."""
     async with get_db_ctx() as db:
-        rows = await db.execute_fetchall(
-            "SELECT phase FROM migrations WHERE id = ?", (migration_id,)
-        )
+        rows = await db.execute_fetchall("SELECT phase FROM migrations WHERE id = ?", (migration_id,))
     if not rows:
         raise HTTPException(404, "Migration not found")
 
@@ -409,8 +416,7 @@ async def cancel(migration_id: int):
 
     await cancel_migration(migration_id)
     async with get_db_ctx() as db:
-        await log_audit(db, "cancel_migration", "migration", migration_id,
-                        before={"phase": phase})
+        await log_audit(db, "cancel_migration", "migration", migration_id, before={"phase": phase})
         await db.commit()
     return {"ok": True, "migration_id": migration_id}
 

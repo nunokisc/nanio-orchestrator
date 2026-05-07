@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio as _asyncio
 import json
 import logging
 import os
@@ -10,27 +11,15 @@ from typing import List, Optional
 import aiofiles
 from fastapi import APIRouter, HTTPException
 
-logger = logging.getLogger(__name__)
-
 from nanio_orchestrator.audit_log import log_audit
 from nanio_orchestrator.backup import trigger_backup
 from nanio_orchestrator.credentials import get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
-from nanio_orchestrator.s3client import bucket_exists, count_objects, create_bucket
-from nanio_orchestrator.sidecar import write_vhost_sidecar as _write_vhost_sidecar_sync, delete_vhost_sidecar as _delete_vhost_sidecar_sync
-import asyncio as _asyncio
-
-async def write_vhost_sidecar(*args, **kwargs):
-    await _asyncio.to_thread(_write_vhost_sidecar_sync, *args, **kwargs)
-
-async def delete_vhost_sidecar(*args, **kwargs):
-    await _asyncio.to_thread(_delete_vhost_sidecar_sync, *args, **kwargs)
 from nanio_orchestrator.models import (
     RouteCreate,
     RouteOut,
     RouteUpdate,
     VhostCreate,
-    VhostExtraBlock,
     VhostOut,
     VhostUpdate,
 )
@@ -40,15 +29,27 @@ from nanio_orchestrator.nginx.generator import (
     record_file_state,
     remove_config_file,
 )
+from nanio_orchestrator.s3client import bucket_exists, count_objects, create_bucket
+from nanio_orchestrator.sidecar import delete_vhost_sidecar as _delete_vhost_sidecar_sync
+from nanio_orchestrator.sidecar import write_vhost_sidecar as _write_vhost_sidecar_sync
+
+logger = logging.getLogger(__name__)
+
+
+async def write_vhost_sidecar(*args, **kwargs):
+    await _asyncio.to_thread(_write_vhost_sidecar_sync, *args, **kwargs)
+
+
+async def delete_vhost_sidecar(*args, **kwargs):
+    await _asyncio.to_thread(_delete_vhost_sidecar_sync, *args, **kwargs)
+
 
 router = APIRouter(prefix="/api/vhosts", tags=["vhosts"])
 
 
 async def _sync_default_route(vhost_id: int, pool_id: int | None, db) -> None:
     """Keep the auto-managed '/' route in sync with vhost.default_pool_id."""
-    existing = await db.execute_fetchall(
-        "SELECT id FROM routes WHERE vhost_id = ? AND path_prefix = '/'", (vhost_id,)
-    )
+    existing = await db.execute_fetchall("SELECT id FROM routes WHERE vhost_id = ? AND path_prefix = '/'", (vhost_id,))
     if pool_id:
         if existing:
             await db.execute(
@@ -169,10 +170,19 @@ async def create_vhost(body: VhostCreate):
                    extra_directives, extra_blocks_json, enabled, default_pool_id,
                    ip_rule_mode, ip_rule_ips_json)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (body.server_name, body.listen_port, 1 if body.ssl else 0,
-                 body.ssl_cert_path, body.ssl_key_path, body.extra_directives,
-                 extra_blocks_json, 1 if body.enabled else 0, body.default_pool_id,
-                 body.ip_rule_mode, ip_rule_ips_json),
+                (
+                    body.server_name,
+                    body.listen_port,
+                    1 if body.ssl else 0,
+                    body.ssl_cert_path,
+                    body.ssl_key_path,
+                    body.extra_directives,
+                    extra_blocks_json,
+                    1 if body.enabled else 0,
+                    body.default_pool_id,
+                    body.ip_rule_mode,
+                    ip_rule_ips_json,
+                ),
             )
             await db.commit()
         except Exception as e:
@@ -186,8 +196,10 @@ async def create_vhost(body: VhostCreate):
 
         default_pool_name = await _get_pool_name(db, vhost.get("default_pool_id"))
         await write_vhost_sidecar(
-            vhost["id"], vhost["server_name"],
-            vhost.get("default_pool_id"), default_pool_name,
+            vhost["id"],
+            vhost["server_name"],
+            vhost.get("default_pool_id"),
+            default_pool_name,
             extra_blocks_json=vhost.get("extra_blocks_json"),
             ip_rule_mode=vhost.get("ip_rule_mode"),
             ip_rule_ips_json=vhost.get("ip_rule_ips_json"),
@@ -203,9 +215,15 @@ async def create_vhost(body: VhostCreate):
 
         if body.default_pool_id:
             ok, output = await _apply_vhost_config(vhost["id"], db)
-            await log_audit(db, "create", "route", None,
-                         after={"path_prefix": "/", "pool_id": body.default_pool_id, "vhost_id": vhost["id"]},
-                         reload_ok=ok, reload_output=output)
+            await log_audit(
+                db,
+                "create",
+                "route",
+                None,
+                after={"path_prefix": "/", "pool_id": body.default_pool_id, "vhost_id": vhost["id"]},
+                reload_ok=ok,
+                reload_output=output,
+            )
             await db.commit()
 
         return _enrich_vhost(vhost)
@@ -237,9 +255,7 @@ async def update_vhost(vhost_id: int, body: VhostUpdate):
         effective_cert = updates.get("ssl_cert_path", before.get("ssl_cert_path"))
         effective_key = updates.get("ssl_key_path", before.get("ssl_key_path"))
         if effective_ssl and (not effective_cert or not effective_key):
-            raise HTTPException(
-                400, "ssl_cert_path and ssl_key_path are required when ssl is enabled"
-            )
+            raise HTTPException(400, "ssl_cert_path and ssl_key_path are required when ssl is enabled")
 
         # Validate new default_pool type is consistent with existing routes
         if "default_pool_id" in updates and updates["default_pool_id"]:
@@ -296,14 +312,15 @@ async def update_vhost(vhost_id: int, body: VhostUpdate):
         after = dict(rows[0])
 
         ok, output = await _apply_vhost_config(vhost_id, db)
-        await log_audit(db, "update", "vhost", vhost_id, before=before, after=after,
-                     reload_ok=ok, reload_output=output)
+        await log_audit(db, "update", "vhost", vhost_id, before=before, after=after, reload_ok=ok, reload_output=output)
         await db.commit()
 
         default_pool_name = await _get_pool_name(db, after.get("default_pool_id"))
         await write_vhost_sidecar(
-            after["id"], after["server_name"],
-            after.get("default_pool_id"), default_pool_name,
+            after["id"],
+            after["server_name"],
+            after.get("default_pool_id"),
+            default_pool_name,
             extra_blocks_json=after.get("extra_blocks_json"),
             ip_rule_mode=after.get("ip_rule_mode"),
             ip_rule_ips_json=after.get("ip_rule_ips_json"),
@@ -326,14 +343,22 @@ async def delete_vhost(vhost_id: int):
         await db.execute("DELETE FROM vhosts WHERE id = ?", (vhost_id,))
 
         from nanio_orchestrator.config import get_settings
+
         s = get_settings()
         filepath = str(s.vhosts_dir / f"{vhost['server_name']}.conf")
         await remove_config_file(filepath)
         await db.execute("DELETE FROM config_files WHERE path = ?", (filepath,))
 
         reload_result = await reload_nginx()
-        await log_audit(db, "delete", "vhost", vhost_id, before=vhost,
-                     reload_ok=reload_result.ok, reload_output=reload_result.output)
+        await log_audit(
+            db,
+            "delete",
+            "vhost",
+            vhost_id,
+            before=vhost,
+            reload_ok=reload_result.ok,
+            reload_output=reload_result.output,
+        )
         await db.commit()
 
         # Delete sidecar
@@ -405,8 +430,14 @@ async def create_route(vhost_id: int, body: RouteCreate):
             cursor = await db.execute(
                 """INSERT INTO routes (vhost_id, path_prefix, pool_id, key_prefix, extra_directives, enabled)
                    VALUES (?, ?, ?, ?, ?, ?)""",
-                (vhost_id, body.path_prefix, body.pool_id, body.key_prefix,
-                 body.extra_directives, 1 if body.enabled else 0),
+                (
+                    vhost_id,
+                    body.path_prefix,
+                    body.pool_id,
+                    body.key_prefix,
+                    body.extra_directives,
+                    1 if body.enabled else 0,
+                ),
             )
             await db.commit()
         except Exception as e:
@@ -424,8 +455,7 @@ async def create_route(vhost_id: int, body: RouteCreate):
         route = dict(rrows[0])
 
         ok, output = await _apply_vhost_config(vhost_id, db)
-        await log_audit(db, "create", "route", route_id, after=route,
-                     reload_ok=ok, reload_output=output)
+        await log_audit(db, "create", "route", route_id, after=route, reload_ok=ok, reload_output=output)
         await db.commit()
 
     # ── Auto-provision bucket on destination pool ─────────────────────────────
@@ -439,11 +469,13 @@ async def create_route(vhost_id: int, body: RouteCreate):
                 )
             if member_rows:
                 target_ak, target_sk, _ = await get_pool_s3_params(body.pool_id)
-                exists = await bucket_exists(member_rows[0]["address"], bucket_segment,
-                                             access_key=target_ak, secret_key=target_sk)
+                exists = await bucket_exists(
+                    member_rows[0]["address"], bucket_segment, access_key=target_ak, secret_key=target_sk
+                )
                 if not exists:
-                    ok_create, _ = await create_bucket(member_rows[0]["address"], bucket_segment,
-                                                       access_key=target_ak, secret_key=target_sk)
+                    ok_create, _ = await create_bucket(
+                        member_rows[0]["address"], bucket_segment, access_key=target_ak, secret_key=target_sk
+                    )
                     bucket_provisioned = ok_create
                     logger.info("route create: provisioned bucket '%s' on pool %d", bucket_segment, body.pool_id)
         except Exception as exc:
@@ -460,9 +492,7 @@ async def create_route(vhost_id: int, body: RouteCreate):
 @router.put("/{vhost_id}/routes/{route_id}", response_model=RouteOut)
 async def update_route(vhost_id: int, route_id: int, body: RouteUpdate):
     async with get_db_ctx() as db:
-        rrows = await db.execute_fetchall(
-            "SELECT * FROM routes WHERE id = ? AND vhost_id = ?", (route_id, vhost_id)
-        )
+        rrows = await db.execute_fetchall("SELECT * FROM routes WHERE id = ? AND vhost_id = ?", (route_id, vhost_id))
         if not rrows:
             raise HTTPException(404, "Route not found")
         before = dict(rrows[0])
@@ -524,13 +554,16 @@ async def update_route(vhost_id: int, route_id: int, body: RouteUpdate):
                     if src_member_rows:
                         src_ak, src_sk, _ = await get_pool_s3_params(src_pool_id_cur)
                         src_count = await count_objects(
-                            src_member_rows[0]["address"], bucket_segment,
-                            access_key=src_ak, secret_key=src_sk,
+                            src_member_rows[0]["address"],
+                            bucket_segment,
+                            access_key=src_ak,
+                            secret_key=src_sk,
                         )
                 except Exception as exc:
                     logger.warning(
                         "update_route: source object count failed for '%s': %s",
-                        bucket_segment, exc,
+                        bucket_segment,
+                        exc,
                     )
 
                 if src_count > 0:
@@ -538,6 +571,7 @@ async def update_route(vhost_id: int, route_id: int, body: RouteUpdate):
                     updates.pop("pool_id")
                     try:
                         from nanio_orchestrator.migration_engine import start_migration
+
                         migration_id = await start_migration(
                             vhost_id=vhost_id,
                             bucket=bucket_segment,
@@ -547,8 +581,11 @@ async def update_route(vhost_id: int, route_id: int, body: RouteUpdate):
                         )
                         logger.info(
                             "update_route: started migration %d for '%s' route_id=%d src=%d dst=%d",
-                            migration_id, bucket_segment, route_id,
-                            src_pool_id_cur, dst_pool_id_requested,
+                            migration_id,
+                            bucket_segment,
+                            route_id,
+                            src_pool_id_cur,
+                            dst_pool_id_requested,
                         )
                     except RuntimeError as exc:
                         migration_warning = str(exc)
@@ -556,7 +593,8 @@ async def update_route(vhost_id: int, route_id: int, body: RouteUpdate):
                         updates["pool_id"] = dst_pool_id_requested
                         logger.warning(
                             "update_route: could not start migration for '%s': %s",
-                            bucket_segment, exc,
+                            bucket_segment,
+                            exc,
                         )
 
     async with get_db_ctx() as db:
@@ -578,8 +616,7 @@ async def update_route(vhost_id: int, route_id: int, body: RouteUpdate):
         after = dict(rrows2[0])
 
         ok, output = await _apply_vhost_config(vhost_id, db)
-        await log_audit(db, "update", "route", route_id, before=before, after=after,
-                     reload_ok=ok, reload_output=output)
+        await log_audit(db, "update", "route", route_id, before=before, after=after, reload_ok=ok, reload_output=output)
         await db.commit()
 
     after["migration_id"] = migration_id
@@ -591,9 +628,7 @@ async def update_route(vhost_id: int, route_id: int, body: RouteUpdate):
 @router.delete("/{vhost_id}/routes/{route_id}", status_code=204)
 async def delete_route(vhost_id: int, route_id: int):
     async with get_db_ctx() as db:
-        rrows = await db.execute_fetchall(
-            "SELECT * FROM routes WHERE id = ? AND vhost_id = ?", (route_id, vhost_id)
-        )
+        rrows = await db.execute_fetchall("SELECT * FROM routes WHERE id = ? AND vhost_id = ?", (route_id, vhost_id))
         if not rrows:
             raise HTTPException(404, "Route not found")
         before = dict(rrows[0])
@@ -606,15 +641,12 @@ async def delete_route(vhost_id: int, route_id: int):
 
         # Null-out route_id in any migrations that reference this route
         # to avoid FK constraint failures (route_id has no ON DELETE SET NULL)
-        await db.execute(
-            "UPDATE migrations SET route_id = NULL WHERE route_id = ?", (route_id,)
-        )
+        await db.execute("UPDATE migrations SET route_id = NULL WHERE route_id = ?", (route_id,))
         await db.execute("DELETE FROM routes WHERE id = ?", (route_id,))
         await db.commit()
 
         ok, output = await _apply_vhost_config(vhost_id, db)
-        await log_audit(db, "delete", "route", route_id, before=before,
-                     reload_ok=ok, reload_output=output)
+        await log_audit(db, "delete", "route", route_id, before=before, reload_ok=ok, reload_output=output)
         await db.commit()
 
 

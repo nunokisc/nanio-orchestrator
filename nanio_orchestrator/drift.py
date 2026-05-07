@@ -42,12 +42,14 @@ async def check_drift_once() -> list[dict]:
             db_hash = r["sha256_db"]
 
             if disk_hash != db_hash:
-                drifted.append({
-                    "path": filepath,
-                    "sha256_disk": disk_hash,
-                    "sha256_db": db_hash,
-                    "status": "missing" if disk_hash is None else "modified",
-                })
+                drifted.append(
+                    {
+                        "path": filepath,
+                        "sha256_disk": disk_hash,
+                        "sha256_db": db_hash,
+                        "status": "missing" if disk_hash is None else "modified",
+                    }
+                )
                 logger.warning(
                     "Drift detected: %s (disk=%s, db=%s)",
                     filepath,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio as _asyncio
 import json
 from typing import List
 
@@ -9,15 +10,8 @@ from fastapi import APIRouter, HTTPException
 
 from nanio_orchestrator.audit_log import log_audit
 from nanio_orchestrator.backup import trigger_backup
+from nanio_orchestrator.credentials import get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
-from nanio_orchestrator.sidecar import write_pool_sidecar as _write_pool_sidecar_sync, delete_pool_sidecar as _delete_pool_sidecar_sync
-import asyncio as _asyncio
-
-async def write_pool_sidecar(*args, **kwargs):
-    await _asyncio.to_thread(_write_pool_sidecar_sync, *args, **kwargs)
-
-async def delete_pool_sidecar(*args, **kwargs):
-    await _asyncio.to_thread(_delete_pool_sidecar_sync, *args, **kwargs)
 from nanio_orchestrator.models import (
     MemberCreate,
     MemberOut,
@@ -28,15 +22,25 @@ from nanio_orchestrator.models import (
     PoolOut,
     PoolUpdate,
 )
-from nanio_orchestrator.credentials import get_pool_s3_params
-from nanio_orchestrator.s3client import list_buckets as s3_list_buckets
+from nanio_orchestrator.nginx.executor import reload_nginx, test_config
 from nanio_orchestrator.nginx.generator import (
     generate_pool_config,
     node_config_instructions,
     record_file_state,
     render_node_config,
 )
-from nanio_orchestrator.nginx.executor import test_config, reload_nginx
+from nanio_orchestrator.s3client import list_buckets as s3_list_buckets
+from nanio_orchestrator.sidecar import delete_pool_sidecar as _delete_pool_sidecar_sync
+from nanio_orchestrator.sidecar import write_pool_sidecar as _write_pool_sidecar_sync
+
+
+async def write_pool_sidecar(*args, **kwargs):
+    await _asyncio.to_thread(_write_pool_sidecar_sync, *args, **kwargs)
+
+
+async def delete_pool_sidecar(*args, **kwargs):
+    await _asyncio.to_thread(_delete_pool_sidecar_sync, *args, **kwargs)
+
 
 router = APIRouter(prefix="/api/pools", tags=["pools"])
 
@@ -46,7 +50,10 @@ async def _apply_pool_config(pool_id: int, db) -> tuple:
     If the pool has no members the config file is removed instead of written.
     """
     filepath, content = await generate_pool_config(pool_id)
-    import aiofiles, os
+    import os
+
+    import aiofiles
+
     from nanio_orchestrator.nginx.generator import remove_config_file
 
     # Empty pool — remove file so nginx doesn't see an invalid upstream block
@@ -169,9 +176,7 @@ async def update_pool(pool_id: int, body: PoolUpdate):
         # If changing type, validate existing members
         new_type = updates.get("type", before["type"])
         if new_type != before["type"]:
-            members = await db.execute_fetchall(
-                "SELECT role FROM pool_members WHERE pool_id = ?", (pool_id,)
-            )
+            members = await db.execute_fetchall("SELECT role FROM pool_members WHERE pool_id = ?", (pool_id,))
             for m in members:
                 _validate_member_role(new_type, m["role"])
 
@@ -188,8 +193,7 @@ async def update_pool(pool_id: int, body: PoolUpdate):
 
         # Regenerate config
         ok, output = await _apply_pool_config(pool_id, db)
-        await log_audit(db, "update", "pool", pool_id, before=before, after=after,
-                     reload_ok=ok, reload_output=output)
+        await log_audit(db, "update", "pool", pool_id, before=before, after=after, reload_ok=ok, reload_output=output)
         await db.commit()
 
         # Update sidecar
@@ -222,9 +226,7 @@ async def delete_pool(pool_id: int):
             )
 
         # Check if any vhost uses this pool as its default
-        vhost_refs = await db.execute_fetchall(
-            "SELECT server_name FROM vhosts WHERE default_pool_id = ?", (pool_id,)
-        )
+        vhost_refs = await db.execute_fetchall("SELECT server_name FROM vhosts WHERE default_pool_id = ?", (pool_id,))
         if vhost_refs:
             names = ", ".join(r["server_name"] for r in vhost_refs)
             raise HTTPException(
@@ -271,6 +273,7 @@ async def delete_pool(pool_id: int):
         # Remove config file
         from nanio_orchestrator.config import get_settings
         from nanio_orchestrator.nginx.generator import remove_config_file
+
         s = get_settings()
         filepath = str(s.pools_dir / f"{pool['name']}.conf")
         await remove_config_file(filepath)
@@ -280,8 +283,9 @@ async def delete_pool(pool_id: int):
 
         # Reload nginx
         reload_result = await reload_nginx()
-        await log_audit(db, "delete", "pool", pool_id, before=pool,
-                     reload_ok=reload_result.ok, reload_output=reload_result.output)
+        await log_audit(
+            db, "delete", "pool", pool_id, before=pool, reload_ok=reload_result.ok, reload_output=reload_result.output
+        )
         await db.commit()
 
         # Delete sidecar
@@ -297,9 +301,7 @@ async def list_members(pool_id: int):
         rows = await db.execute_fetchall("SELECT * FROM pools WHERE id = ?", (pool_id,))
         if not rows:
             raise HTTPException(404, "Pool not found")
-        members = await db.execute_fetchall(
-            "SELECT * FROM pool_members WHERE pool_id = ? ORDER BY id", (pool_id,)
-        )
+        members = await db.execute_fetchall("SELECT * FROM pool_members WHERE pool_id = ? ORDER BY id", (pool_id,))
         return [dict(m) for m in members]
 
 
@@ -316,8 +318,15 @@ async def create_member(pool_id: int, body: MemberCreate):
         cursor = await db.execute(
             """INSERT INTO pool_members (pool_id, address, role, weight, max_fails, fail_timeout_s, enabled)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (pool_id, body.address, body.role, body.weight, body.max_fails,
-             body.fail_timeout_s, 1 if body.enabled else 0),
+            (
+                pool_id,
+                body.address,
+                body.role,
+                body.weight,
+                body.max_fails,
+                body.fail_timeout_s,
+                1 if body.enabled else 0,
+            ),
         )
         await db.commit()
 
@@ -326,8 +335,7 @@ async def create_member(pool_id: int, body: MemberCreate):
 
         # Regenerate pool config
         ok, output = await _apply_pool_config(pool_id, db)
-        await log_audit(db, "create", "pool_member", member["id"], after=member,
-                     reload_ok=ok, reload_output=output)
+        await log_audit(db, "create", "pool_member", member["id"], after=member, reload_ok=ok, reload_output=output)
         await db.commit()
         return member
 
@@ -370,8 +378,9 @@ async def update_member(pool_id: int, member_id: int, body: MemberUpdate):
         after = dict(mrows[0])
 
         ok, output = await _apply_pool_config(pool_id, db)
-        await log_audit(db, "update", "pool_member", member_id, before=before, after=after,
-                     reload_ok=ok, reload_output=output)
+        await log_audit(
+            db, "update", "pool_member", member_id, before=before, after=after, reload_ok=ok, reload_output=output
+        )
         await db.commit()
         return after
 
@@ -392,8 +401,7 @@ async def delete_member(pool_id: int, member_id: int):
         await db.commit()
 
         ok, output = await _apply_pool_config(pool_id, db)
-        await log_audit(db, "delete", "pool_member", member_id, before=before,
-                     reload_ok=ok, reload_output=output)
+        await log_audit(db, "delete", "pool_member", member_id, before=before, reload_ok=ok, reload_output=output)
         await db.commit()
 
 
@@ -402,10 +410,15 @@ async def delete_member(pool_id: int, member_id: int):
 
 @router.get("/{pool_id}/members/{member_id}/node-config", response_model=NodeConfigOut)
 async def get_member_node_config(
-    pool_id: int, member_id: int, type: str = "nanio-only",
-    data_dir: str = "/data", nanio_port: int = 9000,
-    nanio_host: str = "0.0.0.0", nanio_region: str = "us-east-1",
-    access_key: str = "", secret_key: str = "",
+    pool_id: int,
+    member_id: int,
+    type: str = "nanio-only",
+    data_dir: str = "/data",
+    nanio_port: int = 9000,
+    nanio_host: str = "0.0.0.0",
+    nanio_region: str = "us-east-1",
+    access_key: str = "",
+    secret_key: str = "",
 ):
     if type not in ("nanio-only", "nginx-only", "nginx-nanio"):
         raise HTTPException(400, "type must be nanio-only, nginx-only, or nginx-nanio")
@@ -506,19 +519,19 @@ async def pool_node_config_summary(pool_id: int):
         if not pool_rows:
             raise HTTPException(404, "Pool not found")
 
-        members = await db.execute_fetchall(
-            "SELECT * FROM pool_members WHERE pool_id = ? ORDER BY id", (pool_id,)
-        )
+        members = await db.execute_fetchall("SELECT * FROM pool_members WHERE pool_id = ? ORDER BY id", (pool_id,))
         result = []
         for m in members:
             configs = await db.execute_fetchall(
                 "SELECT * FROM node_configs WHERE member_id = ? ORDER BY generated_at DESC LIMIT 5",
                 (m["id"],),
             )
-            result.append({
-                "member": dict(m),
-                "recent_configs": [dict(c) for c in configs],
-            })
+            result.append(
+                {
+                    "member": dict(m),
+                    "recent_configs": [dict(c) for c in configs],
+                }
+            )
         return result
 
 
@@ -610,12 +623,14 @@ async def pool_bucket_status(pool_id: int):
         else:
             status = "unrouted"
 
-        buckets.append({
-            "bucket": name,
-            "status": status,
-            "routed_in": routed.get(name, []),
-            "default_vhosts": default_vhosts if status == "via_default" else [],
-        })
+        buckets.append(
+            {
+                "bucket": name,
+                "status": status,
+                "routed_in": routed.get(name, []),
+                "default_vhosts": default_vhosts if status == "via_default" else [],
+            }
+        )
 
     # Sort: unrouted/orphaned first, then routed, then via_default
     _order = {"unrouted": 0, "orphaned": 1, "via_default": 2, "routed": 3}

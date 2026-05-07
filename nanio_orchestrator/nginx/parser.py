@@ -10,7 +10,6 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-
 MANAGED_MARKER = "# managed by nanio-orchestrator"
 
 
@@ -231,22 +230,26 @@ def scan_managed_files(config_dir: str) -> List[Dict[str, Any]]:
         # Try as upstream
         upstream = parse_upstream_block(content)
         if upstream and upstream["name"]:
-            results.append({
-                "path": str(conf_file),
-                "type": "upstream",
-                "data": upstream,
-                "content": content,
-            })
+            results.append(
+                {
+                    "path": str(conf_file),
+                    "type": "upstream",
+                    "data": upstream,
+                    "content": content,
+                }
+            )
             continue
 
         # Try as vhost
         vhost = parse_vhost_block(content)
         if vhost and vhost["server_name"]:
-            results.append({
-                "path": str(conf_file),
-                "type": "vhost",
-                "data": vhost,
-                "content": content,
-            })
+            results.append(
+                {
+                    "path": str(conf_file),
+                    "type": "vhost",
+                    "data": vhost,
+                    "content": content,
+                }
+            )
 
     return results

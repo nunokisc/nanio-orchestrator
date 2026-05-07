@@ -17,8 +17,8 @@ from datetime import datetime, timezone
 from typing import List
 
 from nanio_orchestrator.config import get_settings
-from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator.credentials import get_pool_s3_params
+from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator.nginx.executor import reload_nginx, test_config
 from nanio_orchestrator.nginx.generator import generate_vhost_config, record_file_state, write_config_atomic
 from nanio_orchestrator.s3client import bucket_exists, list_buckets
@@ -42,12 +42,13 @@ async def sync_vhost_buckets_once(vhost_id: int) -> dict:
             return {"vhost_id": vhost_id, "skipped": True, "reason": "No default_pool_id configured"}
 
         # Skip HTTP-type pools — they have no S3 ListBuckets semantics
-        pool_rows = await db.execute_fetchall(
-            "SELECT type FROM pools WHERE id = ?", (vhost["default_pool_id"],)
-        )
+        pool_rows = await db.execute_fetchall("SELECT type FROM pools WHERE id = ?", (vhost["default_pool_id"],))
         if not pool_rows or pool_rows[0]["type"] != "nanio":
-            return {"vhost_id": vhost_id, "skipped": True,
-                    "reason": "Default pool is not nanio type — bucket sync skipped"}
+            return {
+                "vhost_id": vhost_id,
+                "skipped": True,
+                "reason": "Default pool is not nanio type — bucket sync skipped",
+            }
 
         member_rows = await db.execute_fetchall(
             """SELECT address FROM pool_members
@@ -170,14 +171,19 @@ async def _reconcile_routed_buckets(vhost_id: int) -> List[dict]:
             # don't remove the route based on a potentially transient error.
             logger.warning(
                 "Could not verify bucket %s on %s (vhost %d): %s",
-                entry["bucket"], target_member, vhost_id, exc,
+                entry["bucket"],
+                target_member,
+                vhost_id,
+                exc,
             )
             continue
 
         if not exists:
             logger.info(
                 "Bucket '%s' not found on target member %s (vhost %d) — removing route and reverting to unrouted",
-                entry["bucket"], target_member, vhost_id,
+                entry["bucket"],
+                target_member,
+                vhost_id,
             )
             # Phase 1: DB changes in own context (released before nginx operations)
             async with get_db_ctx() as db:
@@ -209,14 +215,17 @@ async def _reconcile_routed_buckets(vhost_id: int) -> List[dict]:
                     pass
                 logger.error(
                     "nginx -t failed after auto-unrouting bucket %s: %s",
-                    entry["bucket"], test_result.output,
+                    entry["bucket"],
+                    test_result.output,
                 )
 
-            actions.append({
-                "bucket": entry["bucket"],
-                "action": "auto_unrouted",
-                "target_member": target_member,
-            })
+            actions.append(
+                {
+                    "bucket": entry["bucket"],
+                    "action": "auto_unrouted",
+                    "target_member": target_member,
+                }
+            )
 
     return actions
 

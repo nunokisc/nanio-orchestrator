@@ -35,9 +35,7 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8080
     api_key: str = "dev" if DEV_MODE else "changeme"
-    db_path: str = (
-        str(Path("dev-data/orchestrator.db")) if DEV_MODE else "/opt/nanio-orchestrator/data/orchestrator.db"
-    )
+    db_path: str = str(Path("dev-data/orchestrator.db")) if DEV_MODE else "/opt/nanio-orchestrator/data/orchestrator.db"
     nginx_config_dir: str = str(Path("dev-data/nginx")) if DEV_MODE else "/etc/nginx/nanio"
     log_level: str = "info"
     drift_interval: int = 60
@@ -64,10 +62,7 @@ class Settings(BaseSettings):
     def strip_inline_comments(cls, values: dict) -> dict:
         """Strip inline shell-style comments from env file values (e.g. '300 # seconds' → '300')."""
         if isinstance(values, dict):
-            return {
-                k: v.split("#")[0].strip() if isinstance(v, str) else v
-                for k, v in values.items()
-            }
+            return {k: v.split("#")[0].strip() if isinstance(v, str) else v for k, v in values.items()}
         return values
 
     @property

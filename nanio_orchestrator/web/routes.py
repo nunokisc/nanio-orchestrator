@@ -7,17 +7,16 @@ from pathlib import Path
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-
 from jinja2 import Environment, FileSystemLoader
 
-from nanio_orchestrator.config import get_settings
-from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator import __version__
 from nanio_orchestrator.auth import (
     clear_session_cookie,
     is_https,
     set_session_cookie,
 )
+from nanio_orchestrator.config import get_settings
+from nanio_orchestrator.db import get_db_ctx
 
 router = APIRouter(tags=["web"], include_in_schema=False)
 
@@ -85,9 +84,7 @@ async def dashboard():
         pools = await db.execute_fetchall("SELECT * FROM pools ORDER BY name")
         vhosts = await db.execute_fetchall("SELECT * FROM vhosts ORDER BY server_name")
         config_files = await db.execute_fetchall("SELECT * FROM config_files ORDER BY path")
-        recent_audit = await db.execute_fetchall(
-            "SELECT * FROM audit_log ORDER BY id DESC LIMIT 10"
-        )
+        recent_audit = await db.execute_fetchall("SELECT * FROM audit_log ORDER BY id DESC LIMIT 10")
 
         # Count drift
         drift_count = 0
@@ -114,9 +111,7 @@ async def dashboard():
         active_migrations = [dict(r) for r in active_mig_rows]
 
         # Unrouted buckets count for dashboard widget
-        unrouted_row = await db.execute_fetchall(
-            "SELECT COUNT(*) as cnt FROM bucket_sync WHERE status = 'unrouted'"
-        )
+        unrouted_row = await db.execute_fetchall("SELECT COUNT(*) as cnt FROM bucket_sync WHERE status = 'unrouted'")
         unrouted_count = unrouted_row[0]["cnt"] if unrouted_row else 0
 
     return _render(
@@ -141,9 +136,7 @@ async def pools_page():
         pools = await db.execute_fetchall("SELECT * FROM pools ORDER BY name")
         result = []
         for p in pools:
-            members = await db.execute_fetchall(
-                "SELECT * FROM pool_members WHERE pool_id = ? ORDER BY id", (p["id"],)
-            )
+            members = await db.execute_fetchall("SELECT * FROM pool_members WHERE pool_id = ? ORDER BY id", (p["id"],))
             pool_dict = dict(p)
             pool_dict["members"] = [dict(m) for m in members]
             result.append(pool_dict)
@@ -156,6 +149,7 @@ async def pools_page():
 @router.get("/web/vhosts", response_class=HTMLResponse)
 async def vhosts_page():
     import json as _json
+
     async with get_db_ctx() as db:
         vhosts = await db.execute_fetchall("SELECT * FROM vhosts ORDER BY server_name")
         pools = await db.execute_fetchall("SELECT id, name, type FROM pools ORDER BY name")
@@ -196,6 +190,7 @@ async def vhosts_page():
 @router.get("/web/config", response_class=HTMLResponse)
 async def config_page():
     import hashlib
+
     async with get_db_ctx() as db:
         files = await db.execute_fetchall("SELECT * FROM config_files ORDER BY path")
         file_list = []
@@ -208,11 +203,7 @@ async def config_page():
             except (FileNotFoundError, PermissionError):
                 live_hash = None
             fd["sha256_disk"] = live_hash
-            fd["drifted"] = (
-                live_hash is not None
-                and fd["sha256_db"] is not None
-                and live_hash != fd["sha256_db"]
-            )
+            fd["drifted"] = live_hash is not None and fd["sha256_db"] is not None and live_hash != fd["sha256_db"]
             file_list.append(fd)
     return _render("config.html", files=file_list)
 
@@ -223,10 +214,9 @@ async def config_page():
 @router.get("/web/audit", response_class=HTMLResponse)
 async def audit_page():
     async with get_db_ctx() as db:
-        rows = await db.execute_fetchall(
-            "SELECT * FROM audit_log ORDER BY id DESC LIMIT 100"
-        )
+        rows = await db.execute_fetchall("SELECT * FROM audit_log ORDER BY id DESC LIMIT 100")
     return _render("audit.html", entries=[dict(r) for r in rows])
+
 
 # ── Migrations ────────────────────────────────────────────────────────────
 
@@ -242,9 +232,7 @@ async def buckets_page():
                ORDER BY v.server_name"""
         )
         # Target pools for routing must also be nanio type
-        pools = await db.execute_fetchall(
-            "SELECT id, name FROM pools WHERE type = 'nanio' ORDER BY name"
-        )
+        pools = await db.execute_fetchall("SELECT id, name FROM pools WHERE type = 'nanio' ORDER BY name")
         vhosts = []
         for v in vhost_rows:
             buckets = await db.execute_fetchall(
@@ -256,13 +244,14 @@ async def buckets_page():
                    ORDER BY bs.status, bs.bucket""",
                 (v["id"],),
             )
-            vhosts.append({
-                "id": v["id"],
-                "server_name": v["server_name"],
-                "buckets": [dict(b) for b in buckets],
-            })
-    return _render("buckets.html", vhosts=vhosts, pools=[dict(p) for p in pools],
-                   all_pools=[dict(p) for p in pools])
+            vhosts.append(
+                {
+                    "id": v["id"],
+                    "server_name": v["server_name"],
+                    "buckets": [dict(b) for b in buckets],
+                }
+            )
+    return _render("buckets.html", vhosts=vhosts, pools=[dict(p) for p in pools], all_pools=[dict(p) for p in pools])
 
 
 @router.get("/web/settings", response_class=HTMLResponse)
@@ -281,9 +270,7 @@ async def migrations_page():
                ORDER BY m.id DESC LIMIT 100"""
         )
         # Migrations are only between nanio pools — filter to nanio type only
-        pools = await db.execute_fetchall(
-            "SELECT id, name FROM pools WHERE type = 'nanio' ORDER BY name"
-        )
+        pools = await db.execute_fetchall("SELECT id, name FROM pools WHERE type = 'nanio' ORDER BY name")
     return _render(
         "migrations.html",
         migrations=[dict(r) for r in rows],

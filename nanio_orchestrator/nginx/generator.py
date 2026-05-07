@@ -54,6 +54,7 @@ def render_upstream(pool: Dict[str, Any], members: List[Dict[str, Any]]) -> str:
 def render_vhost(vhost: Dict[str, Any], routes: List[Dict[str, Any]]) -> str:
     """Render a server block for a vhost with all its routes."""
     import json as _json
+
     env = _get_jinja_env()
     tpl = env.get_template("vhost.conf.j2")
     # Sort routes by path_prefix length (longest first) for correct nginx matching
@@ -150,9 +151,7 @@ async def generate_pool_config(pool_id: int) -> tuple:
         if not row:
             raise ValueError(f"Pool {pool_id} not found")
         pool = dict(row[0])
-        members_rows = await db.execute_fetchall(
-            "SELECT * FROM pool_members WHERE pool_id = ? ORDER BY id", (pool_id,)
-        )
+        members_rows = await db.execute_fetchall("SELECT * FROM pool_members WHERE pool_id = ? ORDER BY id", (pool_id,))
         members = [dict(m) for m in members_rows]
 
     filepath = str(s.pools_dir / f"{pool['name']}.conf")
@@ -279,15 +278,9 @@ def render_node_config(
 def node_config_instructions(node_type: str) -> str:
     """Return human-readable instructions for applying node config."""
     if node_type == "nanio-only":
-        return (
-            "Copy each file to the node and run:\n"
-            "  systemctl daemon-reload && systemctl enable --now nanio"
-        )
+        return "Copy each file to the node and run:\n  systemctl daemon-reload && systemctl enable --now nanio"
     elif node_type == "nginx-only":
-        return (
-            "Copy the nginx config to the node and run:\n"
-            "  nginx -t && systemctl reload nginx"
-        )
+        return "Copy the nginx config to the node and run:\n  nginx -t && systemctl reload nginx"
     else:  # nginx-nanio
         return (
             "Copy all files to the node and run:\n"

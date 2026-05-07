@@ -41,8 +41,7 @@ async def log_audit(
              (action, entity_type, entity_id, before_json, after_json,
               nginx_reload_ok, nginx_reload_output)
            VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (action, entity_type, entity_id,
-         before_json, after_json, reload_int, reload_output),
+        (action, entity_type, entity_id, before_json, after_json, reload_int, reload_output),
     )
 
     # Structured line for the log file — key=value pairs, compact JSON for data fields

@@ -6,20 +6,19 @@ import asyncio
 import hmac
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pathlib import Path
 
 from nanio_orchestrator import __version__
+from nanio_orchestrator.backup import backup_loop, stop_backup
+from nanio_orchestrator.bucket_sync import bucket_sync_loop, stop_bucket_sync
 from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.db import init_db
 from nanio_orchestrator.drift import drift_loop, stop_drift
-from nanio_orchestrator.bucket_sync import bucket_sync_loop, stop_bucket_sync
 from nanio_orchestrator.migration_engine import recover_interrupted_migrations
-from nanio_orchestrator.backup import backup_loop, stop_backup
-
 
 logger = logging.getLogger(__name__)
 
@@ -130,14 +129,14 @@ def create_app() -> FastAPI:
         return await call_next(request)
 
     # ── API routers ───────────────────────────────────────────────────────
-    from nanio_orchestrator.api.pools import router as pools_router
-    from nanio_orchestrator.api.vhosts import router as vhosts_router
-    from nanio_orchestrator.api.config import router as config_router
-    from nanio_orchestrator.api.health import router as health_router
     from nanio_orchestrator.api.audit import router as audit_router
     from nanio_orchestrator.api.buckets import router as buckets_router
+    from nanio_orchestrator.api.config import router as config_router
     from nanio_orchestrator.api.credentials import router as credentials_router
+    from nanio_orchestrator.api.health import router as health_router
     from nanio_orchestrator.api.migrations import router as migrations_router
+    from nanio_orchestrator.api.pools import router as pools_router
+    from nanio_orchestrator.api.vhosts import router as vhosts_router
 
     app.include_router(pools_router)
     app.include_router(vhosts_router)
@@ -150,6 +149,7 @@ def create_app() -> FastAPI:
 
     # ── Web UI (includes /login, /logout, /, /web/*) ──────────────────────
     from nanio_orchestrator.web.routes import router as web_router
+
     app.include_router(web_router)
 
     # ── Static files ──────────────────────────────────────────────────────

@@ -67,9 +67,7 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
     migration_completions = scan_migration_completions()
 
     if dry_run:
-        return await _dry_run_report(
-            s, pool_sidecars, vhost_sidecars, migration_states, migration_completions
-        )
+        return await _dry_run_report(s, pool_sidecars, vhost_sidecars, migration_states, migration_completions)
 
     # Step 1: (re)create schema
     await init_db()
@@ -103,8 +101,7 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
             cursor = await db.execute(
                 """INSERT INTO pools (name, description, type, lb_method, keepalive)
                    VALUES (?, ?, ?, ?, ?)""",
-                (name, description, pool_type,
-                 parsed["lb_method"], parsed["keepalive"]),
+                (name, description, pool_type, parsed["lb_method"], parsed["keepalive"]),
             )
             pool_id = cursor.lastrowid
             pool_name_to_id[name] = pool_id
@@ -116,8 +113,7 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
                     """INSERT INTO pool_members
                        (pool_id, address, role, weight, max_fails, fail_timeout_s, enabled)
                        VALUES (?, ?, ?, ?, ?, ?, 1)""",
-                    (pool_id, m["address"], m["role"], m["weight"],
-                     m["max_fails"], m["fail_timeout_s"]),
+                    (pool_id, m["address"], m["role"], m["weight"], m["max_fails"], m["fail_timeout_s"]),
                 )
                 member_count += 1
 
@@ -128,8 +124,13 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
                     """INSERT INTO pool_credentials
                        (pool_id, access_key_enc, secret_key_enc, endpoint_url, region)
                        VALUES (?, ?, ?, ?, ?)""",
-                    (pool_id, creds["access_key_enc"], creds["secret_key_enc"],
-                     creds.get("endpoint_url"), creds.get("region", "us-east-1")),
+                    (
+                        pool_id,
+                        creds["access_key_enc"],
+                        creds["secret_key_enc"],
+                        creds.get("endpoint_url"),
+                        creds.get("region", "us-east-1"),
+                    ),
                 )
                 credentials_count += 1
 
@@ -166,12 +167,17 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
                     enabled, default_pool_id, extra_blocks_json,
                     ip_rule_mode, ip_rule_ips_json)
                    VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)""",
-                (server_name, parsed["listen_port"], 1 if parsed["ssl"] else 0,
-                 parsed["ssl_cert_path"], parsed["ssl_key_path"],
-                 default_pool_id,
-                 sidecar.get("extra_blocks_json"),
-                 sidecar.get("ip_rule_mode"),
-                 sidecar.get("ip_rule_ips_json")),
+                (
+                    server_name,
+                    parsed["listen_port"],
+                    1 if parsed["ssl"] else 0,
+                    parsed["ssl_cert_path"],
+                    parsed["ssl_key_path"],
+                    default_pool_id,
+                    sidecar.get("extra_blocks_json"),
+                    sidecar.get("ip_rule_mode"),
+                    sidecar.get("ip_rule_ips_json"),
+                ),
             )
             vhost_id = cursor.lastrowid
             vhost_count += 1
@@ -182,8 +188,7 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
                 pool_id = pool_name_to_id.get(pool_name)
                 if not pool_id:
                     warnings.append(
-                        f"Route {route['path_prefix']} on {server_name}: "
-                        f"pool '{pool_name}' not found, skipping"
+                        f"Route {route['path_prefix']} on {server_name}: pool '{pool_name}' not found, skipping"
                     )
                     continue
 
@@ -207,8 +212,7 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
 
             if not src_id or not dst_id:
                 warnings.append(
-                    f"Migration {state.get('migration_id')}: "
-                    f"pool not found (src={src_name}, dst={dst_name}), skipping"
+                    f"Migration {state.get('migration_id')}: pool not found (src={src_name}, dst={dst_name}), skipping"
                 )
                 continue
 
@@ -233,9 +237,7 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
                     continue
 
             if not vhost_id_for_migration:
-                warnings.append(
-                    f"Migration {state.get('migration_id')}: no vhosts found, skipping"
-                )
+                warnings.append(f"Migration {state.get('migration_id')}: no vhosts found, skipping")
                 continue
 
             phase = state.get("status", "pending")
@@ -250,11 +252,19 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
                    (vhost_id, bucket, src_pool_id, dst_pool_id, phase, mode, route_id,
                     objects_total, objects_done, bytes_total, bytes_done)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (vhost_id_for_migration, state.get("bucket", ""),
-                 src_id, dst_id, phase,
-                 state.get("mode", "copy"), state.get("route_id"),
-                 state.get("total_objects", 0), state.get("copied_objects", 0),
-                 state.get("bytes_total", 0), state.get("bytes_transferred", 0)),
+                (
+                    vhost_id_for_migration,
+                    state.get("bucket", ""),
+                    src_id,
+                    dst_id,
+                    phase,
+                    state.get("mode", "copy"),
+                    state.get("route_id"),
+                    state.get("total_objects", 0),
+                    state.get("copied_objects", 0),
+                    state.get("bytes_total", 0),
+                    state.get("bytes_transferred", 0),
+                ),
             )
             migration_count += 1
 
@@ -284,10 +294,7 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
                     vhost_id_for_completion = vhost_rows[0]["id"]
 
             if not vhost_id_for_completion:
-                warnings.append(
-                    f"Completed migration {state.get('migration_id')}: "
-                    "vhost not found, skipping"
-                )
+                warnings.append(f"Completed migration {state.get('migration_id')}: vhost not found, skipping")
                 continue
 
             await db.execute(
@@ -295,12 +302,17 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
                    (vhost_id, bucket, src_pool_id, dst_pool_id, phase, mode, route_id,
                     orphaned_source_pool_id, orphaned_source_prefix, orphaned_at)
                    VALUES (?, ?, ?, ?, 'done', ?, ?, ?, ?, ?)""",
-                (vhost_id_for_completion, state.get("bucket", ""),
-                 src_id, dst_id,
-                 state.get("mode", "copy"), state.get("route_id"),
-                 state.get("orphaned_source_pool_id"),
-                 state.get("orphaned_source_prefix"),
-                 state.get("orphaned_at")),
+                (
+                    vhost_id_for_completion,
+                    state.get("bucket", ""),
+                    src_id,
+                    dst_id,
+                    state.get("mode", "copy"),
+                    state.get("route_id"),
+                    state.get("orphaned_source_pool_id"),
+                    state.get("orphaned_source_prefix"),
+                    state.get("orphaned_at"),
+                ),
             )
             completion_count += 1
             migration_count += 1
@@ -352,9 +364,7 @@ async def _rebuild_bucket_sync(
         return
 
     async with get_db_ctx() as db:
-        vhosts = await db.execute_fetchall(
-            "SELECT id, default_pool_id FROM vhosts WHERE default_pool_id IS NOT NULL"
-        )
+        vhosts = await db.execute_fetchall("SELECT id, default_pool_id FROM vhosts WHERE default_pool_id IS NOT NULL")
         for vhost in vhosts:
             vhost_id = vhost["id"]
             pool_id = vhost["default_pool_id"]
@@ -421,13 +431,15 @@ async def _dry_run_report(
         parsed = parse_upstream_block(content)
         if parsed and parsed["name"]:
             sidecar = pool_sidecars.get(parsed["name"], {})
-            pools.append({
-                "name": parsed["name"],
-                "members": len(parsed["members"]),
-                "type": sidecar.get("type", "nanio"),
-                "has_credentials": bool(sidecar.get("credentials")),
-                "has_sidecar": bool(sidecar),
-            })
+            pools.append(
+                {
+                    "name": parsed["name"],
+                    "members": len(parsed["members"]),
+                    "type": sidecar.get("type", "nanio"),
+                    "has_credentials": bool(sidecar.get("credentials")),
+                    "has_sidecar": bool(sidecar),
+                }
+            )
 
     for conf_path in sorted(s.vhosts_dir.glob("*.conf")):
         try:
@@ -439,14 +451,16 @@ async def _dry_run_report(
         parsed = parse_vhost_block(content)
         if parsed and parsed["server_name"]:
             sidecar = vhost_sidecars.get(parsed["server_name"], {})
-            vhosts.append({
-                "server_name": parsed["server_name"],
-                "routes": len(parsed["routes"]),
-                "has_default_pool": bool(sidecar.get("default_pool_id") or sidecar.get("default_pool_name")),
-                "has_extra_blocks": bool(sidecar.get("extra_blocks_json")),
-                "has_ip_rules": bool(sidecar.get("ip_rule_mode")),
-                "has_sidecar": bool(sidecar),
-            })
+            vhosts.append(
+                {
+                    "server_name": parsed["server_name"],
+                    "routes": len(parsed["routes"]),
+                    "has_default_pool": bool(sidecar.get("default_pool_id") or sidecar.get("default_pool_name")),
+                    "has_extra_blocks": bool(sidecar.get("extra_blocks_json")),
+                    "has_ip_rules": bool(sidecar.get("ip_rule_mode")),
+                    "has_sidecar": bool(sidecar),
+                }
+            )
 
     return {
         "dry_run": True,

@@ -19,11 +19,11 @@ from nanio_orchestrator.credentials import (
     get_pool_credentials,
     store_pool_credentials,
 )
-from nanio_orchestrator.models import CredentialOut, CredentialSet
 from nanio_orchestrator.db import get_db_ctx
+from nanio_orchestrator.models import CredentialOut, CredentialSet
 from nanio_orchestrator.sidecar import (
-    write_pool_credentials_sidecar,
     delete_pool_credentials_sidecar,
+    write_pool_credentials_sidecar,
 )
 
 router = APIRouter(prefix="/api/pools", tags=["credentials"])
@@ -51,8 +51,7 @@ async def _require_nanio_pool(pool_id: int) -> dict:
     if pool["type"] != "nanio":
         raise HTTPException(
             400,
-            f"S3 credentials are only supported for nanio pools. "
-            f"Pool '{pool['name']}' is of type '{pool['type']}'.",
+            f"S3 credentials are only supported for nanio pools. Pool '{pool['name']}' is of type '{pool['type']}'.",
         )
     return pool
 
@@ -104,14 +103,18 @@ async def set_credentials(pool_id: int, body: CredentialSet):
         raise HTTPException(500, str(e))
 
     write_pool_credentials_sidecar(
-        pool["name"], access_key_enc, secret_key_enc,
-        body.endpoint_url, body.region,
+        pool["name"],
+        access_key_enc,
+        secret_key_enc,
+        body.endpoint_url,
+        body.region,
     )
 
     creds = await get_pool_credentials(pool_id)
     async with get_db_ctx() as db:
-        await log_audit(db, "set_credentials", "pool", pool_id,
-                        after={"endpoint_url": body.endpoint_url, "region": body.region})
+        await log_audit(
+            db, "set_credentials", "pool", pool_id, after={"endpoint_url": body.endpoint_url, "region": body.region}
+        )
         await db.commit()
     return CredentialOut(
         pool_id=creds["pool_id"],
