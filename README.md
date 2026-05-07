@@ -29,29 +29,26 @@ ORCHESTRATOR (:8080, internal only)
 
 ## Quick Start — Production
 
-### Method A: uv (preferred)
+### Method A: pipx (recommended — installs into an isolated env, exposes the CLI globally)
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-git clone https://github.com/nunokisc/nanio-orchestrator /tmp/nanio-orchestrator
-UV_TOOL_DIR=/opt UV_TOOL_BIN_DIR=/usr/local/bin uv tool install /tmp/nanio-orchestrator
-nanio-orchestrator install
+pipx install nanio-orchestrator
+sudo nanio-orchestrator install
 ```
 
-### Method B: pip from local build
+### Method B: uv tool
 
 ```bash
-python3 -m ensurepip --upgrade
-pip install /path/to/nanio-orchestrator
-nanio-orchestrator install
+uv tool install nanio-orchestrator
+sudo nanio-orchestrator install
 ```
 
-### Method C: venv manual (no uv, no global pip)
+### Method C: pip (into a venv)
 
 ```bash
 python3 -m venv /opt/nanio-orchestrator/venv
-/opt/nanio-orchestrator/venv/bin/pip install /path/to/nanio-orchestrator
-/opt/nanio-orchestrator/venv/bin/nanio-orchestrator install
+/opt/nanio-orchestrator/venv/bin/pip install nanio-orchestrator
+sudo /opt/nanio-orchestrator/venv/bin/nanio-orchestrator install
 ```
 
 After install, follow the printed instructions to configure and start the service.
