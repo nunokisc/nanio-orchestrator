@@ -185,6 +185,8 @@ All endpoints under `/api/*` require the `X-Orchestrator-Key` header, except `/a
 
 Per-pool S3 credentials, encrypted at rest with Fernet. Requires `SECRET` to be set.
 
+> **nanio pools only.** Credentials are only supported for pools of type `nanio`. Attempting to get, set, or remove credentials on an `http` pool returns HTTP 400.
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/pools/:id/credentials` | Get credentials (access key masked) |
@@ -206,6 +208,28 @@ Per-pool S3 credentials, encrypted at rest with Fernet. Requires `SECRET` to be 
 | DELETE | `/api/vhosts/:id/routes/:rid` | Delete route |
 | GET | `/api/vhosts/:id/preview` | Preview rendered server block |
 
+**SSL enforcement**: `ssl: true` requires both `ssl_certificate` and `ssl_certificate_key` to be provided. The API returns HTTP 422 if either is missing.
+
+**Pool-type consistency**: If a vhost has a `nanio` default pool, all routes must also point to `nanio` pools. Mixed types within a vhost are rejected. Vhosts with no default pool are unrestricted.
+
+**Additional configurations** (`extra_blocks`): Vhosts accept an optional `extra_blocks` array for injecting raw nginx directives into specific zones of the generated server block:
+
+```json
+"extra_blocks": [
+  { "zone": "ssl",   "content": "ssl_stapling on;\nssl_stapling_verify on;" },
+  { "zone": "proxy", "content": "proxy_read_timeout 300s;" },
+  { "zone": "end",   "content": "# custom footer" }
+]
+```
+
+| Zone | Inserted after |
+|------|----------------|
+| `ssl` | SSL certificate directives |
+| `proxy` | Proxy buffering directives |
+| `end` | Before the closing `}` of the server block |
+
+This is intended for advanced per-vhost nginx settings that the orchestrator does not model natively. Content is injected verbatim — it must be valid nginx syntax or `nginx -t` will reject the config.
+
 ### Bucket Sync
 
 Tracks buckets discovered on the default pool of each vhost. Background sync runs every `BUCKET_SYNC_INTERVAL` seconds.
@@ -214,8 +238,25 @@ Tracks buckets discovered on the default pool of each vhost. Background sync run
 |--------|----------|-------------|
 | GET | `/api/vhosts/:id/buckets` | List buckets with routing status (`unrouted`, `routed`, `migrating`, `ignored`). Pass `?fetch_counts=true` to include object counts. |
 | POST | `/api/vhosts/:id/buckets/sync` | Trigger an immediate bucket list sync |
-| POST | `/api/vhosts/:id/buckets/:bucket/promote` | Promote a bucket: create it on the target pool, add an nginx route, optionally start migration. **If the source bucket has objects, `migrate=true` is required** — routing without migration would make existing data inaccessible. |
+| POST | `/api/vhosts/:id/buckets/:bucket/promote` | Promote a bucket: create it on the target pool, add an nginx route, optionally start migration. See promote request body below. |
 | POST | `/api/vhosts/:id/buckets/:bucket/ignore` | Mark a bucket as ignored |
+
+> **Bucket sync** only runs on vhosts whose default pool is of type `nanio`. Vhosts backed by an `http` pool are silently skipped — they have no S3 ListBuckets semantics.
+
+**Promote request body** (`POST /api/vhosts/:id/buckets/:bucket/promote`):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `pool_id` | int | — | Target pool for the new route |
+| `migrate` | bool | `false` | Start rclone migration after creating the route |
+| `allow_orphan` | bool | `false` | Allow routing to a different pool without migration when the source bucket already has objects. Existing objects remain on the source pool and will not be accessible via this route until migrated manually. |
+
+**Conflict behaviour** when `migrate=false` and the source bucket has objects:
+- Routing to **the same pool as the default** → allowed (just creates an explicit route, no data loss).
+- Routing to **a different pool** → returns HTTP 400 with `allow_orphan` in the message. Re-submit with `allow_orphan=true` to acknowledge data will remain on the source. The Web UI shows an inline conflict box with "Enable migration & route" or "Route without migration" options.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | POST | `/api/vhosts/:id/buckets/:bucket/migrate` | Start (or restart) object migration for a routed bucket (uses rclone engine) |
 | GET | `/api/vhosts/:id/buckets/orphans` | Scan routed buckets for orphan objects still on the default pool |
 | POST | `/api/vhosts/:id/buckets/:bucket/purge-orphan` | Delete all objects from the default pool copy of a routed bucket |
@@ -241,10 +282,16 @@ Phases: `pending → copying → write_routing → verifying → switching → d
 - **sync** mode: mirror — destination becomes identical to the source. A pre-flight guard aborts the migration if the source bucket is empty to prevent accidental data loss.
 
 **Pre-flight validation** (at `POST /api/migrations` time):
+- **Both pools must be of type `nanio`.** Migrations between `http` pools or from/to an `http` pool are rejected with HTTP 400.
 - Both pools must have at least one enabled member.
+- Source and destination must be different pools.
 - A route `/{bucket}/` must exist in the vhost and point to `src_pool_id`.
 - The source bucket must exist and contain at least one object on the source pool.
 - No active migration for the same bucket can already be running.
+
+**Destination bucket with existing objects**: In `copy` mode, if the destination bucket already has objects (e.g. from a previously failed migration attempt), the migration **proceeds with a warning** — rclone copy is additive and skips objects that already exist at the destination unchanged. In `sync` mode, the migration is **aborted** if the destination has objects to prevent accidental data loss.
+
+**Audit log**: Every migration lifecycle event is written to the audit log — `start_migration` when created, `migration_done` on completion, `migration_cancelled` on cancellation, and `migration_error` on failure. Per-step details are also written to the migration's own log (`GET /api/migrations/:id/log`), including early-abort error messages.
 
 | Method | Endpoint | Description |
 |--------|----------|--------------|
@@ -332,10 +379,15 @@ Background check every `DRIFT_INTERVAL` seconds:
 
 ### Pool Types
 
-| Type | Members | Nginx `backup` flag | Description |
-|------|---------|---------------------|-------------|
-| `nanio` | All `active` | Never | Shared storage — any member handles any request |
-| `http` | `primary` + `replica` | Yes, for replicas | Read-only HTTP serve with failover |
+| Type | Members | Nginx `backup` flag | Credentials | Description |
+|------|---------|---------------------|-------------|-------------|
+| `nanio` | All `active` | Never | ✓ (S3 access/secret key) | Shared storage — any member handles any request |
+| `http` | `primary` + `replica` | Yes, for replicas | ✗ | Read-only HTTP serve with failover |
+
+Pool type also determines what is available in the Web UI:
+- **S3 credentials** are only shown and editable for `nanio` pools.
+- **Migrations** can only be created between two `nanio` pools.
+- **Bucket sync** and the **Buckets** management page only operate on vhosts whose default pool is `nanio`.
 
 ### Node Config Generator
 
