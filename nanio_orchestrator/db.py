@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS pools (
     id          INTEGER PRIMARY KEY,
     name        TEXT NOT NULL UNIQUE,
     description TEXT,
-    type        TEXT NOT NULL DEFAULT 'nanio' CHECK (type IN ('nanio','http','cold')),
+    type        TEXT NOT NULL DEFAULT 'nanio' CHECK (type IN ('nanio','http')),
     lb_method   TEXT NOT NULL DEFAULT 'least_conn' CHECK (lb_method IN ('round_robin','least_conn','ip_hash')),
     keepalive   INTEGER NOT NULL DEFAULT 32,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
@@ -216,6 +216,9 @@ async def _run_migrations_async(db) -> None:
     if 'key_prefix' not in col_names:
         await db.execute("ALTER TABLE routes ADD COLUMN key_prefix TEXT")
 
+    # Migration: rename pool type 'cold' → 'http' (cold was an alias with no functional difference)
+    await db.execute("UPDATE pools SET type = 'http' WHERE type = 'cold'")
+
     # Rebuild migrations table when needed:
     # - Remove purge_source / needs_purge phases (purge was removed intentionally — data is never
     #   deleted automatically; orphaned source data is tracked instead)
@@ -332,6 +335,9 @@ def init_db_sync() -> None:
     col_names = {r[1] for r in info}
     if 'key_prefix' not in col_names:
         conn.execute("ALTER TABLE routes ADD COLUMN key_prefix TEXT")
+
+    # Migration: rename pool type 'cold' → 'http' (cold was an alias with no functional difference)
+    conn.execute("UPDATE pools SET type = 'http' WHERE type = 'cold'")
 
     # Rebuild migrations table when needed:
     # - Remove purge_source / needs_purge phases (purge was removed intentionally — data is never

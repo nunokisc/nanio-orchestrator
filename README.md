@@ -336,7 +336,6 @@ Background check every `DRIFT_INTERVAL` seconds:
 |------|---------|---------------------|-------------|
 | `nanio` | All `active` | Never | Shared storage — any member handles any request |
 | `http` | `primary` + `replica` | Yes, for replicas | Read-only HTTP serve with failover |
-| `cold` | `primary` + `replica` | Yes, for replicas | Read-only archive with failover |
 
 ### Node Config Generator
 

@@ -334,7 +334,7 @@ server {
 
     @pytest.mark.asyncio
     async def test_rebuild_recovers_pool_type_from_sidecar(self, tmp_dirs, setup_nginx_configs):
-        """Pool type (nanio/http/cold) is recovered from sidecar."""
+        """Pool type (nanio/http) is recovered from sidecar."""
         import nanio_orchestrator.config as cfg_mod
         import nanio_orchestrator.db as db_mod
         cfg_mod.settings = None

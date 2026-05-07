@@ -100,7 +100,7 @@ def _validate_member_role(pool_type: str, role: str) -> None:
             status_code=400,
             detail="nanio pools use shared storage — all members are active, backup/replica not allowed",
         )
-    if pool_type in ("http", "cold") and role not in ("primary", "replica"):
+    if pool_type == "http" and role not in ("primary", "replica"):
         raise HTTPException(
             status_code=400,
             detail=f"{pool_type} pools require role 'primary' or 'replica', not '{role}'",

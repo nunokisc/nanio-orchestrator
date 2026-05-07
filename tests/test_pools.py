@@ -14,9 +14,13 @@ class TestPoolCRUD:
         assert data["lb_method"] == "least_conn"
 
     async def test_create_pool_types(self, client):
-        for pt in ("nanio", "http", "cold"):
+        for pt in ("nanio", "http"):
             resp = await client.post("/api/pools", json={"name": f"pool-{pt}", "type": pt})
             assert resp.status_code == 201
+
+    async def test_create_pool_invalid_type(self, client):
+        resp = await client.post("/api/pools", json={"name": "pool-cold", "type": "cold"})
+        assert resp.status_code == 422
 
     async def test_create_pool_invalid_name(self, client):
         resp = await client.post("/api/pools", json={"name": "bad name!", "type": "nanio"})
