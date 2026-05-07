@@ -207,3 +207,111 @@ def run_install() -> None:
     # 8. Print next steps
     print()
     print(NEXT_STEPS)
+
+
+REMOVE_STEPS = """\
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ nanio-orchestrator removed successfully
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  If you also want to delete data and config, run:
+    nanio-orchestrator remove --purge
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+
+REMOVE_PURGE_STEPS = """\
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ nanio-orchestrator purged successfully
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+
+
+def run_remove(purge: bool = False, yes: bool = False) -> None:
+    """Remove nanio-orchestrator from the system."""
+    import subprocess
+
+    print("nanio-orchestrator remove\n")
+
+    if os.geteuid() != 0:
+        _step("Running as root", ok=False)
+        print("\n  This command must be run as root (sudo).\n")
+        sys.exit(1)
+    _step("Running as root")
+
+    if not yes:
+        msg = (
+            "This will remove the nanio-orchestrator service, systemd unit, sudoers drop-in,\n"
+            "  nginx nanio config directories, and service user.\n"
+        )
+        if purge:
+            msg += (
+                "  --purge: data (/opt/nanio-orchestrator) and config (/etc/nanio-orchestrator)\n"
+                "  will also be permanently deleted.\n"
+            )
+        print(f"  {msg}")
+        answer = input("  Continue? [y/N] ").strip().lower()
+        if answer not in ("y", "yes"):
+            print("  Aborted.")
+            sys.exit(0)
+        print()
+
+    # 1. Stop and disable systemd service
+    unit_path = Path("/etc/systemd/system/nanio-orchestrator.service")
+    if unit_path.exists():
+        for cmd in (
+            ["systemctl", "stop", "nanio-orchestrator"],
+            ["systemctl", "disable", "nanio-orchestrator"],
+        ):
+            subprocess.run(cmd, capture_output=True)
+        unit_path.unlink()
+        subprocess.run(["systemctl", "daemon-reload"], capture_output=True)
+        _step(f"Stopped, disabled, and removed {unit_path}")
+    else:
+        _step(f"Systemd unit not found (skipped): {unit_path}")
+
+    # 2. Remove sudoers drop-in
+    sudoers_path = Path("/etc/sudoers.d/nanio-orchestrator")
+    if sudoers_path.exists():
+        sudoers_path.unlink()
+        _step(f"Removed sudoers drop-in: {sudoers_path}")
+    else:
+        _step(f"Sudoers drop-in not found (skipped): {sudoers_path}")
+
+    # 3. Remove nginx nanio config directories
+    nanio_nginx_dir = Path("/etc/nginx/nanio")
+    if nanio_nginx_dir.exists():
+        shutil.rmtree(nanio_nginx_dir)
+        _step(f"Removed nginx config dir: {nanio_nginx_dir}")
+    else:
+        _step(f"Nginx config dir not found (skipped): {nanio_nginx_dir}")
+
+    # 4. Remove service user
+    try:
+        subprocess.run(["id", "nanio-orchestrator"], check=True, capture_output=True)
+        subprocess.run(["userdel", "nanio-orchestrator"], check=True, capture_output=True)
+        _step("Removed service user 'nanio-orchestrator'")
+    except subprocess.CalledProcessError:
+        _step("Service user 'nanio-orchestrator' not found (skipped)")
+
+    # 5. Purge data and config (only with --purge)
+    if purge:
+        data_dir = Path("/opt/nanio-orchestrator")
+        if data_dir.exists():
+            shutil.rmtree(data_dir)
+            _step(f"Removed data directory: {data_dir}")
+        else:
+            _step(f"Data directory not found (skipped): {data_dir}")
+
+        config_dir = Path("/etc/nanio-orchestrator")
+        if config_dir.exists():
+            shutil.rmtree(config_dir)
+            _step(f"Removed config directory: {config_dir}")
+        else:
+            _step(f"Config directory not found (skipped): {config_dir}")
+
+    print()
+    if purge:
+        print(REMOVE_PURGE_STEPS)
+    else:
+        print(REMOVE_STEPS)

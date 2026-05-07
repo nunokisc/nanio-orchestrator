@@ -1,4 +1,4 @@
-.PHONY: install-dev run test lint fmt clean install build
+.PHONY: install-dev run test lint fmt clean install remove build
 
 # ── Development ───────────────────────────────────────────────────────────────
 
@@ -44,6 +44,10 @@ clean:
 install:
 	@echo "Running production install (requires root)..."
 	nanio-orchestrator install
+
+remove:
+	@echo "Removing nanio-orchestrator (requires root)..."
+	nanio-orchestrator remove
 
 build:
 	@echo "Building wheel..."

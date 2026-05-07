@@ -150,6 +150,23 @@ def install():
     run_install()
 
 
+@main.command()
+@click.option("--purge", is_flag=True, default=False,
+              help="Also delete data (/opt/nanio-orchestrator) and config (/etc/nanio-orchestrator).")
+@click.option("--yes", "-y", is_flag=True, default=False, help="Skip confirmation prompt.")
+def remove(purge, yes):
+    """Remove nanio-orchestrator from the system.
+
+    Stops and disables the service, removes the systemd unit, sudoers
+    drop-in, nginx nanio config directories, and the service user.
+
+    Use --purge to also delete all data and config files.
+    Must be run as root.
+    """
+    from nanio_orchestrator.install import run_remove
+    run_remove(purge=purge, yes=yes)
+
+
 @main.command("rebuild-db")
 @click.option("--dry-run", is_flag=True, default=False, help="Show what would be imported without writing")
 @click.option("--force", is_flag=True, default=False, help="Proceed even if DB already exists (overwrites)")
