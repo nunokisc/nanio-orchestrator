@@ -134,9 +134,7 @@ async def dashboard():
 async def pools_page():
     async with get_db_ctx() as db:
         pools = await db.execute_fetchall("SELECT * FROM pools ORDER BY name")
-        nanio_pools_rows = await db.execute_fetchall(
-            "SELECT id, name FROM pools WHERE type = 'nanio' ORDER BY name"
-        )
+        nanio_pools_rows = await db.execute_fetchall("SELECT id, name FROM pools WHERE type = 'nanio' ORDER BY name")
         result = []
         for p in pools:
             members = await db.execute_fetchall("SELECT * FROM pool_members WHERE pool_id = ? ORDER BY id", (p["id"],))

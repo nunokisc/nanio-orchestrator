@@ -201,9 +201,7 @@ async def update_pool(pool_id: int, body: PoolUpdate):
                         422,
                         "source_nanio_pool_id can only be set on http pools",
                     )
-                ref_rows = await db.execute_fetchall(
-                    "SELECT id, type FROM pools WHERE id = ?", (snp_id,)
-                )
+                ref_rows = await db.execute_fetchall("SELECT id, type FROM pools WHERE id = ?", (snp_id,))
                 if not ref_rows:
                     raise HTTPException(
                         422,

@@ -638,9 +638,7 @@ async def list_http_bucket_routes(vhost_id: int):
                     }
                 )
 
-        nanio_pool_rows = await db.execute_fetchall(
-            "SELECT name FROM pools WHERE id = ?", (nanio_pool_id,)
-        )
+        nanio_pool_rows = await db.execute_fetchall("SELECT name FROM pools WHERE id = ?", (nanio_pool_id,))
         nanio_pool_name = nanio_pool_rows[0]["name"] if nanio_pool_rows else str(nanio_pool_id)
 
     return {

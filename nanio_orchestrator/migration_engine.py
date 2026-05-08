@@ -259,9 +259,7 @@ async def _cascade_http_switching(
                     )
                     await db.commit()
 
-                filepath_h, content_h = await _generate_vhost_config_with_split(
-                    vhost_id_h, bucket, None
-                )
+                filepath_h, content_h = await _generate_vhost_config_with_split(vhost_id_h, bucket, None)
                 tmp_h = filepath_h + ".tmp"
                 await write_config_atomic(tmp_h, content_h)
                 test_h = await test_config()
@@ -323,6 +321,8 @@ async def _cascade_http_switching(
                 )
 
     return swept
+
+
 _migration_lock = asyncio.Lock()
 
 
@@ -1168,9 +1168,7 @@ async def run_migration(migration_id: int) -> None:
                     await db.commit()
                 await _log(migration_id, "switching", "nginx reloaded with new route")
                 # Cascade switching to linked http vhosts
-                swept_http_vhosts = await _cascade_http_switching(
-                    migration_id, bucket, src_pool_id, dst_pool_id
-                )
+                swept_http_vhosts = await _cascade_http_switching(migration_id, bucket, src_pool_id, dst_pool_id)
             else:
                 # Reload failed — rollback DB route to source pool, then regenerate
                 # correct nginx config (pointing to src) so the broken file doesn't
