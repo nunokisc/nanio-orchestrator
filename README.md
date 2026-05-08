@@ -265,7 +265,7 @@ Bucket status values:
 |--------|----------|-------------|
 | GET | `/api/vhosts/:id/buckets` | List buckets with routing status. Pass `?fetch_counts=true` to include object counts. |
 | POST | `/api/vhosts/:id/buckets/sync` | Trigger an immediate bucket list sync |
-| POST | `/api/vhosts/:id/buckets/:bucket/promote` | Promote a bucket: create it on the target pool, add an nginx route, optionally start migration. See promote request body below. |
+| POST | `/api/vhosts/:id/buckets/:bucket/promote` | Promote a bucket: add an nginx route pointing to the target pool, optionally start migration. Does **not** create the bucket on the target — that is the S3 user's responsibility (or the migration engine's, if `migrate=true`). See promote request body below. |
 | POST | `/api/vhosts/:id/buckets/:bucket/ignore` | Mark a bucket as ignored |
 | DELETE | `/api/vhosts/:id/buckets/:bucket/route` | Remove the nginx route for a bucket. If status was `deleted`, also removes the bucket_sync record; otherwise resets to `unrouted`. |
 
@@ -372,15 +372,20 @@ Phases: `pending → copying → write_routing → verifying → switching → d
 
 ### Write Path
 
-Every config change follows this exact sequence:
+Every CRUD config change (pool, vhost, route, member) follows this sequence:
 
 1. Render new config from DB state (Jinja2 templates)
 2. Write to `<file>.tmp`
 3. Run `nginx -t` — if it fails: delete `.tmp`, return error, stop
 4. `os.rename(<file>.tmp, <file>)` — atomic on POSIX
-5. Run `nginx -s reload`
-6. Update DB: sha256, content snapshot, audit log with nginx output
-7. Trigger a DB backup
+5. Update DB: sha256, content snapshot, audit log with nginx output
+
+Nginx is **not** reloaded automatically. The operator applies pending changes explicitly via
+`POST /api/config/reload` (Config tab in the Web UI). This allows making several configuration
+changes in sequence without disrupting production traffic on each step.
+
+The only exception is the **migration engine**: it auto-reloads nginx during the `write_routing`
+and `switching` phases because those phase transitions are autonomous and time-sensitive.
 
 ### Sidecar Files
 
@@ -451,8 +456,8 @@ The DB can be fully rebuilt from disk after loss or corruption.
 ### Automatic Backup
 
 The DB is backed up automatically:
-- After every successful nginx reload
-- On a periodic timer (`DB_BACKUP_INTERVAL`, default 60 s)
+- On a periodic timer (`DB_BACKUP_INTERVAL`, default 300 s)
+- After migrations complete (via the migration engine)
 - On demand via `POST /api/config/backup`
 
 Backups are rotated: `.bak`, `.bak.2`, `.bak.3`, … up to `DB_BACKUP_ROTATE` copies.

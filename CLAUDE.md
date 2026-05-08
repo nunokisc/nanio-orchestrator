@@ -5,8 +5,8 @@ Read this before making any changes.
 ## What is nanio-orchestrator
 
 A **control-plane tool** for managing nginx as an S3-compatible storage gateway on top of
-[nanio](https://github.com/apocas/nanio) instances. It writes nginx config files and signals
-nginx to reload — traffic never flows through the orchestrator.
+[nanio](https://github.com/apocas/nanio) instances. It writes nginx config files and validates
+them with `nginx -t` — traffic never flows through the orchestrator.
 
 Key design constraints:
 - **Stateless control plane**: the orchestrator can crash or be restarted without dropping traffic
@@ -53,7 +53,7 @@ nanio_orchestrator/
     ├── static/         # app.js, style.css
     └── templates/      # HTML templates (base.html, vhosts.html, …)
 
-tests/                  # pytest suite (177 tests, asyncio_mode=auto)
+tests/                  # pytest suite (211 tests, asyncio_mode=auto)
 docs/                   # Detailed documentation
 scripts/                # bootstrap.sh (bare-server setup)
 systemd/                # nanio-orchestrator.service template
@@ -108,8 +108,11 @@ SQLite database from:
 2. **SQL writes go through `get_db_ctx()`** — it handles connection, WAL mode, and foreign keys.
    Never open a raw sqlite3 connection in handlers.
 
-3. **Test nginx config before reload.** All config changes go through `_apply_vhost_config()` /
-   `_apply_pool_config()` which run `nginx -t`, write atomically, reload, and roll back on failure.
+3. **Test nginx config before writing.** All CRUD config changes go through `_write_vhost_config()` /
+   `_write_pool_config()` which run `nginx -t`, write atomically, and roll back on failure. They do **not**
+   reload nginx — the operator applies changes explicitly via the Config tab (`POST /api/config/reload`).
+   Only the migration engine auto-reloads (it is an autonomous process that must apply its own routing
+   changes without operator intervention).
 
 4. **HTTP pools are second-class.** They have no S3 credentials, no bucket sync, no migration.
    Filter them out in bucket-related endpoints — see `bucket_sync.py` and `api/pools.py`.
@@ -125,6 +128,11 @@ SQLite database from:
 
 7. **No new background tasks.** The only background tasks are `bucket_sync` and `backup`. They're
    started in `app.py` startup. New recurring work should follow the same pattern.
+
+9. **Bucket creation is not the orchestrator's job.** Route creation and `promote_bucket` do not create
+   buckets on the target pool. Bucket provisioning is the responsibility of whoever uses the S3 service.
+   The only exception is the migration engine, which will create the destination bucket if it does not
+   exist before starting an rclone copy.
 
 8. **Keep rebuild working.** Any new field stored in the DB must also be:
    - Written to the sidecar in `sidecar.py` (update `write_vhost_sidecar` or `write_pool_sidecar`)
