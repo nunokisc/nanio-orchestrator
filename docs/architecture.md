@@ -1,7 +1,7 @@
 # Architecture
 
-nanio-orchestrator is a **control-plane tool only**. It manages nginx configuration and signals
-nginx to reload. Traffic never flows through the orchestrator — if it stops, nginx keeps serving.
+nanio-orchestrator is a **control-plane tool only**. It manages nginx configuration and validates
+it with `nginx -t`. Traffic never flows through the orchestrator — if it stops, nginx keeps serving.
 
 ---
 
@@ -18,7 +18,7 @@ NGINX (gateway machine)
 └─► upstream pool-old    →  nanio instances  →  /data/archive/
 
 ORCHESTRATOR (:8080, internal network only)
-│  writes files + signals nginx
+│  writes files + validates with nginx -t
 ├─► /etc/nginx/nanio/pools/*.conf          upstream blocks
 ├─► /etc/nginx/nanio/pools/*.meta.json     sidecar: type, credentials (encrypted)
 ├─► /etc/nginx/nanio/vhosts/*.conf         server blocks
@@ -46,8 +46,11 @@ Renders Jinja2 templates to produce nginx config text. Two template types:
 - `upstream.conf.j2` → pool upstream blocks
 - `vhost.conf.j2` → server blocks with all routes, IP rules, extra blocks
 
-**All config writes are atomic** (write to `.tmp`, rename, then `nginx -t` before signalling reload).
-On `nginx -t` failure the previous config is restored automatically.
+**All config writes are atomic** (write to `.tmp`, run `nginx -t`, rename on success, rollback on
+failure). CRUD operations (pools, vhosts, routes, members) write and validate the config but do
+**not** reload nginx — the operator applies pending changes explicitly via `POST /api/config/reload`
+or the Config tab in the Web UI. Only the migration engine reloads nginx automatically during the
+`write_routing` and `switching` phases, because those transitions are autonomous and time-sensitive.
 
 ### Sidecar files (`sidecar.py`)
 
@@ -139,7 +142,7 @@ Custom async S3 HTTP client using stdlib only (no boto3/aiobotocore). Implements
 | API authentication | API key (header or cookie session) |
 | Session management | Signed session cookie with TTL |
 | Credential storage | Fernet symmetric encryption at rest |
-| nginx config safety | `nginx -t` gate before every reload; atomic writes with rollback |
+| nginx config safety | `nginx -t` gate on every write; atomic writes with rollback |
 | IP access control | Per-vhost `allow`/`deny` rules in generated nginx config |
 | Internal-only API | The orchestrator should not be exposed to the internet |
 
