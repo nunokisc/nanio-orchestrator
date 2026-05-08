@@ -22,11 +22,13 @@
     <label style="margin-left:auto;font-size:0.9rem;color:var(--text-muted)">
         Filter:
         <select id="status-filter" onchange="applyFilter()" style="margin-left:0.4rem">
-            <option value="all">All</option>
-            <option value="unrouted" selected>Unrouted</option>
+            <option value="needs-attention" selected>Unrouted + Deleted</option>
+            <option value="unrouted">Unrouted</option>
+            <option value="deleted">Deleted</option>
             <option value="routed">Routed</option>
             <option value="migrating">Migrating</option>
             <option value="ignored">Ignored</option>
+            <option value="all">All</option>
         </select>
     </label>
 </div>
@@ -67,7 +69,7 @@
                     <button class="btn btn-xs"
                             onclick="ignoreBucket({{ v.id }}, '{{ b.bucket }}')">Ignore</button>
                     {% endif %}
-                    {% if b.status == 'deleted' %}
+                    {% if b.status == 'deleted' and b.routed_pool_id %}
                     <button class="btn btn-xs btn-danger"
                             onclick="removeRoute({{ v.id }}, '{{ b.bucket }}')">Remove Route</button>
                     {% endif %}
@@ -246,7 +248,11 @@ function applyFilter() {
     const filter = document.getElementById('status-filter').value;
     document.querySelectorAll('.bucket-row').forEach(row => {
         const status = row.dataset.status;
-        row.style.display = (filter === 'all' || status === filter) ? '' : 'none';
+        let show;
+        if (filter === 'all') show = true;
+        else if (filter === 'needs-attention') show = status === 'unrouted' || status === 'deleted';
+        else show = status === filter;
+        row.style.display = show ? '' : 'none';
     });
 }
 

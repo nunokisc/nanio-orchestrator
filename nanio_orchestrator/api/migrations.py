@@ -258,13 +258,9 @@ async def list_source_buckets(pool_id: int):
             """
             SELECT DISTINCT bs.bucket
             FROM bucket_sync bs
-            JOIN vhosts v ON bs.vhost_id = v.id
             WHERE
                 bs.routed_pool_id = :pid
-                OR (
-                    bs.routed_pool_id IS NULL
-                    AND v.default_pool_id = :pid
-                )
+                AND bs.status NOT IN ('deleted', 'unrouted', 'ignored')
             ORDER BY bs.bucket
             """,
             {"pid": pool_id},

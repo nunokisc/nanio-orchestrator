@@ -611,8 +611,12 @@ async def list_http_bucket_routes(vhost_id: int):
                WHERE r.vhost_id = ? ORDER BY r.path_prefix""",
             (vhost_id,),
         )
-        existing_routes = [dict(r) for r in route_rows]
-        routed_buckets = {r["path_prefix"].strip("/") for r in existing_routes}
+        # Exclude the default "/" catch-all — it's the vhost default pool, not a bucket route
+        existing_routes = [dict(r) for r in route_rows if dict(r)["path_prefix"] != "/"]
+        # Add a human-friendly "bucket" field (path_prefix stripped of slashes)
+        for r in existing_routes:
+            r["bucket"] = r["path_prefix"].strip("/")
+        routed_buckets = {r["bucket"] for r in existing_routes}
 
         # Get buckets from the linked nanio pool via bucket_sync
         # (bucket_sync is on a nanio vhost, not this http vhost)

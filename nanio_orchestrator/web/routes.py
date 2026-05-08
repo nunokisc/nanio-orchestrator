@@ -252,6 +252,7 @@ async def buckets_page():
                    FROM bucket_sync bs
                    LEFT JOIN pools p ON bs.routed_pool_id = p.id
                    WHERE bs.vhost_id = ?
+                     AND NOT (bs.status = 'deleted' AND bs.routed_pool_id IS NULL)
                    ORDER BY bs.status, bs.bucket""",
                 (v["id"],),
             )
