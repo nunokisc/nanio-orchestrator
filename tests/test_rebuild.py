@@ -66,11 +66,12 @@ class TestDatabaseBackup:
 
     @pytest.mark.asyncio
     async def test_backup_triggered_after_write(self, client, app, mock_nginx):
-        """DB backup is triggered after config-modifying write operations."""
+        """DB backup is no longer triggered automatically on each CRUD write.
+        Backups run periodically via the background task and after migrations."""
         pool = await create_pool(client)
-        # Adding a member triggers _apply_pool_config which triggers backup
         await create_member(client, pool["id"], "10.0.0.1:9000")
-        assert mock_nginx["trigger_backup"].called
+        # trigger_backup is NOT called on CRUD writes anymore
+        assert not mock_nginx["trigger_backup"].called
 
 
 class TestSidecarFiles:

@@ -20,7 +20,7 @@ from nanio_orchestrator.credentials import get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator.migration_engine import start_migration as engine_start_migration
 from nanio_orchestrator.models import BucketListOut, BucketPromoteRequest
-from nanio_orchestrator.nginx.executor import reload_nginx, test_config
+from nanio_orchestrator.nginx.executor import test_config
 from nanio_orchestrator.nginx.generator import generate_vhost_config, record_file_state
 from nanio_orchestrator.s3client import (
     bucket_has_objects,
@@ -77,12 +77,20 @@ async def _all_enabled_members(pool_id: int, db) -> List[str]:
     return [dict(r)["address"] for r in rows]
 
 
-async def _apply_vhost_config(vhost_id: int, db) -> tuple:
-    """Generate, test, write, reload. Returns (ok, output)."""
+async def _write_vhost_config(vhost_id: int, db) -> tuple:
+    """Generate, test, write config to disk, record in DB. Returns (ok, output).
+    Does NOT reload nginx — the operator applies changes via the Config tab.
+    Exception: called from migration engine paths where reload is done separately.
+    """
     filepath, content = await generate_vhost_config(vhost_id)
     tmp = filepath + ".tmp"
     async with aiofiles.open(tmp, "w") as f:
         await f.write(content)
+
+    old_content = None
+    if os.path.exists(filepath):
+        async with aiofiles.open(filepath, "r") as f:
+            old_content = await f.read()
 
     test_result = await test_config()
     if not test_result.ok:
@@ -90,10 +98,9 @@ async def _apply_vhost_config(vhost_id: int, db) -> tuple:
         return False, test_result.output
 
     os.rename(tmp, filepath)
-    reload_result = await reload_nginx()
     await record_file_state(db, filepath, content)
     await db.commit()
-    return reload_result.ok, f"nginx -t: {test_result.output}\nnginx reload: {reload_result.output}"
+    return True, f"nginx -t: {test_result.output} (config written — apply via Config tab)"
 
 
 # ── List buckets ──────────────────────────────────────────────────────────────
@@ -172,11 +179,13 @@ async def trigger_bucket_sync(vhost_id: int):
 
 @router.post("/{vhost_id}/buckets/{bucket}/promote")
 async def promote_bucket(vhost_id: int, bucket: str, body: BucketPromoteRequest):
-    """Promote a bucket to a dedicated pool.
+    """Promote a bucket to a dedicated pool by creating an nginx route.
 
-    1. Creates the bucket on all members of the target pool.
-    2. Creates an nginx route: /{bucket}/ → target pool.
-    3. Optionally kicks off object migration.
+    Creates a route /{bucket}/ → target pool in DB and writes the nginx config
+    (validated with nginx -t). The operator applies changes via the Config tab.
+    Bucket creation on the target pool is the responsibility of the S3 service
+    user; the migration engine will create the bucket if needed during migration.
+    Optionally kicks off a migration when migrate=true.
     """
     async with get_db_ctx() as db:
         vhost = await _require_vhost_with_default_pool(vhost_id, db)
@@ -205,19 +214,17 @@ async def promote_bucket(vhost_id: int, bucket: str, body: BucketPromoteRequest)
                 "the bucket already lives there. Select a different destination pool.",
             )
 
-        target_members = await _all_enabled_members(body.pool_id, db)
-        if not target_members:
-            raise HTTPException(400, "Target pool has no enabled members")
+        if body.migrate:
+            # Migration needs at least one member on the target pool to proceed
+            target_members = await _all_enabled_members(body.pool_id, db)
+            if not target_members:
+                raise HTTPException(400, "Target pool has no enabled members")
 
         default_member = await _first_enabled_member(default_pool_id, db)
 
     default_ak, default_sk, _ = await get_pool_s3_params(default_pool_id)
-    target_ak, target_sk, _ = await get_pool_s3_params(body.pool_id)
 
     # ── Pre-flight: check whether the bucket already has objects on the source pool ──
-    # If it does and the operator did NOT request migration, routing to the new
-    # (empty) pool would make all existing objects inaccessible — data loss.
-    # We refuse the operation and require migration to be explicitly enabled.
     src_has_data = False
     try:
         src_has_data = await bucket_has_objects(default_member, bucket, access_key=default_ak, secret_key=default_sk)
@@ -230,10 +237,7 @@ async def promote_bucket(vhost_id: int, bucket: str, body: BucketPromoteRequest)
         )
 
     if src_has_data and not body.migrate:
-        if body.pool_id == default_pool_id:
-            # Routing to the same pool as the default — no data loss, just creating an explicit route
-            pass
-        elif not body.allow_orphan:
+        if body.pool_id != default_pool_id and not body.allow_orphan:
             raise HTTPException(
                 400,
                 f"Bucket '{bucket}' already has objects on the source pool. "
@@ -241,28 +245,6 @@ async def promote_bucket(vhost_id: int, bucket: str, body: BucketPromoteRequest)
                 "inaccessible via this route. Either enable 'Migrate existing objects' "
                 "or re-submit with allow_orphan=true to acknowledge data will remain on the source pool.",
             )
-
-    # ── Ensure bucket stub exists on default pool (required for ListBuckets) ─
-    ok_default, msg_default = await create_bucket(
-        default_member,
-        bucket,
-        access_key=default_ak,
-        secret_key=default_sk,
-    )
-    if not ok_default:
-        return {"ok": False, "error": f"Failed to create bucket stub on default pool: {msg_default}"}
-
-    # ── Create bucket on all target pool members ──────────────────────────
-    provision_results = []
-    for member in target_members:
-        ok, msg = await create_bucket(member, bucket, access_key=target_ak, secret_key=target_sk)
-        provision_results.append({"member": member, "ok": ok, "msg": msg})
-        if not ok:
-            return {
-                "ok": False,
-                "error": f"Failed to create bucket on {member}: {msg}",
-                "provision": provision_results,
-            }
 
     # ── Create nginx route ────────────────────────────────────────────────
     # When migration is requested the route initially points to the SOURCE
@@ -280,7 +262,7 @@ async def promote_bucket(vhost_id: int, bucket: str, body: BucketPromoteRequest)
         route_id = cursor.lastrowid
         await db.commit()
 
-        ok, output = await _apply_vhost_config(vhost_id, db)
+        ok, output = await _write_vhost_config(vhost_id, db)
         await log_audit(
             db,
             "promote_bucket",
@@ -313,7 +295,6 @@ async def promote_bucket(vhost_id: int, bucket: str, body: BucketPromoteRequest)
         "bucket": bucket,
         "pool": pool["name"],
         "route": f"/{bucket}/",
-        "provision": provision_results,
         "migration_started": False,
     }
 

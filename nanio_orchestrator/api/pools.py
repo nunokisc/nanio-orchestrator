@@ -1,4 +1,4 @@
-"""Pools CRUD API with nginx config generation + reload."""
+"""Pools CRUD API with nginx config generation (manual apply via Config tab)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from typing import List
 from fastapi import APIRouter, HTTPException
 
 from nanio_orchestrator.audit_log import log_audit
-from nanio_orchestrator.backup import trigger_backup
 from nanio_orchestrator.credentials import get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator.models import (
@@ -22,7 +21,7 @@ from nanio_orchestrator.models import (
     PoolOut,
     PoolUpdate,
 )
-from nanio_orchestrator.nginx.executor import reload_nginx, test_config
+from nanio_orchestrator.nginx.executor import test_config
 from nanio_orchestrator.nginx.generator import (
     generate_pool_config,
     node_config_instructions,
@@ -46,8 +45,9 @@ async def delete_pool_sidecar(*args, **kwargs):
 router = APIRouter(prefix="/api/pools", tags=["pools"])
 
 
-async def _apply_pool_config(pool_id: int, db) -> tuple:
-    """Generate, test, write, reload, record. Returns (ok, output).
+async def _write_pool_config(pool_id: int, db) -> tuple:
+    """Generate, test, write config to disk, record in DB. Returns (ok, output).
+    Does NOT reload nginx — the operator applies changes via the Config tab.
     If the pool has no members the config file is removed instead of written.
     """
     filepath, content = await generate_pool_config(pool_id)
@@ -61,8 +61,7 @@ async def _apply_pool_config(pool_id: int, db) -> tuple:
     if content is None:
         await remove_config_file(filepath)
         await db.execute("DELETE FROM config_files WHERE path = ?", (filepath,))
-        reload_result = await reload_nginx()
-        return reload_result.ok, f"Pool has no members — config file removed.\nnginx -s reload: {reload_result.output}"
+        return True, "Pool has no members — config file removed (apply nginx changes via Config tab)"
 
     # Write to .tmp
     tmp_path = filepath + ".tmp"
@@ -88,19 +87,11 @@ async def _apply_pool_config(pool_id: int, db) -> tuple:
             os.unlink(filepath)
         return False, test_result.output
 
-    # Reload
-    reload_result = await reload_nginx()
-
-    # Record in DB
+    # Record in DB (no reload — operator applies via Config tab)
     await record_file_state(db, filepath, content)
     await db.commit()
 
-    combined = f"nginx -t: {test_result.output}\nnginx -s reload: {reload_result.output}"
-
-    # Trigger DB backup after successful write
-    await trigger_backup()
-
-    return reload_result.ok, combined
+    return True, f"nginx -t: {test_result.output} (config written — apply via Config tab)"
 
 
 def _validate_member_role(pool_type: str, role: str) -> None:
@@ -249,7 +240,7 @@ async def update_pool(pool_id: int, body: PoolUpdate):
         after = dict(rows[0])
 
         # Regenerate config
-        ok, output = await _apply_pool_config(pool_id, db)
+        ok, output = await _write_pool_config(pool_id, db)
         await log_audit(db, "update", "pool", pool_id, before=before, after=after, reload_ok=ok, reload_output=output)
         await db.commit()
 
@@ -344,11 +335,7 @@ async def delete_pool(pool_id: int):
         # Remove from config_files table
         await db.execute("DELETE FROM config_files WHERE path = ?", (filepath,))
 
-        # Reload nginx
-        reload_result = await reload_nginx()
-        await log_audit(
-            db, "delete", "pool", pool_id, before=pool, reload_ok=reload_result.ok, reload_output=reload_result.output
-        )
+        await log_audit(db, "delete", "pool", pool_id, before=pool)
         await db.commit()
 
         # Delete sidecar
@@ -397,7 +384,7 @@ async def create_member(pool_id: int, body: MemberCreate):
         member = dict(mrows[0])
 
         # Regenerate pool config
-        ok, output = await _apply_pool_config(pool_id, db)
+        ok, output = await _write_pool_config(pool_id, db)
         await log_audit(db, "create", "pool_member", member["id"], after=member, reload_ok=ok, reload_output=output)
         await db.commit()
         return member
@@ -440,7 +427,7 @@ async def update_member(pool_id: int, member_id: int, body: MemberUpdate):
         mrows = await db.execute_fetchall("SELECT * FROM pool_members WHERE id = ?", (member_id,))
         after = dict(mrows[0])
 
-        ok, output = await _apply_pool_config(pool_id, db)
+        ok, output = await _write_pool_config(pool_id, db)
         await log_audit(
             db, "update", "pool_member", member_id, before=before, after=after, reload_ok=ok, reload_output=output
         )
@@ -463,7 +450,7 @@ async def delete_member(pool_id: int, member_id: int):
         await db.execute("DELETE FROM pool_members WHERE id = ?", (member_id,))
         await db.commit()
 
-        ok, output = await _apply_pool_config(pool_id, db)
+        ok, output = await _write_pool_config(pool_id, db)
         await log_audit(db, "delete", "pool_member", member_id, before=before, reload_ok=ok, reload_output=output)
         await db.commit()
 

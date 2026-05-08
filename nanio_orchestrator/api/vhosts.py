@@ -1,4 +1,4 @@
-"""Vhosts + Routes CRUD API with nginx config generation + reload."""
+"""Vhosts + Routes CRUD API with nginx config generation (manual apply via Config tab)."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ import aiofiles
 from fastapi import APIRouter, HTTPException
 
 from nanio_orchestrator.audit_log import log_audit
-from nanio_orchestrator.backup import trigger_backup
 from nanio_orchestrator.credentials import get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator.models import (
@@ -23,13 +22,13 @@ from nanio_orchestrator.models import (
     VhostOut,
     VhostUpdate,
 )
-from nanio_orchestrator.nginx.executor import reload_nginx, test_config
+from nanio_orchestrator.nginx.executor import test_config
 from nanio_orchestrator.nginx.generator import (
     generate_vhost_config,
     record_file_state,
     remove_config_file,
 )
-from nanio_orchestrator.s3client import bucket_exists, count_objects, create_bucket
+from nanio_orchestrator.s3client import count_objects
 from nanio_orchestrator.sidecar import delete_vhost_sidecar as _delete_vhost_sidecar_sync
 from nanio_orchestrator.sidecar import write_vhost_sidecar as _write_vhost_sidecar_sync
 
@@ -105,8 +104,10 @@ def _enrich_vhost(vhost: dict) -> dict:
     return vhost
 
 
-async def _apply_vhost_config(vhost_id: int, db) -> tuple:
-    """Generate, test, write, reload, record. Returns (ok, output)."""
+async def _write_vhost_config(vhost_id: int, db) -> tuple:
+    """Generate, test, write config to disk, record in DB. Returns (ok, output).
+    Does NOT reload nginx — the operator applies changes via the Config tab.
+    """
     filepath, content = await generate_vhost_config(vhost_id)
     tmp_path = filepath + ".tmp"
     async with aiofiles.open(tmp_path, "w") as f:
@@ -131,16 +132,11 @@ async def _apply_vhost_config(vhost_id: int, db) -> tuple:
             os.unlink(filepath)
         return False, test_result.output
 
-    reload_result = await reload_nginx()
+    # Record in DB (no reload — operator applies via Config tab)
     await record_file_state(db, filepath, content)
     await db.commit()
 
-    combined = f"nginx -t: {test_result.output}\nnginx -s reload: {reload_result.output}"
-
-    # Trigger DB backup after successful write
-    await trigger_backup()
-
-    return reload_result.ok, combined
+    return True, f"nginx -t: {test_result.output} (config written — apply via Config tab)"
 
 
 # ── Vhost CRUD ────────────────────────────────────────────────────────────────
@@ -214,7 +210,7 @@ async def create_vhost(body: VhostCreate):
         await db.commit()
 
         if body.default_pool_id:
-            ok, output = await _apply_vhost_config(vhost["id"], db)
+            ok, output = await _write_vhost_config(vhost["id"], db)
             await log_audit(
                 db,
                 "create",
@@ -311,7 +307,7 @@ async def update_vhost(vhost_id: int, body: VhostUpdate):
         rows = await db.execute_fetchall("SELECT * FROM vhosts WHERE id = ?", (vhost_id,))
         after = dict(rows[0])
 
-        ok, output = await _apply_vhost_config(vhost_id, db)
+        ok, output = await _write_vhost_config(vhost_id, db)
         await log_audit(db, "update", "vhost", vhost_id, before=before, after=after, reload_ok=ok, reload_output=output)
         await db.commit()
 
@@ -349,16 +345,7 @@ async def delete_vhost(vhost_id: int):
         await remove_config_file(filepath)
         await db.execute("DELETE FROM config_files WHERE path = ?", (filepath,))
 
-        reload_result = await reload_nginx()
-        await log_audit(
-            db,
-            "delete",
-            "vhost",
-            vhost_id,
-            before=vhost,
-            reload_ok=reload_result.ok,
-            reload_output=reload_result.output,
-        )
+        await log_audit(db, "delete", "vhost", vhost_id, before=vhost)
         await db.commit()
 
         # Delete sidecar
@@ -454,37 +441,14 @@ async def create_route(vhost_id: int, body: RouteCreate):
         )
         route = dict(rrows[0])
 
-        ok, output = await _apply_vhost_config(vhost_id, db)
+        ok, output = await _write_vhost_config(vhost_id, db)
         await log_audit(db, "create", "route", route_id, after=route, reload_ok=ok, reload_output=output)
         await db.commit()
-
-    # ── Auto-provision bucket on destination pool ─────────────────────────────
-    bucket_provisioned = False
-    if bucket_segment:
-        try:
-            async with get_db_ctx() as db:
-                member_rows = await db.execute_fetchall(
-                    "SELECT address FROM pool_members WHERE pool_id = ? AND enabled = 1 ORDER BY id LIMIT 1",
-                    (body.pool_id,),
-                )
-            if member_rows:
-                target_ak, target_sk, _ = await get_pool_s3_params(body.pool_id)
-                exists = await bucket_exists(
-                    member_rows[0]["address"], bucket_segment, access_key=target_ak, secret_key=target_sk
-                )
-                if not exists:
-                    ok_create, _ = await create_bucket(
-                        member_rows[0]["address"], bucket_segment, access_key=target_ak, secret_key=target_sk
-                    )
-                    bucket_provisioned = ok_create
-                    logger.info("route create: provisioned bucket '%s' on pool %d", bucket_segment, body.pool_id)
-        except Exception as exc:
-            logger.warning("route create: target bucket provisioning failed for '%s': %s", bucket_segment, exc)
 
     return {
         **route,
         "bucket": bucket_segment,
-        "bucket_provisioned": bucket_provisioned,
+        "bucket_provisioned": False,
         "default_pool_id": vhost_default_pool_id,
     }
 
@@ -615,7 +579,7 @@ async def update_route(vhost_id: int, route_id: int, body: RouteUpdate):
         )
         after = dict(rrows2[0])
 
-        ok, output = await _apply_vhost_config(vhost_id, db)
+        ok, output = await _write_vhost_config(vhost_id, db)
         await log_audit(db, "update", "route", route_id, before=before, after=after, reload_ok=ok, reload_output=output)
         await db.commit()
 
@@ -645,7 +609,7 @@ async def delete_route(vhost_id: int, route_id: int):
         await db.execute("DELETE FROM routes WHERE id = ?", (route_id,))
         await db.commit()
 
-        ok, output = await _apply_vhost_config(vhost_id, db)
+        ok, output = await _write_vhost_config(vhost_id, db)
         await log_audit(db, "delete", "route", route_id, before=before, reload_ok=ok, reload_output=output)
         await db.commit()
 

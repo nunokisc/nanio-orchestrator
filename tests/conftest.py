@@ -117,13 +117,10 @@ def mock_nginx():
     ]
     reload_targets = [
         "nanio_orchestrator.nginx.executor.reload_nginx",
-        "nanio_orchestrator.api.buckets.reload_nginx",
         "nanio_orchestrator.migration_engine.reload_nginx",
     ]
     backup_targets = [
         "nanio_orchestrator.backup.backup_database",
-        "nanio_orchestrator.api.pools.trigger_backup",
-        "nanio_orchestrator.api.vhosts.trigger_backup",
     ]
 
     active = []
@@ -236,16 +233,11 @@ def mock_s3():
 def mock_vhost_s3_calls():
     """Autouse: prevent real S3 calls from vhost route-creation helpers.
 
-    The bucket provisioning and object-count steps in POST /vhosts/{id}/routes
-    are best-effort and wrapped in try/except, but they make real TCP connections
-    which hang in tests when the s3_request_timeout is large.  Mock them here so
-    tests that don't need mock_s3 don't block on network I/O.
+    The object-count step in PUT /vhosts/{id}/routes/{id} (migration trigger)
+    makes real TCP connections which hang in tests.  Mock it here so tests that
+    don't need mock_s3 don't block on network I/O.
     """
     patches = [
-        patch("nanio_orchestrator.api.vhosts.bucket_exists",
-              new=AsyncMock(return_value=True)),
-        patch("nanio_orchestrator.api.vhosts.create_bucket",
-              new=AsyncMock(return_value=(True, "already-exists"))),
         patch("nanio_orchestrator.api.vhosts.count_objects",
               new=AsyncMock(return_value=0)),
     ]

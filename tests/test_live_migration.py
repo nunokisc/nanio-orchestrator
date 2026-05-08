@@ -361,12 +361,9 @@ class TestWriteRoutingPhase:
              patch("nanio_orchestrator.migration_engine.reload_nginx", reload_mock), \
              patch("nanio_orchestrator.api.buckets.test_config",
                    new=AsyncMock(return_value=test_result_ok)), \
-             patch("nanio_orchestrator.api.buckets.reload_nginx", reload_mock), \
              patch("nanio_orchestrator.nginx.executor.test_config",
                    new=AsyncMock(return_value=test_result_ok)), \
-             patch("nanio_orchestrator.nginx.executor.reload_nginx", reload_mock), \
-             patch("nanio_orchestrator.api.pools.trigger_backup", new=AsyncMock()), \
-             patch("nanio_orchestrator.api.vhosts.trigger_backup", new=AsyncMock()):
+             patch("nanio_orchestrator.nginx.executor.reload_nginx", reload_mock):
 
             src = await create_pool(client, "wr3-src")
             await create_member(client, src["id"], "10.0.0.1:9000")
