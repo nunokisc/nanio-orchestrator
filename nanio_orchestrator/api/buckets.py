@@ -204,6 +204,18 @@ async def promote_bucket(vhost_id: int, bucket: str, body: BucketPromoteRequest)
         if existing_route:
             raise HTTPException(409, f"Route /{bucket}/ already exists for this vhost")
 
+        # Reject deleted buckets — they no longer exist on S3
+        bs_rows = await db.execute_fetchall(
+            "SELECT status FROM bucket_sync WHERE vhost_id = ? AND bucket = ?",
+            (vhost_id, bucket),
+        )
+        if bs_rows and dict(bs_rows[0])["status"] == "deleted":
+            raise HTTPException(
+                400,
+                f"Bucket '{bucket}' no longer exists on the source pool and cannot be promoted. "
+                "Remove the bucket_sync record via DELETE .../buckets/{bucket}/route if a route exists.",
+            )
+
         default_pool_id = vhost["default_pool_id"]
 
         # Refuse to migrate when target is already the default pool
@@ -743,4 +755,4 @@ async def remove_http_bucket_route(vhost_id: int, bucket: str):
         )
         await db.commit()
 
-    return {"ok": ok, "bucket": bucket, "route_removed": f"/{bucket}/"}
+    return {"ok": True, "bucket": bucket, "route_removed": f"/{bucket}/"}

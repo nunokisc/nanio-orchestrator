@@ -717,6 +717,67 @@ upstream no-sidecar {
         db_mod._db_path = None
 
 
+    @pytest.mark.asyncio
+    async def test_rebuild_recovers_source_nanio_pool_id_from_sidecar(self, tmp_dirs, setup_nginx_configs):
+        """source_nanio_pool_id on an http pool is recovered from the pool sidecar."""
+        import nanio_orchestrator.config as cfg_mod
+        import nanio_orchestrator.db as db_mod
+        cfg_mod.settings = None
+        db_mod._db_path = None
+
+        os.environ["NANIO_ORCHESTRATOR_DB_PATH"] = tmp_dirs["db_path"]
+        os.environ["NANIO_ORCHESTRATOR_NGINX_CONFIG_DIR"] = tmp_dirs["nginx_dir"]
+
+        # Write an http pool config that references the existing nanio pool
+        pools_dir = os.path.join(tmp_dirs["nginx_dir"], "pools")
+        http_conf = """# managed by nanio-orchestrator
+# pool_id:99 name:http-cdn type:http updated:2026-04-16T10:00:00Z
+upstream http-cdn {
+    server 192.168.1.10:80 weight=1;
+    keepalive 8;
+}
+"""
+        Path(os.path.join(pools_dir, "http-cdn.conf")).write_text(http_conf)
+        http_sidecar = {
+            "pool_id": 99,
+            "name": "http-cdn",
+            "type": "http",
+            "description": "CDN layer",
+            "source_nanio_pool_id": 1,
+            "updated_at": "2026-04-16T10:00:00Z",
+        }
+        Path(os.path.join(pools_dir, "http-cdn.meta.json")).write_text(json.dumps(http_sidecar))
+
+        from nanio_orchestrator.db import set_db_path
+        set_db_path(tmp_dirs["db_path"])
+
+        if os.path.exists(tmp_dirs["db_path"]):
+            os.unlink(tmp_dirs["db_path"])
+
+        with patch("nanio_orchestrator.s3client.list_buckets", new_callable=AsyncMock, return_value=[]):
+            from nanio_orchestrator.rebuild import rebuild_from_disk
+            await rebuild_from_disk()
+
+        from nanio_orchestrator.db import get_db_ctx
+        async with get_db_ctx() as db:
+            pools = await db.execute_fetchall("SELECT * FROM pools WHERE name = 'http-cdn'")
+            assert len(pools) == 1
+            p = dict(pools[0])
+            assert p["type"] == "http"
+            assert p["source_nanio_pool_id"] is not None, (
+                "source_nanio_pool_id must be restored from the pool sidecar during rebuild"
+            )
+            # The rebuild assigns sequential IDs, so look up the nanio pool's actual id
+            nanio_rows = await db.execute_fetchall("SELECT id FROM pools WHERE name = 'pool-default'")
+            assert len(nanio_rows) == 1
+            assert p["source_nanio_pool_id"] == nanio_rows[0]["id"], (
+                "source_nanio_pool_id must point to the correct pool after rebuild"
+            )
+
+        cfg_mod.settings = None
+        db_mod._db_path = None
+
+
 class TestMigrationStateSidecar:
     """Migration state sidecar files."""
 

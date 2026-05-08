@@ -50,11 +50,13 @@ Pools map to nginx `upstream {}` blocks. A pool contains one or more member addr
   "description": "2025 storage tier",
   "type": "nanio",
   "lb_method": "least_conn",
-  "keepalive": 32
+  "keepalive": 32,
+  "source_nanio_pool_id": null
 }
 ```
-`type`: `"nanio"` (S3-compatible) or `"http"` (plain HTTP, read-only).
-`lb_method`: `"least_conn"`, `"round_robin"`, or `"ip_hash"`.
+`type`: `"nanio"` (S3-compatible) or `"http"` (plain HTTP, read-only).  
+`lb_method`: `"least_conn"`, `"round_robin"`, or `"ip_hash"`.  
+`source_nanio_pool_id`: **`http` pools only.** Links this http pool to a `nanio` pool so that migration cascade can automatically update its routes during `write_routing` and `switching` phases. Must point to an existing `nanio` pool. Set to `null` to unlink.
 
 ### Member create/update body
 ```json
@@ -159,8 +161,56 @@ Tracks S3 buckets discovered on each vhost's default pool.
 | POST | `/api/vhosts/:id/buckets/sync` | Trigger immediate sync |
 | POST | `/api/vhosts/:id/buckets/:bucket/promote` | Create route + optional migration |
 | POST | `/api/vhosts/:id/buckets/:bucket/ignore` | Mark as ignored |
+| DELETE | `/api/vhosts/:id/buckets/:bucket/route` | Remove nginx route; reverts to `unrouted` or deletes record if `deleted` |
 | GET | `/api/vhosts/:id/buckets/orphans` | Scan for orphan content on default pool |
 | POST | `/api/vhosts/:id/buckets/:bucket/purge-orphan` | Delete orphan objects from default pool |
+| GET | `/api/vhosts/:id/http-bucket-routes` | List available + routed buckets for a linked http vhost |
+| POST | `/api/vhosts/:id/http-bucket-routes/:bucket` | Add a route pointing to this http vhost's pool |
+| DELETE | `/api/vhosts/:id/http-bucket-routes/:bucket` | Remove a route from this http vhost |
+
+### Bucket sync statuses
+
+| Status | Meaning |
+|--------|---------|
+| `routed` | A dedicated nginx route exists for this bucket in this vhost |
+| `unrouted` | Bucket exists on S3 but no dedicated route |
+| `ignored` | Operator marked this bucket as ignored |
+| `deleted` | Bucket was previously seen but is no longer returned by `ListBuckets` — it has been deleted from S3 |
+
+`deleted` buckets cannot be promoted. Use `DELETE .../buckets/:bucket/route` to clean up any lingering route.
+
+### `DELETE /api/vhosts/:id/buckets/:bucket/route`
+
+Removes the nginx route `/{bucket}/` from the vhost.
+
+- If `bucket_sync` status is `deleted` — the `bucket_sync` row is removed entirely.
+- Otherwise — the `bucket_sync` row is reverted to `unrouted`.
+
+Returns `404` if no route exists for this bucket.
+
+### `GET /api/vhosts/:id/http-bucket-routes`
+
+Only valid for vhosts whose `default_pool` is an `http` pool with a `source_nanio_pool_id`. Lists the buckets available on the linked nanio pool and marks which ones already have a route on this http vhost.
+
+```json
+{
+  "vhost_id": 3,
+  "http_pool_id": 5,
+  "source_nanio_pool_id": 1,
+  "buckets": [
+    { "bucket": "photos", "routed": true,  "route_id": 12, "pool_id": 5 },
+    { "bucket": "assets", "routed": false, "route_id": null, "pool_id": null }
+  ]
+}
+```
+
+### `POST /api/vhosts/:id/http-bucket-routes/:bucket`
+
+Adds a route `/{bucket}/` → http pool. Returns `409` if the route already exists.
+
+### `DELETE /api/vhosts/:id/http-bucket-routes/:bucket`
+
+Removes the route `/{bucket}/` from the http vhost. Returns `404` if no route exists.
 
 ### Promote request body
 ```json
@@ -172,6 +222,8 @@ Tracks S3 buckets discovered on each vhost's default pool.
 ```
 - `migrate: true` — starts an rclone migration from default pool → target pool
 - `allow_orphan: true` — route without migration even if bucket has objects on the source pool
+
+> Promoting a `deleted` bucket returns `400`. Clean up the stale record with `DELETE .../buckets/:bucket/route` first.
 
 ---
 
@@ -196,6 +248,21 @@ rclone-based data migration between pools.
 }
 ```
 `mode`: `"copy"` (default) or `"sync"` (deletes from dst what's not in src — destructive).
+
+### Migration create response
+
+```json
+{
+  "id": 7,
+  "bucket": "my-bucket",
+  "src_pool_id": 1,
+  "dst_pool_id": 2,
+  "phase": "pending",
+  "cascade_warnings": []
+}
+```
+
+`cascade_warnings`: list of warning strings emitted when an `http` pool is linked to the source nanio pool (via `source_nanio_pool_id`) but does not yet have a route for the migrating bucket. The cascade will not be able to apply split-routing to that vhost during the `write_routing` phase. Add the missing route before the migration reaches that phase to ensure traffic is not disrupted.
 
 ### Migration phases
 `pending → copying → write_routing → verifying → switching → done`

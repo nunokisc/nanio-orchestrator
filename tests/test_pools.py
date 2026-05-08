@@ -413,3 +413,69 @@ class TestSourceNanioPoolId:
         assert resp2.status_code == 200
         assert resp2.json()["source_nanio_pool_id"] is None
 
+
+class TestSourceNanioPoolSidecar:
+    """Tests that source_nanio_pool_id is correctly stored in and cleared from the pool sidecar."""
+
+    async def test_sidecar_written_with_source_nanio_pool_id(
+        self, client, app, mock_nginx, tmp_dirs
+    ):
+        """Creating an http pool with source_nanio_pool_id writes it to the sidecar."""
+        import json
+        from pathlib import Path
+
+        nanio_pool = await create_pool(client, "snps-nanio", pool_type="nanio")
+        resp = await client.post("/api/pools", json={
+            "name": "snps-http",
+            "type": "http",
+            "source_nanio_pool_id": nanio_pool["id"],
+        })
+        assert resp.status_code == 201
+
+        sidecar_path = Path(tmp_dirs["nginx_dir"]) / "pools" / "snps-http.meta.json"
+        assert sidecar_path.exists(), "pool sidecar must be written on create"
+        data = json.loads(sidecar_path.read_text())
+        assert data["source_nanio_pool_id"] == nanio_pool["id"], (
+            "source_nanio_pool_id must be persisted in the pool sidecar"
+        )
+
+    async def test_sidecar_updated_when_source_cleared(
+        self, client, app, mock_nginx, tmp_dirs
+    ):
+        """Setting source_nanio_pool_id to null removes it from the sidecar."""
+        import json
+        from pathlib import Path
+
+        nanio_pool = await create_pool(client, "snps-clr-nanio", pool_type="nanio")
+        resp = await client.post("/api/pools", json={
+            "name": "snps-clr-http",
+            "type": "http",
+            "source_nanio_pool_id": nanio_pool["id"],
+        })
+        pool_id = resp.json()["id"]
+
+        # Now clear the field
+        resp2 = await client.put(f"/api/pools/{pool_id}", json={"source_nanio_pool_id": None})
+        assert resp2.status_code == 200
+
+        sidecar_path = Path(tmp_dirs["nginx_dir"]) / "pools" / "snps-clr-http.meta.json"
+        data = json.loads(sidecar_path.read_text())
+        assert "source_nanio_pool_id" not in data, (
+            "source_nanio_pool_id must be removed from sidecar when cleared"
+        )
+
+    async def test_nanio_pool_sidecar_never_contains_source_field(
+        self, client, app, mock_nginx, tmp_dirs
+    ):
+        """nanio pool sidecars must not contain source_nanio_pool_id."""
+        import json
+        from pathlib import Path
+
+        pool = await create_pool(client, "snps-nanio-clean", pool_type="nanio")
+        sidecar_path = Path(tmp_dirs["nginx_dir"]) / "pools" / "snps-nanio-clean.meta.json"
+        data = json.loads(sidecar_path.read_text())
+        assert "source_nanio_pool_id" not in data, (
+            "source_nanio_pool_id must only appear on http pool sidecars"
+        )
+        assert pool["source_nanio_pool_id"] is None
+
