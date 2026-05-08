@@ -251,12 +251,23 @@ Accepted formats: IPv4 (`1.2.3.4`), IPv4 CIDR (`10.0.0.0/8`), IPv6, IPv6 CIDR. V
 
 Tracks buckets discovered on the default pool of each vhost. Background sync runs every `BUCKET_SYNC_INTERVAL` seconds.
 
+Bucket status values:
+
+| Status | Meaning |
+|--------|---------|
+| `unrouted` | Discovered but no dedicated nginx route yet |
+| `routed` | Has a dedicated nginx route |
+| `migrating` | Migration is active for this bucket |
+| `ignored` | Manually marked as ignored |
+| `deleted` | Was previously discovered but no longer returned by `ListBuckets` (bucket removed from S3 backend) |
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/vhosts/:id/buckets` | List buckets with routing status (`unrouted`, `routed`, `migrating`, `ignored`). Pass `?fetch_counts=true` to include object counts. |
+| GET | `/api/vhosts/:id/buckets` | List buckets with routing status. Pass `?fetch_counts=true` to include object counts. |
 | POST | `/api/vhosts/:id/buckets/sync` | Trigger an immediate bucket list sync |
 | POST | `/api/vhosts/:id/buckets/:bucket/promote` | Promote a bucket: create it on the target pool, add an nginx route, optionally start migration. See promote request body below. |
 | POST | `/api/vhosts/:id/buckets/:bucket/ignore` | Mark a bucket as ignored |
+| DELETE | `/api/vhosts/:id/buckets/:bucket/route` | Remove the nginx route for a bucket. If status was `deleted`, also removes the bucket_sync record; otherwise resets to `unrouted`. |
 
 > **Bucket sync** only runs on vhosts whose default pool is of type `nanio`. Vhosts backed by an `http` pool are silently skipped — they have no S3 ListBuckets semantics.
 
@@ -278,6 +289,16 @@ Tracks buckets discovered on the default pool of each vhost. Background sync run
 | GET | `/api/vhosts/:id/buckets/orphans` | Scan routed buckets for orphan objects still on the default pool |
 | POST | `/api/vhosts/:id/buckets/:bucket/purge-orphan` | Delete all objects from the default pool copy of a routed bucket |
 
+#### HTTP Vhost Bucket Route Management
+
+For vhosts backed by an `http` pool with `source_nanio_pool_id` set, use these endpoints to manage nginx routes that point to the http pool's members.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/vhosts/:id/http-bucket-routes` | List current routes and available buckets from the linked nanio pool |
+| POST | `/api/vhosts/:id/http-bucket-routes/:bucket` | Add a `/{bucket}/` route pointing to the http vhost's default pool |
+| DELETE | `/api/vhosts/:id/http-bucket-routes/:bucket` | Remove a `/{bucket}/` route from the http vhost |
+
 ### Migrations (rclone)
 
 Full bucket migrations using rclone.
@@ -287,7 +308,7 @@ Phases: `pending → copying → write_routing → verifying → switching → d
 - **copying**: rclone copies data in a convergence loop (up to `MIGRATION_MAX_COPY_PASSES` passes). Ends early if counts stabilise across passes.
 - **write_routing**: nginx is reconfigured so writes go directly to the destination pool while reads still come from the source (with 404-fallback to destination). Freezes new writes to the source.
 - **verifying**: a copy→check convergence loop (up to `MIGRATION_MAX_COPY_PASSES` passes). Each pass does a final `rclone copy` followed by `rclone check`. If check passes cleanly the migration proceeds to switching. If differences are still found, the loop retries — this handles buckets that are still receiving uploads during migration. The loop aborts early if the diff count stops decreasing between passes (source diverging faster than rclone can copy).
-- **switching**: the nginx route is flipped to the destination pool and the DB is updated atomically. Fails hard if the route cannot be found — no silent data loss.
+- **switching**: the nginx route is flipped to the destination pool and the DB is updated atomically. Fails hard if the route cannot be found — no silent data loss. If the source pool has linked `http` pools (via `source_nanio_pool_id`), their vhost routes are also updated to point to the destination pool. Any http vhosts that could not be updated are reported in `swept_http_vhosts` on the migration record.
 - **done**: migration complete. Source data is **never deleted automatically**. The migration record tracks `orphaned_source_pool_id`, `orphaned_source_prefix`, and `orphaned_at` so operators can locate and clean up the source bucket at their own pace.
 - **error** / **cancelled**: terminal failure states.
 
@@ -401,6 +422,13 @@ Background check every `DRIFT_INTERVAL` seconds:
 | `nanio` | All `active` | Never | ✓ (S3 access/secret key) | Shared storage — any member handles any request |
 | `http` | `primary` + `replica` | Yes, for replicas | ✗ | Read-only HTTP serve with failover |
 
+An `http` pool can optionally declare a **backing nanio pool** via `source_nanio_pool_id`. When set:
+- The http pool's routes can be managed through the Buckets UI ("HTTP vhosts backed by nanio pools" section).
+- Any migration of the nanio pool automatically **cascades** to linked http vhosts: during `write_routing` the http vhost gets split-routing for the migrating bucket; during `switching` the http vhost route is flipped to the destination pool.
+- `POST /api/migrations` returns `cascade_warnings` if linked http vhosts exist but lack a route for the migrating bucket.
+
+`source_nanio_pool_id` is stored in the pool sidecar (`.meta.json`) and is fully recovered by `rebuild-from-disk`.
+
 Pool type also determines what is available in the Web UI:
 - **S3 credentials** are only shown and editable for `nanio` pools.
 - **Migrations** can only be created between two `nanio` pools.
@@ -462,6 +490,7 @@ What is recovered:
 | Pools (name, lb_method, keepalive) | `pools/*.conf` | ✓ |
 | Pool members | `pools/*.conf` | ✓ |
 | Pool type, description | `pools/*.meta.json` | ✓ |
+| Pool `source_nanio_pool_id` (http→nanio linkage) | `pools/*.meta.json` | ✓ |
 | Encrypted credentials | `pools/*.meta.json` | ✓ |
 | Vhosts (server_name, SSL, ports) | `vhosts/*.conf` | ✓ |
 | Routes | `vhosts/*.conf` | ✓ |

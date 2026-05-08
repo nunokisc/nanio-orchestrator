@@ -575,19 +575,16 @@ async def remove_bucket_route(vhost_id: int, bucket: str):
 
         await db.commit()
 
-        ok, output = await _apply_vhost_config(vhost_id, db)
         await log_audit(
             db,
             "remove_bucket_route",
             "route",
             route_id,
             after={"vhost_id": vhost_id, "bucket": bucket},
-            reload_ok=ok,
-            reload_output=output,
         )
         await db.commit()
 
-    return {"ok": ok, "bucket": bucket, "route_removed": f"/{bucket}/"}
+    return {"ok": True, "bucket": bucket, "route_removed": f"/{bucket}/"}
 
 
 # ── HTTP vhost bucket route management ───────────────────────────────────────
@@ -710,19 +707,16 @@ async def add_http_bucket_route(vhost_id: int, bucket: str):
         route_id = cursor.lastrowid
         await db.commit()
 
-        ok, output = await _apply_vhost_config(vhost_id, db)
         await log_audit(
             db,
             "add_http_bucket_route",
             "route",
             route_id,
             after={"vhost_id": vhost_id, "bucket": bucket, "pool_id": vhost["default_pool_id"]},
-            reload_ok=ok,
-            reload_output=output,
         )
         await db.commit()
 
-    return {"ok": ok, "bucket": bucket, "route": f"/{bucket}/", "pool_id": vhost["default_pool_id"]}
+    return {"ok": True, "bucket": bucket, "route": f"/{bucket}/", "pool_id": vhost["default_pool_id"]}
 
 
 @router.delete("/{vhost_id}/http-bucket-routes/{bucket}", status_code=200)
@@ -759,15 +753,12 @@ async def remove_http_bucket_route(vhost_id: int, bucket: str):
         await db.execute("DELETE FROM routes WHERE id = ?", (route_id,))
         await db.commit()
 
-        ok, output = await _apply_vhost_config(vhost_id, db)
         await log_audit(
             db,
             "remove_http_bucket_route",
             "route",
             route_id,
             after={"vhost_id": vhost_id, "bucket": bucket},
-            reload_ok=ok,
-            reload_output=output,
         )
         await db.commit()
 
