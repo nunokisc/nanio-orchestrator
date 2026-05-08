@@ -25,7 +25,6 @@ from nanio_orchestrator.nginx.generator import generate_vhost_config, record_fil
 from nanio_orchestrator.s3client import (
     bucket_has_objects,
     count_objects,
-    create_bucket,
     delete_object,
     list_objects,
 )
@@ -86,11 +85,6 @@ async def _write_vhost_config(vhost_id: int, db) -> tuple:
     tmp = filepath + ".tmp"
     async with aiofiles.open(tmp, "w") as f:
         await f.write(content)
-
-    old_content = None
-    if os.path.exists(filepath):
-        async with aiofiles.open(filepath, "r") as f:
-            old_content = await f.read()
 
     test_result = await test_config()
     if not test_result.ok:
