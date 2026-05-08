@@ -157,7 +157,6 @@ def mock_s3():
         ],
         "create_bucket": [
             "nanio_orchestrator.s3client.create_bucket",
-            "nanio_orchestrator.api.buckets.create_bucket",
             "nanio_orchestrator.migration_engine.create_bucket",
         ],
         "bucket_exists": [
