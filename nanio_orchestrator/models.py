@@ -23,6 +23,13 @@ class PoolCreate(BaseModel):
     type: str = Field("nanio", pattern=r"^(nanio|http)$")
     lb_method: str = Field("least_conn", pattern=r"^(round_robin|least_conn|ip_hash)$")
     keepalive: int = Field(32, ge=0, le=1024)
+    source_nanio_pool_id: Optional[int] = None
+
+    @model_validator(mode="after")
+    def validate_source_nanio_pool(self) -> "PoolCreate":
+        if self.source_nanio_pool_id is not None and self.type != "http":
+            raise ValueError("source_nanio_pool_id can only be set on http pools")
+        return self
 
 
 class PoolUpdate(BaseModel):
@@ -31,6 +38,15 @@ class PoolUpdate(BaseModel):
     type: Optional[str] = Field(None, pattern=r"^(nanio|http)$")
     lb_method: Optional[str] = Field(None, pattern=r"^(round_robin|least_conn|ip_hash)$")
     keepalive: Optional[int] = Field(None, ge=0, le=1024)
+    source_nanio_pool_id: Optional[int] = None
+
+    @model_validator(mode="after")
+    def validate_source_nanio_pool(self) -> "PoolUpdate":
+        # Only reject at model level if type is explicitly being changed to nanio.
+        # If type is not set, server-side validation (api/pools.py) checks against the DB type.
+        if self.source_nanio_pool_id is not None and self.type == "nanio":
+            raise ValueError("source_nanio_pool_id cannot be set on nanio pools")
+        return self
 
 
 class PoolOut(BaseModel):
@@ -40,6 +56,7 @@ class PoolOut(BaseModel):
     type: str
     lb_method: str
     keepalive: int
+    source_nanio_pool_id: Optional[int] = None
     created_at: str
     updated_at: str
 
@@ -348,6 +365,7 @@ class RcloneMigrationOut(BaseModel):
     orphaned_source_pool_id: Optional[int] = None
     orphaned_source_prefix: Optional[str] = None
     orphaned_at: Optional[str] = None
+    cascade_warnings: Optional[List[str]] = None
 
 
 class OrphanedMigrationOut(BaseModel):

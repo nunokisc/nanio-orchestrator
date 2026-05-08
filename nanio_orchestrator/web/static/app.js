@@ -50,17 +50,91 @@ document.addEventListener('click', (e) => {
 async function createPool(e) {
     e.preventDefault();
     const form = e.target;
+    const typeVal = form.type.value;
+    const snpRaw = form.source_nanio_pool_id ? form.source_nanio_pool_id.value : '';
     const data = {
         name: form.name.value,
         description: form.description.value || null,
-        type: form.type.value,
+        type: typeVal,
         lb_method: form.lb_method.value,
         keepalive: parseInt(form.keepalive.value, 10) || 32,
+        source_nanio_pool_id: (typeVal === 'http' && snpRaw) ? parseInt(snpRaw, 10) : null,
     };
 
     try {
         const res = await fetch('/api/pools', {
             method: 'POST',
+            headers: getHeaders(),
+            body: JSON.stringify(data),
+        });
+        if (!res.ok) {
+            const err = await res.json();
+            alert('Error: ' + formatError(err));
+            return;
+        }
+        location.reload();
+    } catch (err) {
+        alert('Network error: ' + err.message);
+    }
+}
+
+function togglePoolTypeFields(selectEl, prefix) {
+    const backingRow = document.getElementById(prefix + '-backing-nanio-row');
+    if (!backingRow) return;
+    if (selectEl.value === 'http') {
+        backingRow.style.display = '';
+    } else {
+        backingRow.style.display = 'none';
+    }
+}
+
+async function editPool(poolId) {
+    try {
+        const res = await fetch(`/api/pools/${poolId}`, { headers: getHeaders() });
+        if (!res.ok) { alert('Failed to load pool'); return; }
+        const pool = await res.json();
+
+        document.getElementById('edit-pool-id').value = pool.id;
+        document.getElementById('edit-pool-name').value = pool.name;
+        document.getElementById('edit-pool-description').value = pool.description || '';
+        document.getElementById('edit-pool-keepalive').value = pool.keepalive;
+        const lbSel = document.getElementById('edit-pool-lb-method');
+        if (lbSel) lbSel.value = pool.lb_method;
+        document.getElementById('edit-pool-type-display').textContent = `Type: ${pool.type}`;
+
+        const backingRow = document.getElementById('edit-backing-nanio-row');
+        const nanioSel = document.getElementById('edit-source-nanio-select');
+        if (pool.type === 'http') {
+            if (backingRow) backingRow.style.display = '';
+            if (nanioSel) nanioSel.value = pool.source_nanio_pool_id || '';
+        } else {
+            if (backingRow) backingRow.style.display = 'none';
+        }
+
+        showModal('edit-pool-modal');
+    } catch (err) {
+        alert('Error: ' + err.message);
+    }
+}
+
+async function submitEditPool(e) {
+    e.preventDefault();
+    const form = e.target;
+    const poolId = form.pool_id.value;
+    const snpRaw = form.source_nanio_pool_id ? form.source_nanio_pool_id.value : '';
+    const typeDisplay = document.getElementById('edit-pool-type-display').textContent;
+    const isHttp = typeDisplay.includes('http');
+    const data = {
+        name: form.name.value,
+        description: form.description.value || null,
+        lb_method: form.lb_method.value,
+        keepalive: parseInt(form.keepalive.value, 10),
+        source_nanio_pool_id: (isHttp && snpRaw) ? parseInt(snpRaw, 10) : null,
+    };
+
+    try {
+        const res = await fetch(`/api/pools/${poolId}`, {
+            method: 'PUT',
             headers: getHeaders(),
             body: JSON.stringify(data),
         });

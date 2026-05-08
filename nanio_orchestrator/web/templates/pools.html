@@ -17,12 +17,19 @@
             <span class="badge">keepalive={{ pool.keepalive }}</span>
         </div>
         <div class="card-actions">
+            <button class="btn btn-sm" onclick="editPool({{ pool.id }})">Edit</button>
             <button class="btn btn-sm" onclick="previewPool({{ pool.id }})">Preview</button>
             <button class="btn btn-sm btn-danger" onclick="deletePool({{ pool.id }}, '{{ pool.name }}')">Delete</button>
         </div>
     </div>
     {% if pool.description %}
     <p class="description">{{ pool.description }}</p>
+    {% endif %}
+    {% if pool.type == 'http' and pool.source_nanio_pool_id %}
+    <p style="color:var(--text-muted);font-size:0.9rem;margin:0.3rem 0">
+        ↳ backed by:
+        {% for np in nanio_pools %}{% if np.id == pool.source_nanio_pool_id %}<strong>{{ np.name }}</strong>{% endif %}{% endfor %}
+    </p>
     {% endif %}
 
     <h4>Members</h4>
@@ -87,7 +94,7 @@
             <label>Name <input type="text" name="name" required pattern="[a-zA-Z0-9_-]+" placeholder="pool-2025"></label>
             <label>Description <input type="text" name="description" placeholder="Optional"></label>
             <label>Type
-                <select name="type">
+                <select name="type" onchange="togglePoolTypeFields(this, 'create')">
                     <option value="nanio">nanio (shared storage)</option>
                     <option value="http">http (read-only serve)</option>
                 </select>
@@ -100,9 +107,54 @@
                 </select>
             </label>
             <label>Keepalive <input type="number" name="keepalive" value="32" min="0" max="1024"></label>
+            <div id="create-backing-nanio-row" style="display:none">
+                <label>Backing nanio pool (optional)
+                    <select name="source_nanio_pool_id" id="create-source-nanio-select">
+                        <option value="">— none —</option>
+                        {% for np in nanio_pools %}
+                        <option value="{{ np.id }}">{{ np.name }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+            </div>
             <div class="modal-actions">
                 <button type="submit" class="btn btn-primary">Create</button>
                 <button type="button" class="btn" onclick="hideModal('create-pool-modal')">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Edit Pool Modal -->
+<div id="edit-pool-modal" class="modal hidden">
+    <div class="modal-content">
+        <h3>Edit Pool</h3>
+        <form id="edit-pool-form" onsubmit="submitEditPool(event)">
+            <input type="hidden" name="pool_id" id="edit-pool-id">
+            <p id="edit-pool-type-display" style="color:var(--text-muted);font-size:0.9rem;margin:0 0 0.5rem"></p>
+            <label>Name <input type="text" name="name" id="edit-pool-name" required pattern="[a-zA-Z0-9_-]+"></label>
+            <label>Description <input type="text" name="description" id="edit-pool-description" placeholder="Optional"></label>
+            <label>LB Method
+                <select name="lb_method" id="edit-pool-lb-method">
+                    <option value="least_conn">least_conn</option>
+                    <option value="round_robin">round_robin</option>
+                    <option value="ip_hash">ip_hash</option>
+                </select>
+            </label>
+            <label>Keepalive <input type="number" name="keepalive" id="edit-pool-keepalive" min="0" max="1024"></label>
+            <div id="edit-backing-nanio-row" style="display:none">
+                <label>Backing nanio pool (optional)
+                    <select name="source_nanio_pool_id" id="edit-source-nanio-select">
+                        <option value="">— none —</option>
+                        {% for np in nanio_pools %}
+                        <option value="{{ np.id }}">{{ np.name }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+            </div>
+            <div class="modal-actions">
+                <button type="submit" class="btn btn-primary">Save</button>
+                <button type="button" class="btn" onclick="hideModal('edit-pool-modal')">Cancel</button>
             </div>
         </form>
     </div>

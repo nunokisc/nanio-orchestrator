@@ -45,6 +45,284 @@ logger = logging.getLogger(__name__)
 
 # Track running migration tasks: migration_id → asyncio.Task
 _active_tasks: Dict[int, asyncio.Task] = {}
+
+
+# ── HTTP cascade helpers ──────────────────────────────────────────────────────
+
+
+async def _generate_vhost_config_with_split(
+    vhost_id: int,
+    bucket: str,
+    migration_dst_pool_name: Optional[str],
+) -> tuple:
+    """Generate vhost config, forcing split-routing for a specific bucket route.
+
+    If migration_dst_pool_name is not None, injects migration_dst_pool_name into the
+    route for /{bucket}/, triggering the write-routing split in vhost.conf.j2.
+    If None, generates a plain (no-split) config — used after switching completes.
+    """
+    from nanio_orchestrator.config import get_settings as _get_settings
+    from nanio_orchestrator.nginx.generator import render_vhost
+
+    s = _get_settings()
+    async with get_db_ctx() as db:
+        row = await db.execute_fetchall("SELECT * FROM vhosts WHERE id = ?", (vhost_id,))
+        if not row:
+            raise ValueError(f"Vhost {vhost_id} not found")
+        vhost = dict(row[0])
+        routes_rows = await db.execute_fetchall(
+            """SELECT r.*, p.name as pool_name
+               FROM routes r JOIN pools p ON r.pool_id = p.id
+               WHERE r.vhost_id = ? ORDER BY length(r.path_prefix) DESC""",
+            (vhost_id,),
+        )
+        routes = [dict(r) for r in routes_rows]
+
+    for route in routes:
+        route.setdefault("key_prefix", None)
+        if migration_dst_pool_name and route["path_prefix"] == f"/{bucket}/":
+            route["migration_dst_pool_name"] = migration_dst_pool_name
+        else:
+            route["migration_dst_pool_name"] = None
+
+    content = render_vhost(vhost, routes)
+    filepath = str(s.vhosts_dir / f"{vhost['server_name']}.conf")
+    return filepath, content
+
+
+async def _cascade_http_write_routing(
+    migration_id: int,
+    bucket: str,
+    src_pool_id: int,
+    dst_pool_id: int,
+) -> None:
+    """Apply write-routing split config to http vhosts backed by src nanio pool.
+
+    For each http pool linked to src, finds vhosts with a route for /{bucket}/
+    and regenerates them with split-routing to dst (if an http dst pool exists).
+    """
+    async with get_db_ctx() as db:
+        http_src_rows = await db.execute_fetchall(
+            "SELECT id, name FROM pools WHERE source_nanio_pool_id = ? AND type = 'http'",
+            (src_pool_id,),
+        )
+        http_dst_rows = await db.execute_fetchall(
+            "SELECT id, name FROM pools WHERE source_nanio_pool_id = ? AND type = 'http'",
+            (dst_pool_id,),
+        )
+
+    http_src_pools = [dict(r) for r in http_src_rows]
+    http_dst_pool = dict(http_dst_rows[0]) if http_dst_rows else None
+
+    if not http_src_pools:
+        return
+
+    if not http_dst_pool:
+        await _log(
+            migration_id,
+            "write_routing",
+            f"WARNING: No http pool with source_nanio_pool_id={dst_pool_id} found. "
+            f"HTTP vhosts backed by src pool will have no write-routing fallback. "
+            f"Create an http pool with source_nanio_pool_id={dst_pool_id} for full coverage.",
+        )
+
+    for http_src_pool in http_src_pools:
+        async with get_db_ctx() as db:
+            route_rows = await db.execute_fetchall(
+                """SELECT v.id as vhost_id, v.server_name
+                   FROM vhosts v
+                   JOIN routes r ON r.vhost_id = v.id
+                   WHERE r.pool_id = ? AND r.path_prefix = ?""",
+                (http_src_pool["id"], f"/{bucket}/"),
+            )
+
+        for vr in route_rows:
+            vhost_id_h = vr["vhost_id"]
+            server_name_h = vr["server_name"]
+
+            if not http_dst_pool:
+                await _log(
+                    migration_id,
+                    "write_routing",
+                    f"WARNING: Skipping http vhost '{server_name_h}' — no http dst pool found. "
+                    "Vhost will continue reading from source only (no write-routing).",
+                )
+                continue
+
+            try:
+                filepath_h, content_h = await _generate_vhost_config_with_split(
+                    vhost_id_h, bucket, http_dst_pool["name"]
+                )
+                tmp_h = filepath_h + ".tmp"
+                await write_config_atomic(tmp_h, content_h)
+                test_h = await test_config()
+                if test_h.ok:
+                    import os as _os_h
+
+                    _os_h.rename(tmp_h, filepath_h)
+                    reload_h = await reload_nginx()
+                    if reload_h.ok:
+                        async with get_db_ctx() as db:
+                            await record_file_state(db, filepath_h, content_h)
+                            await db.commit()
+                        await _log(
+                            migration_id,
+                            "write_routing",
+                            f"HTTP vhost '{server_name_h}': split-routing applied "
+                            f"(writes → {http_dst_pool['name']}, reads → {http_src_pool['name']})",
+                        )
+                    else:
+                        await _log(
+                            migration_id,
+                            "write_routing",
+                            f"WARNING: HTTP vhost '{server_name_h}': nginx reload failed — "
+                            f"{reload_h.output}. Vhost remains without split-routing.",
+                        )
+                else:
+                    try:
+                        import os as _os_h
+
+                        _os_h.unlink(tmp_h)
+                    except OSError:
+                        pass
+                    await _log(
+                        migration_id,
+                        "write_routing",
+                        f"WARNING: HTTP vhost '{server_name_h}': nginx test failed — "
+                        f"{test_h.output}. Vhost remains without split-routing.",
+                    )
+            except Exception as exc:
+                await _log(
+                    migration_id,
+                    "write_routing",
+                    f"WARNING: HTTP vhost '{server_name_h}': cascade write_routing failed — {exc}.",
+                )
+
+
+async def _cascade_http_switching(
+    migration_id: int,
+    bucket: str,
+    src_pool_id: int,
+    dst_pool_id: int,
+) -> list:
+    """After primary switch, update http vhosts to point directly to http dst pool.
+
+    Returns list of server_name strings for vhosts that were successfully swept.
+    """
+    async with get_db_ctx() as db:
+        http_src_rows = await db.execute_fetchall(
+            "SELECT id, name FROM pools WHERE source_nanio_pool_id = ? AND type = 'http'",
+            (src_pool_id,),
+        )
+        http_dst_rows = await db.execute_fetchall(
+            "SELECT id, name FROM pools WHERE source_nanio_pool_id = ? AND type = 'http'",
+            (dst_pool_id,),
+        )
+
+    http_src_pools = [dict(r) for r in http_src_rows]
+    http_dst_pool = dict(http_dst_rows[0]) if http_dst_rows else None
+    swept: list = []
+
+    if not http_src_pools:
+        return swept
+
+    if not http_dst_pool:
+        await _log(
+            migration_id,
+            "switching",
+            f"WARNING: No http pool with source_nanio_pool_id={dst_pool_id} found. "
+            "HTTP vhosts backed by src pool NOT updated. "
+            f"Create an http pool with source_nanio_pool_id={dst_pool_id} and manually update routes.",
+        )
+        return swept
+
+    for http_src_pool in http_src_pools:
+        async with get_db_ctx() as db:
+            route_rows = await db.execute_fetchall(
+                """SELECT r.id as route_id, v.id as vhost_id, v.server_name
+                   FROM vhosts v
+                   JOIN routes r ON r.vhost_id = v.id
+                   WHERE r.pool_id = ? AND r.path_prefix = ?""",
+                (http_src_pool["id"], f"/{bucket}/"),
+            )
+
+        for rr in route_rows:
+            vhost_id_h = rr["vhost_id"]
+            route_id_h = rr["route_id"]
+            server_name_h = rr["server_name"]
+
+            try:
+                async with get_db_ctx() as db:
+                    await db.execute(
+                        "UPDATE routes SET pool_id = ?, updated_at = datetime('now') WHERE id = ?",
+                        (http_dst_pool["id"], route_id_h),
+                    )
+                    await db.commit()
+
+                filepath_h, content_h = await _generate_vhost_config_with_split(
+                    vhost_id_h, bucket, None
+                )
+                tmp_h = filepath_h + ".tmp"
+                await write_config_atomic(tmp_h, content_h)
+                test_h = await test_config()
+                if test_h.ok:
+                    import os as _os_h
+
+                    _os_h.rename(tmp_h, filepath_h)
+                    reload_h = await reload_nginx()
+                    if reload_h.ok:
+                        async with get_db_ctx() as db:
+                            await record_file_state(db, filepath_h, content_h)
+                            await db.commit()
+                        await _log(
+                            migration_id,
+                            "switching",
+                            f"HTTP vhost '{server_name_h}': route updated to {http_dst_pool['name']}",
+                        )
+                        swept.append(server_name_h)
+                    else:
+                        # Rollback route to src
+                        async with get_db_ctx() as db:
+                            await db.execute(
+                                "UPDATE routes SET pool_id = ?, updated_at = datetime('now') WHERE id = ?",
+                                (http_src_pool["id"], route_id_h),
+                            )
+                            await db.commit()
+                        await _log(
+                            migration_id,
+                            "switching",
+                            f"WARNING: HTTP vhost '{server_name_h}': nginx reload failed — "
+                            "route rolled back. Primary migration is still done.",
+                        )
+                else:
+                    # Rollback route to src
+                    async with get_db_ctx() as db:
+                        await db.execute(
+                            "UPDATE routes SET pool_id = ?, updated_at = datetime('now') WHERE id = ?",
+                            (http_src_pool["id"], route_id_h),
+                        )
+                        await db.commit()
+                    try:
+                        import os as _os_h
+
+                        _os_h.unlink(tmp_h)
+                    except OSError:
+                        pass
+                    await _log(
+                        migration_id,
+                        "switching",
+                        f"WARNING: HTTP vhost '{server_name_h}': nginx test failed — "
+                        "route rolled back. Primary migration is still done.",
+                    )
+            except Exception as exc:
+                await _log(
+                    migration_id,
+                    "switching",
+                    f"WARNING: HTTP vhost '{server_name_h}': cascade switching failed — {exc}. "
+                    "Primary migration is still done.",
+                )
+
+    return swept
 _migration_lock = asyncio.Lock()
 
 
@@ -562,6 +840,19 @@ async def run_migration(migration_id: int) -> None:
             await _set_phase(migration_id, "error", msg)
             return
 
+        # ── Safety: refuse if bucket is marked deleted in bucket_sync ─────
+        async with get_db_ctx() as db:
+            bs_rows = await db.execute_fetchall(
+                "SELECT status FROM bucket_sync WHERE vhost_id = ? AND bucket = ?",
+                (m["vhost_id"], bucket),
+            )
+        if bs_rows and dict(bs_rows[0])["status"] == "deleted":
+            msg = f"Bucket '{bucket}' is marked as deleted — cannot migrate"
+            logger.error("Migration %d aborted: %s", migration_id, msg)
+            await _log(migration_id, "error", msg)
+            await _set_phase(migration_id, "error", msg)
+            return
+
         # Generate rclone config
         config_content = await _build_rclone_config(src_pool_id, dst_pool_id)
         config_dir = tempfile.mkdtemp(prefix="nanio-rclone-")
@@ -732,6 +1023,8 @@ async def run_migration(migration_id: int) -> None:
                         await record_file_state(db, filepath, content_ng)
                         await db.commit()
                     await _log(migration_id, "write_routing", "nginx reloaded with write-routing split config")
+                    # Cascade write-routing to linked http vhosts
+                    await _cascade_http_write_routing(migration_id, bucket, src_pool_id, dst_pool_id)
                 else:
                     await _log(
                         migration_id,
@@ -810,6 +1103,7 @@ async def run_migration(migration_id: int) -> None:
         # ── Phase: switching ──────────────────────────────────────────────
         await _set_phase(migration_id, "switching")
         await _log(migration_id, "switching", "Updating nginx route to point to destination pool")
+        swept_http_vhosts: list = []
 
         # Generate the new nginx config BEFORE committing DB changes.
         # We need to temporarily update the route in DB to generate the correct
@@ -873,6 +1167,10 @@ async def run_migration(migration_id: int) -> None:
                     await record_file_state(db, filepath, content)
                     await db.commit()
                 await _log(migration_id, "switching", "nginx reloaded with new route")
+                # Cascade switching to linked http vhosts
+                swept_http_vhosts = await _cascade_http_switching(
+                    migration_id, bucket, src_pool_id, dst_pool_id
+                )
             else:
                 # Reload failed — rollback DB route to source pool, then regenerate
                 # correct nginx config (pointing to src) so the broken file doesn't
@@ -994,6 +1292,7 @@ async def run_migration(migration_id: int) -> None:
                 "orphaned_source_pool_id": src_pool_id,
                 "orphaned_source_prefix": f"/{bucket}/",
                 "orphaned_at": orphaned_at,
+                "swept_http_vhosts": swept_http_vhosts,
             }
         )
 

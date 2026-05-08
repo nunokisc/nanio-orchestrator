@@ -332,3 +332,84 @@ class TestPoolBucketPurge:
              patch("nanio_orchestrator.api.pools.get_pool_s3_params", new=AsyncMock(return_value=("ak", "sk", None))):
             resp = await client.post(f"/api/pools/{pool['id']}/buckets/err-bk/purge")
         assert resp.status_code == 502
+
+
+class TestSourceNanioPoolId:
+    """Tests for http pool source_nanio_pool_id field."""
+
+    async def test_create_http_pool_with_valid_source(self, client):
+        nanio_pool = await create_pool(client, "snp-nanio-src", pool_type="nanio")
+        resp = await client.post("/api/pools", json={
+            "name": "snp-http-pool",
+            "type": "http",
+            "source_nanio_pool_id": nanio_pool["id"],
+        })
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["source_nanio_pool_id"] == nanio_pool["id"]
+
+    async def test_create_http_pool_without_source(self, client):
+        resp = await client.post("/api/pools", json={"name": "snp-http-nosrc", "type": "http"})
+        assert resp.status_code == 201
+        assert resp.json()["source_nanio_pool_id"] is None
+
+    async def test_create_nanio_pool_with_source_rejected(self, client):
+        nanio_pool = await create_pool(client, "snp-other-nanio", pool_type="nanio")
+        resp = await client.post("/api/pools", json={
+            "name": "snp-bad-nanio",
+            "type": "nanio",
+            "source_nanio_pool_id": nanio_pool["id"],
+        })
+        assert resp.status_code == 422
+
+    async def test_source_pointing_to_nonexistent_pool_rejected(self, client):
+        resp = await client.post("/api/pools", json={
+            "name": "snp-bad-ref",
+            "type": "http",
+            "source_nanio_pool_id": 99999,
+        })
+        assert resp.status_code in (400, 422)
+
+    async def test_source_pointing_to_http_pool_rejected(self, client):
+        http_pool = await create_pool(client, "snp-http-ref", pool_type="http")
+        resp = await client.post("/api/pools", json={
+            "name": "snp-bad-http-ref",
+            "type": "http",
+            "source_nanio_pool_id": http_pool["id"],
+        })
+        assert resp.status_code in (400, 422)
+
+    async def test_update_http_pool_set_source(self, client):
+        nanio_pool = await create_pool(client, "snp-upd-nanio", pool_type="nanio")
+        http_pool = await create_pool(client, "snp-upd-http", pool_type="http")
+        resp = await client.put(f"/api/pools/{http_pool['id']}", json={
+            "source_nanio_pool_id": nanio_pool["id"],
+        })
+        assert resp.status_code == 200
+        assert resp.json()["source_nanio_pool_id"] == nanio_pool["id"]
+
+    async def test_update_http_pool_clear_source(self, client):
+        nanio_pool = await create_pool(client, "snp-clr-nanio", pool_type="nanio")
+        resp = await client.post("/api/pools", json={
+            "name": "snp-clr-http",
+            "type": "http",
+            "source_nanio_pool_id": nanio_pool["id"],
+        })
+        pool_id = resp.json()["id"]
+        resp2 = await client.put(f"/api/pools/{pool_id}", json={"source_nanio_pool_id": None})
+        assert resp2.status_code == 200
+        assert resp2.json()["source_nanio_pool_id"] is None
+
+    async def test_deleting_nanio_pool_clears_source(self, client, mock_nginx):
+        nanio_pool = await create_pool(client, "snp-del-nanio", pool_type="nanio")
+        resp = await client.post("/api/pools", json={
+            "name": "snp-del-http",
+            "type": "http",
+            "source_nanio_pool_id": nanio_pool["id"],
+        })
+        http_pool_id = resp.json()["id"]
+        await client.delete(f"/api/pools/{nanio_pool['id']}")
+        resp2 = await client.get(f"/api/pools/{http_pool_id}")
+        assert resp2.status_code == 200
+        assert resp2.json()["source_nanio_pool_id"] is None
+

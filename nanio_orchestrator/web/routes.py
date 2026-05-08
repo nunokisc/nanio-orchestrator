@@ -134,13 +134,16 @@ async def dashboard():
 async def pools_page():
     async with get_db_ctx() as db:
         pools = await db.execute_fetchall("SELECT * FROM pools ORDER BY name")
+        nanio_pools_rows = await db.execute_fetchall(
+            "SELECT id, name FROM pools WHERE type = 'nanio' ORDER BY name"
+        )
         result = []
         for p in pools:
             members = await db.execute_fetchall("SELECT * FROM pool_members WHERE pool_id = ? ORDER BY id", (p["id"],))
             pool_dict = dict(p)
             pool_dict["members"] = [dict(m) for m in members]
             result.append(pool_dict)
-    return _render("pools.html", pools=result)
+    return _render("pools.html", pools=result, nanio_pools=[dict(p) for p in nanio_pools_rows])
 
 
 # ── Vhosts ────────────────────────────────────────────────────────────────────
@@ -233,6 +236,16 @@ async def buckets_page():
         )
         # Target pools for routing must also be nanio type
         pools = await db.execute_fetchall("SELECT id, name FROM pools WHERE type = 'nanio' ORDER BY name")
+        # Also include http vhosts with source_nanio_pool_id for http-bucket-route management
+        http_linked_vhost_rows = await db.execute_fetchall(
+            """SELECT v.id, v.server_name, p.source_nanio_pool_id, p2.name as nanio_pool_name
+               FROM vhosts v
+               JOIN pools p ON v.default_pool_id = p.id
+               JOIN pools p2 ON p.source_nanio_pool_id = p2.id
+               WHERE p.type = 'http' AND p.source_nanio_pool_id IS NOT NULL
+               ORDER BY v.server_name"""
+        )
+        all_pools = await db.execute_fetchall("SELECT id, name FROM pools WHERE type = 'nanio' ORDER BY name")
         vhosts = []
         for v in vhost_rows:
             buckets = await db.execute_fetchall(
@@ -251,7 +264,14 @@ async def buckets_page():
                     "buckets": [dict(b) for b in buckets],
                 }
             )
-    return _render("buckets.html", vhosts=vhosts, pools=[dict(p) for p in pools], all_pools=[dict(p) for p in pools])
+        http_linked_vhosts = [dict(v) for v in http_linked_vhost_rows]
+    return _render(
+        "buckets.html",
+        vhosts=vhosts,
+        pools=[dict(p) for p in pools],
+        all_pools=[dict(p) for p in all_pools],
+        http_linked_vhosts=http_linked_vhosts,
+    )
 
 
 @router.get("/web/settings", response_class=HTMLResponse)

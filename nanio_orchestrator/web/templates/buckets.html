@@ -53,6 +53,7 @@
                     {% elif b.status == 'routed' %}<span class="badge ok">routed</span>
                     {% elif b.status == 'migrating' %}<span class="badge">migrating</span>
                     {% elif b.status == 'ignored' %}<span class="badge">ignored</span>
+                    {% elif b.status == 'deleted' %}<span class="badge" style="background:var(--danger,#c0392b);color:#fff">deleted</span>
                     {% else %}<span class="badge">{{ b.status }}</span>{% endif %}
                 </td>
                 <td>{{ b.pool_name or '—' }}</td>
@@ -60,11 +61,15 @@
                 <td>
                     {% if b.status in ('unrouted', 'ignored') %}
                     <button class="btn btn-xs btn-primary"
-                            onclick="showRouteModal({{ v.id }}, '{{ b.bucket }}')">Route</button>
+                            onclick="showRouteModal({{ v.id }}, '{{ b.bucket }}')">→ Route</button>
                     {% endif %}
                     {% if b.status == 'unrouted' %}
                     <button class="btn btn-xs"
                             onclick="ignoreBucket({{ v.id }}, '{{ b.bucket }}')">Ignore</button>
+                    {% endif %}
+                    {% if b.status == 'deleted' %}
+                    <button class="btn btn-xs btn-danger"
+                            onclick="removeRoute({{ v.id }}, '{{ b.bucket }}')">Remove Route</button>
                     {% endif %}
                 </td>
             </tr>
@@ -81,6 +86,27 @@
 <div class="card empty-state" style="margin-top:1rem">
     <p>No vhosts with a nanio default pool configured.</p>
 </div>
+{% endif %}
+
+{% if http_linked_vhosts %}
+<h2 style="margin-top:2rem;font-size:1.1rem">HTTP vhosts backed by nanio pools</h2>
+{% for hv in http_linked_vhosts %}
+<div class="card" id="http-vhost-{{ hv.id }}" style="margin-top:1rem">
+    <div class="card-header">
+        <h3>{{ hv.server_name }}</h3>
+        <div class="card-badges">
+            <span class="badge type-http">http</span>
+            <span class="badge" style="font-size:0.8rem">backed by {{ hv.nanio_pool_name }}</span>
+        </div>
+        <div class="card-actions">
+            <button class="btn btn-sm" onclick="loadHttpBucketRoutes({{ hv.id }}, this)">Load routes</button>
+        </div>
+    </div>
+    <div id="http-routes-{{ hv.id }}">
+        <p style="color:var(--text-muted);font-size:0.9rem;padding:0.5rem 0">Click "Load routes" to see existing routes and available buckets.</p>
+    </div>
+</div>
+{% endfor %}
 {% endif %}
 </div><!-- /pane-vhost -->
 
@@ -257,6 +283,76 @@ async function ignoreBucket(vhostId, bucket) {
     const data = await res.json();
     if (data.ok) location.reload();
     else alert('Error: ' + (data.detail || JSON.stringify(data)));
+}
+
+async function removeRoute(vhostId, bucket) {
+    if (!confirm(`Remove nginx route for '${bucket}' on this vhost?`)) return;
+    const res = await fetch(`/api/vhosts/${vhostId}/buckets/${encodeURIComponent(bucket)}/route`,
+        fetchOpts('DELETE'));
+    const data = await res.json();
+    if (data.ok) location.reload();
+    else alert('Error: ' + (data.detail || JSON.stringify(data)));
+}
+
+async function loadHttpBucketRoutes(vhostId, btn) {
+    btn.disabled = true;
+    btn.textContent = 'Loading…';
+    try {
+        const res = await fetch(`/api/vhosts/${vhostId}/http-bucket-routes`, fetchOpts('GET'));
+        if (!res.ok) { alert('Failed to load routes'); return; }
+        const data = await res.json();
+        const container = document.getElementById(`http-routes-${vhostId}`);
+        let html = '';
+        if (data.routes && data.routes.length) {
+            html += '<h4>Active routes</h4><table><thead><tr><th>Bucket</th><th>Pool</th><th>Action</th></tr></thead><tbody>';
+            for (const r of data.routes) {
+                html += `<tr><td><code>${escapeHtml(r.bucket)}</code></td><td>${escapeHtml(r.pool_name)}</td>
+                    <td><button class="btn btn-xs btn-danger" onclick="removeHttpBucketRoute(${vhostId},'${escapeHtml(r.bucket)}')">Remove</button></td></tr>`;
+            }
+            html += '</tbody></table>';
+        } else {
+            html += '<p style="color:var(--text-muted);font-size:0.9rem">No routes yet.</p>';
+        }
+        if (data.linked_nanio_buckets && data.linked_nanio_buckets.length) {
+            const unrouted = data.linked_nanio_buckets.filter(b => !b.has_route);
+            if (unrouted.length) {
+            html += '<h4 style="margin-top:0.8rem">Available buckets (not routed)</h4><ul style="margin:0;padding-left:1.2rem">';
+            for (const b of unrouted) {
+                html += `<li><code>${escapeHtml(b.bucket)}</code>
+                    <button class="btn btn-xs btn-primary" style="margin-left:0.5rem"
+                        onclick="addHttpBucketRoute(${vhostId},'${escapeHtml(b.bucket)}')">Add route</button></li>`;
+            }
+            html += '</ul>';
+            }
+        }
+        container.innerHTML = html || '<p>No data.</p>';
+    } catch(err) {
+        alert('Error: ' + err.message);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Refresh';
+    }
+}
+
+async function addHttpBucketRoute(vhostId, bucket) {
+    const res = await fetch(`/api/vhosts/${vhostId}/http-bucket-routes/${encodeURIComponent(bucket)}`,
+        fetchOpts('POST'));
+    const data = await res.json();
+    if (data.ok) {
+        const btn = document.querySelector(`#http-routes-${vhostId}`).closest('.card').querySelector('button');
+        if (btn) await loadHttpBucketRoutes(vhostId, btn);
+    } else alert('Error: ' + (data.detail || JSON.stringify(data)));
+}
+
+async function removeHttpBucketRoute(vhostId, bucket) {
+    if (!confirm(`Remove route for '${bucket}'?`)) return;
+    const res = await fetch(`/api/vhosts/${vhostId}/http-bucket-routes/${encodeURIComponent(bucket)}`,
+        fetchOpts('DELETE'));
+    const data = await res.json();
+    if (data.ok) {
+        const btn = document.querySelector(`#http-routes-${vhostId}`).closest('.card').querySelector('button');
+        if (btn) await loadHttpBucketRoutes(vhostId, btn);
+    } else alert('Error: ' + (data.detail || JSON.stringify(data)));
 }
 
 async function scanOrphans(vhostId, btn) {

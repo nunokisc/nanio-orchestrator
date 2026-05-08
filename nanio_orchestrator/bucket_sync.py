@@ -120,6 +120,22 @@ async def sync_vhost_buckets_once(vhost_id: int) -> dict:
                      routed_pool_id = excluded.routed_pool_id""",
                 (vhost_id, bucket_name, now, new_status, pool_id),
             )
+
+        # Mark buckets that disappeared from S3 as 'deleted'
+        discovered_names = {b["name"] for b in buckets}
+        for bucket_name, status in existing_states.items():
+            if bucket_name not in discovered_names and status not in ("ignored", "deleted"):
+                logger.info(
+                    "vhost %d: bucket '%s' no longer in ListBuckets — marking deleted",
+                    vhost_id,
+                    bucket_name,
+                )
+                await db.execute(
+                    """UPDATE bucket_sync SET status = 'deleted'
+                       WHERE vhost_id = ? AND bucket = ?""",
+                    (vhost_id, bucket_name),
+                )
+
         await db.commit()
 
     logger.info("vhost %d: sync done — %d bucket(s) found", vhost_id, len(buckets))

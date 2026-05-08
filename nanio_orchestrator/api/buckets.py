@@ -51,6 +51,14 @@ async def _require_vhost_with_default_pool(vhost_id: int, db):
     return vhost
 
 
+async def _require_vhost(vhost_id: int, db):
+    """Return vhost dict without requiring a default_pool_id."""
+    rows = await db.execute_fetchall("SELECT * FROM vhosts WHERE id = ?", (vhost_id,))
+    if not rows:
+        raise HTTPException(404, "Vhost not found")
+    return dict(rows[0])
+
+
 async def _first_enabled_member(pool_id: int, db) -> str:
     rows = await db.execute_fetchall(
         "SELECT address FROM pool_members WHERE pool_id = ? AND enabled = 1 ORDER BY id LIMIT 1",
@@ -363,6 +371,18 @@ async def start_migration(vhost_id: int, bucket: str):
         dst_pool_id = dict(route_rows[0])["pool_id"]
         src_pool_id = vhost["default_pool_id"]
 
+        # Reject if bucket is deleted
+        bs_rows = await db.execute_fetchall(
+            "SELECT status FROM bucket_sync WHERE vhost_id = ? AND bucket = ?",
+            (vhost_id, bucket),
+        )
+        if bs_rows and dict(bs_rows[0])["status"] == "deleted":
+            raise HTTPException(
+                400,
+                f"Bucket '{bucket}' no longer exists on source pool. "
+                "Remove the orphaned route and verify data before migrating.",
+            )
+
     # Check parallel limit
     if get_active_count() >= s.migration_max_parallel:
         raise HTTPException(
@@ -510,3 +530,245 @@ async def purge_orphan(vhost_id: int, bucket: str):
         "total": len(keys),
         "errors": errors[:20],
     }
+
+
+# ── Remove orphaned route (for deleted buckets) ───────────────────────────────
+
+
+@router.delete("/{vhost_id}/buckets/{bucket}/route", status_code=200)
+async def remove_bucket_route(vhost_id: int, bucket: str):
+    """Remove the nginx route for a bucket and revert bucket_sync to unrouted/deleted.
+
+    Used to clean up orphaned routes when a bucket has been deleted from S3.
+    """
+    async with get_db_ctx() as db:
+        rows = await db.execute_fetchall("SELECT id FROM vhosts WHERE id = ?", (vhost_id,))
+        if not rows:
+            raise HTTPException(404, "Vhost not found")
+
+        route_rows = await db.execute_fetchall(
+            "SELECT id FROM routes WHERE vhost_id = ? AND path_prefix = ?",
+            (vhost_id, f"/{bucket}/"),
+        )
+        if not route_rows:
+            raise HTTPException(404, f"No route found for /{bucket}/ on vhost {vhost_id}")
+
+        route_id = route_rows[0]["id"]
+        await db.execute("DELETE FROM routes WHERE id = ?", (route_id,))
+
+        # Check if bucket_sync has a 'deleted' entry — if so, delete it; else mark unrouted
+        bs_rows = await db.execute_fetchall(
+            "SELECT status FROM bucket_sync WHERE vhost_id = ? AND bucket = ?",
+            (vhost_id, bucket),
+        )
+        if bs_rows and dict(bs_rows[0])["status"] == "deleted":
+            await db.execute(
+                "DELETE FROM bucket_sync WHERE vhost_id = ? AND bucket = ?",
+                (vhost_id, bucket),
+            )
+        else:
+            await db.execute(
+                """UPDATE bucket_sync SET status = 'unrouted', routed_pool_id = NULL
+                   WHERE vhost_id = ? AND bucket = ?""",
+                (vhost_id, bucket),
+            )
+
+        await db.commit()
+
+        ok, output = await _apply_vhost_config(vhost_id, db)
+        await log_audit(
+            db,
+            "remove_bucket_route",
+            "route",
+            route_id,
+            after={"vhost_id": vhost_id, "bucket": bucket},
+            reload_ok=ok,
+            reload_output=output,
+        )
+        await db.commit()
+
+    return {"ok": ok, "bucket": bucket, "route_removed": f"/{bucket}/"}
+
+
+# ── HTTP vhost bucket route management ───────────────────────────────────────
+
+
+@router.get("/{vhost_id}/http-bucket-routes")
+async def list_http_bucket_routes(vhost_id: int):
+    """List routes on an http vhost and available buckets from its linked nanio pool.
+
+    Only available for http vhosts that have source_nanio_pool_id configured.
+    Returns existing routes and buckets on the linked nanio pool that lack a route.
+    """
+    async with get_db_ctx() as db:
+        vhost_rows = await db.execute_fetchall(
+            """SELECT v.*, p.name as pool_name, p.source_nanio_pool_id, p.type as pool_type
+               FROM vhosts v
+               LEFT JOIN pools p ON v.default_pool_id = p.id
+               WHERE v.id = ?""",
+            (vhost_id,),
+        )
+        if not vhost_rows:
+            raise HTTPException(404, "Vhost not found")
+        vhost = dict(vhost_rows[0])
+
+        if vhost.get("pool_type") != "http" or not vhost.get("source_nanio_pool_id"):
+            raise HTTPException(
+                400,
+                "Route management for http vhosts is only available when source_nanio_pool_id is configured",
+            )
+
+        nanio_pool_id = vhost["source_nanio_pool_id"]
+
+        # Get existing routes on this vhost
+        route_rows = await db.execute_fetchall(
+            """SELECT r.id, r.path_prefix, r.pool_id, p.name as pool_name
+               FROM routes r JOIN pools p ON r.pool_id = p.id
+               WHERE r.vhost_id = ? ORDER BY r.path_prefix""",
+            (vhost_id,),
+        )
+        existing_routes = [dict(r) for r in route_rows]
+        routed_buckets = {r["path_prefix"].strip("/") for r in existing_routes}
+
+        # Get buckets from the linked nanio pool via bucket_sync
+        # (bucket_sync is on a nanio vhost, not this http vhost)
+        nanio_vhost_rows = await db.execute_fetchall(
+            "SELECT id FROM vhosts WHERE default_pool_id = ? LIMIT 1",
+            (nanio_pool_id,),
+        )
+        nanio_buckets = []
+        if nanio_vhost_rows:
+            nanio_vhost_id = nanio_vhost_rows[0]["id"]
+            bs_rows = await db.execute_fetchall(
+                """SELECT bucket, status FROM bucket_sync
+                   WHERE vhost_id = ? AND status NOT IN ('deleted', 'ignored')
+                   ORDER BY bucket""",
+                (nanio_vhost_id,),
+            )
+            for r in bs_rows:
+                bname = r["bucket"]
+                nanio_buckets.append(
+                    {
+                        "bucket": bname,
+                        "has_route": bname in routed_buckets,
+                    }
+                )
+
+        nanio_pool_rows = await db.execute_fetchall(
+            "SELECT name FROM pools WHERE id = ?", (nanio_pool_id,)
+        )
+        nanio_pool_name = nanio_pool_rows[0]["name"] if nanio_pool_rows else str(nanio_pool_id)
+
+    return {
+        "vhost_id": vhost_id,
+        "server_name": vhost["server_name"],
+        "source_nanio_pool_id": nanio_pool_id,
+        "source_nanio_pool_name": nanio_pool_name,
+        "routes": existing_routes,
+        "linked_nanio_buckets": nanio_buckets,
+    }
+
+
+@router.post("/{vhost_id}/http-bucket-routes/{bucket}", status_code=201)
+async def add_http_bucket_route(vhost_id: int, bucket: str):
+    """Create a route /{bucket}/ on an http vhost pointing to its default pool.
+
+    Only available for http vhosts with source_nanio_pool_id configured.
+    Does not create the bucket on the S3 backend — only creates the nginx route.
+    """
+    async with get_db_ctx() as db:
+        vhost_rows = await db.execute_fetchall(
+            """SELECT v.*, p.source_nanio_pool_id, p.type as pool_type
+               FROM vhosts v LEFT JOIN pools p ON v.default_pool_id = p.id
+               WHERE v.id = ?""",
+            (vhost_id,),
+        )
+        if not vhost_rows:
+            raise HTTPException(404, "Vhost not found")
+        vhost = dict(vhost_rows[0])
+
+        if vhost.get("pool_type") != "http" or not vhost.get("source_nanio_pool_id"):
+            raise HTTPException(
+                400,
+                "Route management for http vhosts is only available when source_nanio_pool_id is configured",
+            )
+        if not vhost.get("default_pool_id"):
+            raise HTTPException(400, "Vhost has no default_pool_id — cannot create a route")
+
+        # Check route doesn't already exist
+        existing = await db.execute_fetchall(
+            "SELECT id FROM routes WHERE vhost_id = ? AND path_prefix = ?",
+            (vhost_id, f"/{bucket}/"),
+        )
+        if existing:
+            raise HTTPException(409, f"Route /{bucket}/ already exists on this vhost")
+
+        cursor = await db.execute(
+            "INSERT INTO routes (vhost_id, path_prefix, pool_id, enabled) VALUES (?, ?, ?, 1)",
+            (vhost_id, f"/{bucket}/", vhost["default_pool_id"]),
+        )
+        route_id = cursor.lastrowid
+        await db.commit()
+
+        ok, output = await _apply_vhost_config(vhost_id, db)
+        await log_audit(
+            db,
+            "add_http_bucket_route",
+            "route",
+            route_id,
+            after={"vhost_id": vhost_id, "bucket": bucket, "pool_id": vhost["default_pool_id"]},
+            reload_ok=ok,
+            reload_output=output,
+        )
+        await db.commit()
+
+    return {"ok": ok, "bucket": bucket, "route": f"/{bucket}/", "pool_id": vhost["default_pool_id"]}
+
+
+@router.delete("/{vhost_id}/http-bucket-routes/{bucket}", status_code=200)
+async def remove_http_bucket_route(vhost_id: int, bucket: str):
+    """Remove a route /{bucket}/ from an http vhost.
+
+    Only available for http vhosts with source_nanio_pool_id configured.
+    """
+    async with get_db_ctx() as db:
+        vhost_rows = await db.execute_fetchall(
+            """SELECT v.*, p.source_nanio_pool_id, p.type as pool_type
+               FROM vhosts v LEFT JOIN pools p ON v.default_pool_id = p.id
+               WHERE v.id = ?""",
+            (vhost_id,),
+        )
+        if not vhost_rows:
+            raise HTTPException(404, "Vhost not found")
+        vhost = dict(vhost_rows[0])
+
+        if vhost.get("pool_type") != "http" or not vhost.get("source_nanio_pool_id"):
+            raise HTTPException(
+                400,
+                "Route management for http vhosts is only available when source_nanio_pool_id is configured",
+            )
+
+        route_rows = await db.execute_fetchall(
+            "SELECT id FROM routes WHERE vhost_id = ? AND path_prefix = ?",
+            (vhost_id, f"/{bucket}/"),
+        )
+        if not route_rows:
+            raise HTTPException(404, f"No route found for /{bucket}/ on this vhost")
+
+        route_id = route_rows[0]["id"]
+        await db.execute("DELETE FROM routes WHERE id = ?", (route_id,))
+        await db.commit()
+
+        ok, output = await _apply_vhost_config(vhost_id, db)
+        await log_audit(
+            db,
+            "remove_http_bucket_route",
+            "route",
+            route_id,
+            after={"vhost_id": vhost_id, "bucket": bucket},
+            reload_ok=ok,
+            reload_output=output,
+        )
+        await db.commit()
+
+    return {"ok": ok, "bucket": bucket, "route_removed": f"/{bucket}/"}

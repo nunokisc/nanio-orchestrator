@@ -105,6 +105,10 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
             )
             pool_id = cursor.lastrowid
             pool_name_to_id[name] = pool_id
+            # Store source_nanio_pool_id from sidecar for second pass
+            snp_raw = sidecar.get("source_nanio_pool_id")
+            if pool_type == "http" and snp_raw is not None:
+                pool_name_to_id[f"__snp__{name}"] = snp_raw  # use sentinel key
             pool_count += 1
 
             # Import members
@@ -133,6 +137,35 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
                     ),
                 )
                 credentials_count += 1
+
+        # Second pass: resolve source_nanio_pool_id for http pools using name→id map
+        for pool_name, pool_id in pool_name_to_id.items():
+            if pool_name.startswith("__snp__"):
+                continue
+            snp_raw = pool_name_to_id.get(f"__snp__{pool_name}")
+            if snp_raw is None:
+                continue
+            # snp_raw is the pool_id stored in the sidecar (original DB id)
+            # We need to find the *new* id of that referenced pool by matching through sidecar
+            # The sidecar stores the source_nanio_pool_id as an integer (old pool id);
+            # we resolve by checking which pool sidecar had that pool_id.
+            resolved_snp_id = None
+            for sc in scan_pool_sidecars():
+                if sc.get("pool_id") == snp_raw and sc.get("type") == "nanio":
+                    ref_name = sc.get("name")
+                    if ref_name and ref_name in pool_name_to_id:
+                        resolved_snp_id = pool_name_to_id[ref_name]
+                        break
+            if resolved_snp_id is not None:
+                await db.execute(
+                    "UPDATE pools SET source_nanio_pool_id = ? WHERE id = ?",
+                    (resolved_snp_id, pool_id),
+                )
+            else:
+                warnings.append(
+                    f"Pool '{pool_name}': could not resolve source_nanio_pool_id {snp_raw} "
+                    "(referenced nanio pool not found in sidecars)"
+                )
 
         # Step 3: import vhosts + routes from nginx server configs + sidecars
         for conf_path in sorted(s.vhosts_dir.glob("*.conf")):
@@ -438,6 +471,7 @@ async def _dry_run_report(
                     "type": sidecar.get("type", "nanio"),
                     "has_credentials": bool(sidecar.get("credentials")),
                     "has_sidecar": bool(sidecar),
+                    "source_nanio_pool_id": sidecar.get("source_nanio_pool_id"),
                 }
             )
 

@@ -130,11 +130,27 @@ async def list_pools():
 @router.post("", response_model=PoolOut, status_code=201)
 async def create_pool(body: PoolCreate):
     async with get_db_ctx() as db:
+        # Validate source_nanio_pool_id
+        if body.source_nanio_pool_id is not None:
+            ref_rows = await db.execute_fetchall(
+                "SELECT id, type FROM pools WHERE id = ?", (body.source_nanio_pool_id,)
+            )
+            if not ref_rows:
+                raise HTTPException(
+                    422,
+                    f"source_nanio_pool_id {body.source_nanio_pool_id} does not exist",
+                )
+            if dict(ref_rows[0])["type"] != "nanio":
+                raise HTTPException(
+                    422,
+                    f"source_nanio_pool_id must reference a nanio pool, "
+                    f"but pool {body.source_nanio_pool_id} is of type '{dict(ref_rows[0])['type']}'",
+                )
         try:
             cursor = await db.execute(
-                """INSERT INTO pools (name, description, type, lb_method, keepalive)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (body.name, body.description, body.type, body.lb_method, body.keepalive),
+                """INSERT INTO pools (name, description, type, lb_method, keepalive, source_nanio_pool_id)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (body.name, body.description, body.type, body.lb_method, body.keepalive, body.source_nanio_pool_id),
             )
             await db.commit()
         except Exception as e:
@@ -148,7 +164,13 @@ async def create_pool(body: PoolCreate):
         await db.commit()
 
         # Write sidecar
-        await write_pool_sidecar(pool["id"], pool["name"], pool["type"], pool.get("description"))
+        await write_pool_sidecar(
+            pool["id"],
+            pool["name"],
+            pool["type"],
+            pool.get("description"),
+            source_nanio_pool_id=pool.get("source_nanio_pool_id"),
+        )
 
         return pool
 
@@ -170,12 +192,46 @@ async def update_pool(pool_id: int, body: PoolUpdate):
             raise HTTPException(404, "Pool not found")
         before = dict(rows[0])
 
-        updates = body.model_dump(exclude_none=True)
+        updates_raw = body.model_dump(exclude_unset=True)
+        # Keep None only for source_nanio_pool_id (allows explicit clearing), drop other None fields
+        updates = {k: v for k, v in updates_raw.items() if v is not None or k == "source_nanio_pool_id"}
         if not updates:
             return before
 
-        # If changing type, validate existing members
+        # Determine the effective type after update
         new_type = updates.get("type", before["type"])
+
+        # Validate source_nanio_pool_id
+        if "source_nanio_pool_id" in updates:
+            snp_id = updates["source_nanio_pool_id"]
+            if snp_id is not None:
+                if new_type != "http":
+                    raise HTTPException(
+                        422,
+                        "source_nanio_pool_id can only be set on http pools",
+                    )
+                ref_rows = await db.execute_fetchall(
+                    "SELECT id, type FROM pools WHERE id = ?", (snp_id,)
+                )
+                if not ref_rows:
+                    raise HTTPException(
+                        422,
+                        f"source_nanio_pool_id {snp_id} does not exist",
+                    )
+                if dict(ref_rows[0])["type"] != "nanio":
+                    raise HTTPException(
+                        422,
+                        f"source_nanio_pool_id must reference a nanio pool, "
+                        f"but pool {snp_id} is of type '{dict(ref_rows[0])['type']}'",
+                    )
+            else:
+                # Explicitly setting to NULL is allowed for any pool type
+                pass
+        elif new_type == "nanio" and before.get("source_nanio_pool_id") is not None:
+            # If changing type to nanio, clear source_nanio_pool_id
+            updates["source_nanio_pool_id"] = None
+
+        # If changing type, validate existing members
         if new_type != before["type"]:
             members = await db.execute_fetchall("SELECT role FROM pool_members WHERE pool_id = ?", (pool_id,))
             for m in members:
@@ -198,7 +254,13 @@ async def update_pool(pool_id: int, body: PoolUpdate):
         await db.commit()
 
         # Update sidecar
-        await write_pool_sidecar(after["id"], after["name"], after["type"], after.get("description"))
+        await write_pool_sidecar(
+            after["id"],
+            after["name"],
+            after["type"],
+            after.get("description"),
+            source_nanio_pool_id=after.get("source_nanio_pool_id"),
+        )
 
         return after
 

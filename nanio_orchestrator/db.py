@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS pools (
     type        TEXT NOT NULL DEFAULT 'nanio' CHECK (type IN ('nanio','http')),
     lb_method   TEXT NOT NULL DEFAULT 'least_conn' CHECK (lb_method IN ('round_robin','least_conn','ip_hash')),
     keepalive   INTEGER NOT NULL DEFAULT 32,
+    source_nanio_pool_id INTEGER REFERENCES pools(id) ON DELETE SET NULL,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -105,7 +106,7 @@ CREATE TABLE IF NOT EXISTS bucket_sync (
     bucket          TEXT NOT NULL,
     discovered_at   TEXT NOT NULL DEFAULT (datetime('now')),
     status          TEXT NOT NULL DEFAULT 'unrouted'
-                    CHECK (status IN ('unrouted','routed','migrating','ignored')),
+                    CHECK (status IN ('unrouted','routed','migrating','ignored','deleted')),
     routed_pool_id  INTEGER REFERENCES pools(id),
     UNIQUE(vhost_id, bucket)
 );
@@ -238,6 +239,40 @@ async def _run_migrations_async(db) -> None:
     if "ip_rule_mode" not in col_names:
         await db.execute("ALTER TABLE vhosts ADD COLUMN ip_rule_mode TEXT")
         await db.execute("ALTER TABLE vhosts ADD COLUMN ip_rule_ips_json TEXT")
+
+    # source_nanio_pool_id on pools (backing nanio pool link for http pools)
+    info = await db.execute_fetchall("PRAGMA table_info(pools)")
+    col_names = {r["name"] for r in info}
+    if "source_nanio_pool_id" not in col_names:
+        await db.execute(
+            "ALTER TABLE pools ADD COLUMN source_nanio_pool_id INTEGER REFERENCES pools(id) ON DELETE SET NULL"
+        )
+
+    # bucket_sync: add 'deleted' status — requires table rebuild if old CHECK doesn't include it
+    row = await db.execute_fetchall("SELECT sql FROM sqlite_master WHERE type='table' AND name='bucket_sync'")
+    bucket_sync_sql = row[0]["sql"] if row else ""
+    if "'deleted'" not in bucket_sync_sql:
+        await db.execute("PRAGMA foreign_keys=OFF")
+        await db.execute("""
+            CREATE TABLE bucket_sync_new (
+                id              INTEGER PRIMARY KEY,
+                vhost_id        INTEGER NOT NULL REFERENCES vhosts(id) ON DELETE CASCADE,
+                bucket          TEXT NOT NULL,
+                discovered_at   TEXT NOT NULL DEFAULT (datetime('now')),
+                status          TEXT NOT NULL DEFAULT 'unrouted'
+                                CHECK (status IN ('unrouted','routed','migrating','ignored','deleted')),
+                routed_pool_id  INTEGER REFERENCES pools(id),
+                UNIQUE(vhost_id, bucket)
+            )
+        """)
+        await db.execute("""
+            INSERT INTO bucket_sync_new
+            SELECT id, vhost_id, bucket, discovered_at, status, routed_pool_id
+            FROM bucket_sync
+        """)
+        await db.execute("DROP TABLE bucket_sync")
+        await db.execute("ALTER TABLE bucket_sync_new RENAME TO bucket_sync")
+        await db.execute("PRAGMA foreign_keys=ON")
 
     # Migration: rename pool type 'cold' → 'http' (cold was an alias with no functional difference)
     await db.execute("UPDATE pools SET type = 'http' WHERE type = 'cold'")

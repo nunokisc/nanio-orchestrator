@@ -101,11 +101,18 @@ async def create_migration(body: RcloneMigrationCreate):
 
         # Resolve vhost inside the same DB context
         bs_rows = await db.execute_fetchall(
-            "SELECT vhost_id FROM bucket_sync WHERE bucket = ? LIMIT 1",
+            "SELECT vhost_id, status FROM bucket_sync WHERE bucket = ? LIMIT 1",
             (body.bucket,),
         )
         if bs_rows:
             vhost_id: int = bs_rows[0]["vhost_id"]
+            bs_status = bs_rows[0]["status"]
+            if bs_status == "deleted":
+                raise HTTPException(
+                    400,
+                    f"Bucket '{body.bucket}' no longer exists on source pool. "
+                    "Remove the orphaned route and verify data before migrating.",
+                )
         else:
             vh_rows = await db.execute_fetchall(
                 "SELECT id FROM vhosts WHERE default_pool_id = ? LIMIT 1",
@@ -147,6 +154,27 @@ async def create_migration(body: RcloneMigrationCreate):
                 f"pool '{current_pool_name}' (id={route_row['pool_id']}), not pool {body.src_pool_id}. "
                 "Set src_pool_id to the pool that currently serves this bucket.",
             )
+
+        # ── Cascade warnings: check if http vhosts linked to src pool have routes ──
+        cascade_warnings: list = []
+        linked_http_pools = await db.execute_fetchall(
+            "SELECT id, name FROM pools WHERE source_nanio_pool_id = ? AND type = 'http'",
+            (body.src_pool_id,),
+        )
+        for hp in linked_http_pools:
+            hp_dict = dict(hp)
+            http_vhost_routes = await db.execute_fetchall(
+                """SELECT v.server_name FROM vhosts v
+                   JOIN routes r ON r.vhost_id = v.id
+                   WHERE r.pool_id = ? AND r.path_prefix = ?""",
+                (hp_dict["id"], f"/{body.bucket}/"),
+            )
+            if not http_vhost_routes:
+                cascade_warnings.append(
+                    f"http pool '{hp_dict['name']}' (id={hp_dict['id']}) is linked to this nanio pool "
+                    f"but has no route for /{body.bucket}/ — cascade will be skipped for this pool. "
+                    "Add the route via Bucket Management before starting migration for full coverage."
+                )
 
     # ── S3 pre-flight: verify bucket exists and has data on the source pool ──
     # This prevents creating migrations that will immediately fail because the
@@ -207,7 +235,10 @@ async def create_migration(body: RcloneMigrationCreate):
         )
         await db.commit()
     m = dict(rows[0])
-    return _to_out(m)
+    out = _to_out(m)
+    if cascade_warnings:
+        out.cascade_warnings = cascade_warnings
+    return out
 
 
 @router.get("/source-buckets")

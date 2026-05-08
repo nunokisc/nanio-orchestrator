@@ -75,6 +75,7 @@ def write_pool_sidecar(
     pool_type: str,
     description: Optional[str] = None,
     credentials: Optional[Dict[str, Any]] = None,
+    source_nanio_pool_id: Optional[int] = None,
 ) -> None:
     """Write or update a pool sidecar file."""
     filepath = pool_sidecar_path(name)
@@ -85,6 +86,9 @@ def write_pool_sidecar(
         "description": description,
         "updated_at": _now_iso(),
     }
+    # Only include source_nanio_pool_id for http pools (never for nanio pools)
+    if pool_type == "http" and source_nanio_pool_id is not None:
+        data["source_nanio_pool_id"] = source_nanio_pool_id
     if credentials:
         # Store credentials in encrypted form (pass-through from DB)
         data["credentials"] = credentials
