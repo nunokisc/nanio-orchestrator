@@ -6,11 +6,9 @@ All endpoints are nested under /api/vhosts/{vhost_id}/buckets.
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timezone
 from typing import List
 
-import aiofiles
 from fastapi import APIRouter, HTTPException
 
 from nanio_orchestrator.audit_log import log_audit
@@ -20,8 +18,7 @@ from nanio_orchestrator.credentials import get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator.migration_engine import start_migration as engine_start_migration
 from nanio_orchestrator.models import BucketListOut, BucketPromoteRequest
-from nanio_orchestrator.nginx.executor import test_config
-from nanio_orchestrator.nginx.generator import generate_vhost_config, record_file_state
+from nanio_orchestrator.nginx.apply import write_vhost_config as _write_vhost_config
 from nanio_orchestrator.s3client import (
     bucket_has_objects,
     count_objects,
@@ -74,27 +71,6 @@ async def _all_enabled_members(pool_id: int, db) -> List[str]:
         (pool_id,),
     )
     return [dict(r)["address"] for r in rows]
-
-
-async def _write_vhost_config(vhost_id: int, db) -> tuple:
-    """Generate, test, write config to disk, record in DB. Returns (ok, output).
-    Does NOT reload nginx — the operator applies changes via the Config tab.
-    Exception: called from migration engine paths where reload is done separately.
-    """
-    filepath, content = await generate_vhost_config(vhost_id)
-    tmp = filepath + ".tmp"
-    async with aiofiles.open(tmp, "w") as f:
-        await f.write(content)
-
-    test_result = await test_config()
-    if not test_result.ok:
-        os.unlink(tmp)
-        return False, test_result.output
-
-    os.rename(tmp, filepath)
-    await record_file_state(db, filepath, content)
-    await db.commit()
-    return True, f"nginx -t: {test_result.output} (config written — apply via Config tab)"
 
 
 # ── List buckets ──────────────────────────────────────────────────────────────

@@ -350,19 +350,13 @@ class TestWriteRoutingPhase:
         self, client, mock_rclone, mock_s3
     ):
         """If nginx test fails during write_routing, migration transitions to error (C4 fix)."""
-        # Create a dedicated nginx mock with failing test_config
+        # nginx -t passes during setup and starts failing once the migration is created
         test_result_fail = MagicMock(ok=False, output="syntax error")
         test_result_ok = MagicMock(ok=True, output="syntax ok")
+        test_mock = AsyncMock(return_value=test_result_ok)
         reload_mock = AsyncMock(return_value=MagicMock(ok=True))
 
-        # test_config always fails — simulates bad nginx config
-        with patch("nanio_orchestrator.migration_engine.test_config",
-                   new=AsyncMock(return_value=test_result_fail)), \
-             patch("nanio_orchestrator.migration_engine.reload_nginx", reload_mock), \
-             patch("nanio_orchestrator.api.buckets.test_config",
-                   new=AsyncMock(return_value=test_result_ok)), \
-             patch("nanio_orchestrator.nginx.executor.test_config",
-                   new=AsyncMock(return_value=test_result_ok)), \
+        with patch("nanio_orchestrator.nginx.executor.test_config", test_mock), \
              patch("nanio_orchestrator.nginx.executor.reload_nginx", reload_mock):
 
             src = await create_pool(client, "wr3-src")
@@ -383,6 +377,7 @@ class TestWriteRoutingPhase:
                 return 10 if call_num["n"] % 2 == 1 else 7
 
             mock_s3["count_objects"].side_effect = count_side
+            test_mock.return_value = test_result_fail
 
             resp = await client.post("/api/migrations", json={
                 "bucket": "wr3-bk",
@@ -398,6 +393,11 @@ class TestWriteRoutingPhase:
             mig_resp = await client.get(f"/api/migrations/{mig_id}")
             assert mig_resp.json()["phase"] == "error", \
                 f"Expected error phase, got: {mig_resp.json()['phase']}"
+            # The rejected split config must not be left on disk or reloaded
+            from nanio_orchestrator.config import get_settings
+            conf = get_settings().vhosts_dir / "wr3.example.com.conf"
+            assert "LIVE MIGRATION" not in conf.read_text()
+            reload_mock.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

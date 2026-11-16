@@ -47,6 +47,7 @@ nanio_orchestrator/
 │   ├── generator.py    # Jinja2 → nginx config text
 │   ├── parser.py       # Parse managed nginx configs back to dicts
 │   ├── executor.py     # nginx -t, nginx -s reload (via subprocess/sudo)
+│   ├── apply.py        # The only write path: write → nginx -t → (reload) → rollback, under one lock
 │   └── templates/      # Jinja2 templates for upstreams + server blocks
 └── web/
     ├── routes.py       # Server-rendered HTML routes (Starlette/Jinja2)
@@ -108,8 +109,11 @@ SQLite database from:
 2. **SQL writes go through `get_db_ctx()`** — it handles connection, WAL mode, and foreign keys.
    Never open a raw sqlite3 connection in handlers.
 
-3. **Test nginx config before writing.** All CRUD config changes go through `_write_vhost_config()` /
-   `_write_pool_config()` which run `nginx -t`, write atomically, and roll back on failure. They do **not**
+3. **Every nginx config write goes through `nginx/apply.py`.** `apply_config_file()` /
+   `apply_config_files()` write the file at its final path, run `nginx -t`, and restore the previous
+   content on failure — nginx only includes `*.conf`, so testing while the candidate is still a `.tmp`
+   validates nothing. Never write a managed `.conf` any other way. `_write_vhost_config()` /
+   `_write_pool_config()` are thin wrappers over it and do **not**
    reload nginx — the operator applies changes explicitly via the Config tab (`POST /api/config/reload`).
    Only the migration engine auto-reloads (it is an autonomous process that must apply its own routing
    changes without operator intervention).

@@ -411,16 +411,22 @@ def config_rebuild():
         s.ensure_dirs()
         await init_db()
 
-        from nanio_orchestrator.nginx.generator import generate_all_configs, write_config_atomic
+        from nanio_orchestrator.nginx.apply import apply_config_files
+        from nanio_orchestrator.nginx.generator import generate_all_configs, remove_config_file
 
         configs = await generate_all_configs()
         for filepath, content in configs:
-            await write_config_atomic(filepath, content)
-            print(f"  ✓ {filepath}")
+            if content is None:  # empty pool — no upstream block to write
+                await remove_config_file(filepath)
+                print(f"  - {filepath} (removed: pool has no members)")
 
-        from nanio_orchestrator.nginx.executor import test_and_reload
-
-        result = await test_and_reload()
+        to_write = [(fp, ct) for fp, ct in configs if ct is not None]
+        result = await apply_config_files(to_write, reload=True)
+        if result.ok:
+            for filepath, _ in to_write:
+                print(f"  ✓ {filepath}")
+        else:
+            print(f"nginx {result.stage} failed — previous config files restored")
         print(result.output)
         return result.ok
 

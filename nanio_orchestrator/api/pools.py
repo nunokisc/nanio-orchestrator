@@ -21,11 +21,12 @@ from nanio_orchestrator.models import (
     PoolOut,
     PoolUpdate,
 )
-from nanio_orchestrator.nginx.executor import test_config
+from nanio_orchestrator.nginx.apply import apply_config_file
 from nanio_orchestrator.nginx.generator import (
     generate_pool_config,
     node_config_instructions,
     record_file_state,
+    remove_config_file,
     render_node_config,
 )
 from nanio_orchestrator.s3client import delete_object, list_objects
@@ -51,11 +52,6 @@ async def _write_pool_config(pool_id: int, db) -> tuple:
     If the pool has no members the config file is removed instead of written.
     """
     filepath, content = await generate_pool_config(pool_id)
-    import os
-
-    import aiofiles
-
-    from nanio_orchestrator.nginx.generator import remove_config_file
 
     # Empty pool — remove file so nginx doesn't see an invalid upstream block
     if content is None:
@@ -63,35 +59,15 @@ async def _write_pool_config(pool_id: int, db) -> tuple:
         await db.execute("DELETE FROM config_files WHERE path = ?", (filepath,))
         return True, "Pool has no members — config file removed (apply nginx changes via Config tab)"
 
-    # Write to .tmp
-    tmp_path = filepath + ".tmp"
-    async with aiofiles.open(tmp_path, "w") as f:
-        await f.write(content)
-
-    # Save current config for rollback
-    old_content = None
-    if os.path.exists(filepath):
-        async with aiofiles.open(filepath, "r") as f:
-            old_content = await f.read()
-
-    # Rename .tmp → live, then test the actual config nginx will use
-    os.rename(tmp_path, filepath)
-
-    test_result = await test_config()
-    if not test_result.ok:
-        # Restore previous config on failure
-        if old_content is not None:
-            async with aiofiles.open(filepath, "w") as f:
-                await f.write(old_content)
-        else:
-            os.unlink(filepath)
-        return False, test_result.output
+    result = await apply_config_file(filepath, content)
+    if not result.ok:
+        return False, result.output
 
     # Record in DB (no reload — operator applies via Config tab)
     await record_file_state(db, filepath, content)
     await db.commit()
 
-    return True, f"nginx -t: {test_result.output} (config written — apply via Config tab)"
+    return True, f"nginx -t: {result.output} (config written — apply via Config tab)"
 
 
 def _validate_member_role(pool_type: str, role: str) -> None:

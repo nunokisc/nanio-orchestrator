@@ -101,7 +101,7 @@ async def db(tmp_dirs):
 
 @pytest.fixture
 def mock_nginx():
-    """Mock nginx test and reload at all consumption sites."""
+    """Mock nginx test and reload."""
     test_result = MagicMock(ok=True, output="syntax ok")
     reload_result = MagicMock(ok=True, output="reloaded")
 
@@ -109,16 +109,10 @@ def mock_nginx():
     reload_mock = AsyncMock(return_value=reload_result)
     backup_mock = AsyncMock()
 
-    # Patch at all sites that import test_config / reload_nginx
-    test_targets = [
-        "nanio_orchestrator.nginx.executor.test_config",
-        "nanio_orchestrator.api.buckets.test_config",
-        "nanio_orchestrator.migration_engine.test_config",
-    ]
-    reload_targets = [
-        "nanio_orchestrator.nginx.executor.reload_nginx",
-        "nanio_orchestrator.migration_engine.reload_nginx",
-    ]
+    # Every config write goes through nginx/apply.py, which calls the executor
+    # by module attribute — one patch site covers all of them.
+    test_targets = ["nanio_orchestrator.nginx.executor.test_config"]
+    reload_targets = ["nanio_orchestrator.nginx.executor.reload_nginx"]
     backup_targets = [
         "nanio_orchestrator.backup.backup_database",
     ]
