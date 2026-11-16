@@ -110,10 +110,21 @@ Requires `NANIO_ORCHESTRATOR_SECRET`. On an `http` pool these endpoints return `
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/pools/{id}/members/{mid}/node-config` | Render config snippets for a storage node (nanio options file, systemd unit, nginx server block). Nothing is deployed or stored. |
+| POST | `/api/pools/{id}/members/{mid}/node-config` | Generate everything needed to set up the machine behind this member. Nothing is deployed or stored. |
 
-Body: `node_type` (`nanio-only`, `nginx-only`, `nginx-nanio`), `data_dir`, `nanio_port`,
-`nanio_host`, `nanio_region`, `access_key`, `secret_key`.
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `node_type` | required | `nanio-only` or `nginx-nanio` for a `nanio` pool; `nginx-only` for an `http` pool |
+| `data_dir` | `/data` | Where the objects live on the node |
+| `nanio_port` | from the member address | Port nanio listens on. For `nginx-nanio`, the loopback port behind nginx (default 9000). |
+| `nanio_host` | `0.0.0.0` | Bind address (forced to `127.0.0.1` for `nginx-nanio`) |
+| `nanio_region` | `us-east-1` | Region nanio reports |
+| `access_key`, `secret_key` | none | Written to the node's options file. Use the pool's credentials. |
+| `nanio_bin` | `/opt/nanio/bin/nanio` | Path of the nanio binary on the node |
+
+Response: `files` (path + content), `instructions` (the commands to run on the node, in order)
+and `warnings` (for example a port that does not match the member address, or missing
+credentials). See [operations.md](operations.md#set-up-a-storage-node).
 
 ---
 

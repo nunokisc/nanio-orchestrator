@@ -99,6 +99,29 @@ Member fields: `address` (required), `role` (`active` for nanio; `primary`/`repl
 
 A pool with no members has no config file, because an empty `upstream` is invalid in nginx.
 
+### Set up a storage node
+
+The orchestrator does not log in to the storage machines, but it generates everything a node
+needs so that it matches what the gateway expects. Pools page → member → **Node Setup**, or
+`POST /api/pools/{id}/members/{mid}/node-config`.
+
+| Node type | Pool | What is generated |
+|-----------|------|-------------------|
+| `nanio-only` | `nanio` | nanio options file and systemd unit. nanio listens on the member's port. |
+| `nginx-nanio` | `nanio` | The same, plus an nginx server block on the member's port in front of nanio on loopback. |
+| `nginx-only` | `http` | An nginx server block serving the data directory read-only. nanio's internal metadata directories are never served. |
+
+Along with the files you get the commands to run on the node, in order (install nanio, create
+its user, permissions, enable the service, and how to check it from the gateway), and warnings
+when something would not work, such as a port that differs from the member address or missing
+credentials.
+
+Give it the same access key and secret key you store for the pool: nanio verifies requests
+with the keys in its options file. The generated config is returned once and not kept.
+
+The systemd unit refuses to start nanio while the data directory is not mounted. Without that,
+a node whose shared storage failed to mount would answer "bucket not found" for everything.
+
 ### Store the pool's S3 credentials
 
 The orchestrator needs credentials to list buckets and to run migrations. They are encrypted

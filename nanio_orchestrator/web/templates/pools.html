@@ -201,11 +201,12 @@
             </label>
             <label>Data Directory <input type="text" name="data_dir" value="/data"></label>
             <div id="nanio-fields">
-                <label>Nanio Port <input type="number" name="nanio_port" value="9000"></label>
+                <label>Nanio Port <input type="number" name="nanio_port" placeholder="Auto (from the member address)"></label>
                 <label>Nanio Host <input type="text" name="nanio_host" value="0.0.0.0"></label>
                 <label>Region <input type="text" name="nanio_region" value="us-east-1"></label>
-                <label>Access Key <input type="text" name="access_key" placeholder="Optional"></label>
-                <label>Secret Key <input type="text" name="secret_key" placeholder="Optional"></label>
+                <label>Access Key <input type="text" name="access_key" placeholder="Same as the pool credentials"></label>
+                <label>Secret Key <input type="password" name="secret_key" placeholder="Same as the pool credentials" autocomplete="off"></label>
+                <label>Nanio Binary <input type="text" name="nanio_bin" value="/opt/nanio/bin/nanio"></label>
             </div>
             <div class="modal-actions">
                 <button type="submit" class="btn btn-primary">Generate Config</button>
@@ -214,8 +215,10 @@
         </form>
         <div id="node-config-output" class="hidden">
             <h4>Generated Config Files</h4>
+            <div id="node-config-warnings"></div>
             <div id="node-config-files"></div>
-            <p id="node-config-instructions" class="instructions"></p>
+            <h4>Setup steps</h4>
+            <pre id="node-config-instructions" class="output"></pre>
         </div>
     </div>
 </div>

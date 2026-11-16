@@ -23,7 +23,6 @@ from nanio_orchestrator.models import (
 from nanio_orchestrator.nginx.apply import apply_config_file
 from nanio_orchestrator.nginx.generator import (
     generate_pool_config,
-    node_config_instructions,
     record_file_state,
     remove_config_file,
     render_node_config,
@@ -451,7 +450,13 @@ async def generate_member_node_config(pool_id: int, member_id: int, body: NodeCo
             raise HTTPException(404, "Member not found")
         member = dict(mrows[0])
 
-    files = render_node_config(
+    allowed = ("nanio-only", "nginx-nanio") if pool["type"] == "nanio" else ("nginx-only",)
+    if body.node_type not in allowed:
+        raise HTTPException(
+            400, f"A member of a {pool['type']} pool is set up as {' or '.join(allowed)}, not {body.node_type}"
+        )
+
+    rendered = render_node_config(
         node_type=body.node_type,
         member_address=member["address"],
         pool_name=pool["name"],
@@ -462,15 +467,10 @@ async def generate_member_node_config(pool_id: int, member_id: int, body: NodeCo
         nanio_region=body.nanio_region,
         access_key=body.access_key,
         secret_key=body.secret_key,
+        nanio_bin=body.nanio_bin,
     )
-    instructions = node_config_instructions(body.node_type)
 
-    return NodeConfigOut(
-        node_type=body.node_type,
-        member_address=member["address"],
-        files=files,
-        instructions=instructions,
-    )
+    return NodeConfigOut(node_type=body.node_type, member_address=member["address"], **rendered)
 
 
 @router.get("/{pool_id}/buckets/status")
