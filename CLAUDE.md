@@ -134,6 +134,10 @@ SQLite database from:
    - All API endpoints (except `/health` and `/auth/*`) require authentication
    - Validate all IP/CIDR entries in `ip_rule_ips` with `_IP_ENTRY_RE`
    - XML and JSON bodies are bounded (no unbounded buffering)
+   - Endpoints that take a file path accept managed `pools/*.conf` / `vhosts/*.conf` only
+   - Settings that choose a binary or a directory (`_HOST_ONLY_SETTINGS`) are not writable through
+     the API — the panel key must not be equivalent to shell access
+   - Never persist secrets in plain text (node-config output is returned, not stored)
 
 7. **No new background tasks.** The only background tasks are `drift`, `bucket_sync` and `backup`.
    They're started in `app.py` startup. New recurring work should follow the same pattern.

@@ -380,6 +380,10 @@ async def _run_migrations_async(db) -> None:
         await db.commit()
         await db.execute("PRAGMA foreign_keys=ON")
 
+    # node_configs used to keep every generated node config, including the S3 secret key in
+    # plain text. Nothing writes to it any more; drop what older versions left behind.
+    await db.execute("DELETE FROM node_configs")
+
     # migrations.split_routing (live-migration split persisted independently of the phase)
     info = await db.execute_fetchall("PRAGMA table_info(migrations)")
     if "split_routing" not in {r["name"] for r in info}:
@@ -509,6 +513,9 @@ def init_db_sync() -> None:
         conn.execute("ALTER TABLE node_configs_new RENAME TO node_configs")
         conn.commit()
         conn.execute("PRAGMA foreign_keys=ON")
+
+    # node_configs: purge generated node configs stored by older versions (plain-text secrets)
+    conn.execute("DELETE FROM node_configs")
 
     # migrations.split_routing (live-migration split persisted independently of the phase)
     info = conn.execute("PRAGMA table_info(migrations)").fetchall()

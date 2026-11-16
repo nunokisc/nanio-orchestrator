@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio as _asyncio
-import json
 from typing import List
 
 from fastapi import APIRouter, HTTPException
@@ -432,67 +431,13 @@ async def delete_member(pool_id: int, member_id: int):
 # ── Node Config ───────────────────────────────────────────────────────────────
 
 
-@router.get("/{pool_id}/members/{member_id}/node-config", response_model=NodeConfigOut)
-async def get_member_node_config(
-    pool_id: int,
-    member_id: int,
-    type: str = "nanio-only",
-    data_dir: str = "/data",
-    nanio_port: int = 9000,
-    nanio_host: str = "0.0.0.0",
-    nanio_region: str = "us-east-1",
-    access_key: str = "",
-    secret_key: str = "",
-):
-    if type not in ("nanio-only", "nginx-only", "nginx-nanio"):
-        raise HTTPException(400, "type must be nanio-only, nginx-only, or nginx-nanio")
-
-    async with get_db_ctx() as db:
-        pool_rows = await db.execute_fetchall("SELECT * FROM pools WHERE id = ?", (pool_id,))
-        if not pool_rows:
-            raise HTTPException(404, "Pool not found")
-        pool = dict(pool_rows[0])
-
-        mrows = await db.execute_fetchall(
-            "SELECT * FROM pool_members WHERE id = ? AND pool_id = ?", (member_id, pool_id)
-        )
-        if not mrows:
-            raise HTTPException(404, "Member not found")
-        member = dict(mrows[0])
-
-    files = render_node_config(
-        node_type=type,
-        member_address=member["address"],
-        pool_name=pool["name"],
-        pool_type=pool["type"],
-        data_dir=data_dir,
-        nanio_port=nanio_port,
-        nanio_host=nanio_host,
-        nanio_region=nanio_region,
-        access_key=access_key or None,
-        secret_key=secret_key or None,
-    )
-    instructions = node_config_instructions(type)
-
-    # Store in node_configs for history
-    async with get_db_ctx() as db:
-        await db.execute(
-            "INSERT INTO node_configs (member_id, node_type, config_json) VALUES (?, ?, ?)",
-            (member_id, type, json.dumps(files)),
-        )
-        await db.commit()
-
-    return NodeConfigOut(
-        node_type=type,
-        member_address=member["address"],
-        files=files,
-        instructions=instructions,
-    )
-
-
 @router.post("/{pool_id}/members/{member_id}/node-config", response_model=NodeConfigOut)
 async def generate_member_node_config(pool_id: int, member_id: int, body: NodeConfigRequest):
-    """Generate node config via POST with full parameters."""
+    """Render config snippets for a storage node. Nothing is deployed or stored.
+
+    POST only, and the result is not kept: the request may carry the node's S3 secret key,
+    which must not end up in a URL, an access log or the database.
+    """
     async with get_db_ctx() as db:
         pool_rows = await db.execute_fetchall("SELECT * FROM pools WHERE id = ?", (pool_id,))
         if not pool_rows:
@@ -520,43 +465,12 @@ async def generate_member_node_config(pool_id: int, member_id: int, body: NodeCo
     )
     instructions = node_config_instructions(body.node_type)
 
-    async with get_db_ctx() as db:
-        await db.execute(
-            "INSERT INTO node_configs (member_id, node_type, config_json) VALUES (?, ?, ?)",
-            (member_id, body.node_type, json.dumps(files)),
-        )
-        await db.commit()
-
     return NodeConfigOut(
         node_type=body.node_type,
         member_address=member["address"],
         files=files,
         instructions=instructions,
     )
-
-
-@router.get("/{pool_id}/node-config-summary")
-async def pool_node_config_summary(pool_id: int):
-    """Get node config summary for all members in a pool."""
-    async with get_db_ctx() as db:
-        pool_rows = await db.execute_fetchall("SELECT * FROM pools WHERE id = ?", (pool_id,))
-        if not pool_rows:
-            raise HTTPException(404, "Pool not found")
-
-        members = await db.execute_fetchall("SELECT * FROM pool_members WHERE pool_id = ? ORDER BY id", (pool_id,))
-        result = []
-        for m in members:
-            configs = await db.execute_fetchall(
-                "SELECT * FROM node_configs WHERE member_id = ? ORDER BY generated_at DESC LIMIT 5",
-                (m["id"],),
-            )
-            result.append(
-                {
-                    "member": dict(m),
-                    "recent_configs": [dict(c) for c in configs],
-                }
-            )
-        return result
 
 
 @router.get("/{pool_id}/buckets/status")
