@@ -373,9 +373,24 @@ async def rebuild_all():
 # ── Per-file drift resolution ────────────────────────────────────────────────
 
 
+def _require_managed_config_path(path: str) -> None:
+    """Resolve `path` and require it to be a .conf file directly inside the managed pools/ or
+    vhosts/ directory. The endpoint reads the file and stores its content in the database, so
+    anything else would let a caller copy arbitrary files readable by the service."""
+    s = get_settings()
+    try:
+        resolved = Path(path).resolve()
+    except (OSError, ValueError):
+        raise HTTPException(400, "Invalid path")
+    allowed = {s.pools_dir.resolve(), s.vhosts_dir.resolve()}
+    if resolved.suffix != ".conf" or resolved.parent not in allowed:
+        raise HTTPException(400, "Not a managed nginx config file")
+
+
 @router.post("/absorb-file")
 async def absorb_file(path: str = Body(..., embed=True)):
     """Accept a drifted file: read current disk state into the DB (sha256_db = sha256_disk)."""
+    _require_managed_config_path(path)
     try:
         async with aiofiles.open(path, "r") as f:
             content = await f.read()
@@ -532,6 +547,12 @@ def _mask(value, is_secret: bool) -> str | None:
     return (s[:4] + "****") if len(s) > 4 else "****"
 
 
+# Settings that name the binary the service executes or the directories it writes to. Changing
+# them is equivalent to shell access as the service user, so the API (reachable with just the
+# panel key) does not accept them; the CLI on the host does.
+_HOST_ONLY_SETTINGS = frozenset({"rclone_path", "db_path", "db_backup_path", "nginx_config_dir"})
+
+
 @router.get("/settings")
 async def get_settings_endpoint():
     """Return all current settings with secrets masked."""
@@ -551,6 +572,7 @@ async def get_settings_endpoint():
 
     result["config_file"] = _get_config_path()
     result["dev_mode"] = DEV_MODE
+    result["host_only"] = sorted(_HOST_ONLY_SETTINGS)
 
     return result
 
@@ -569,10 +591,20 @@ async def update_setting(key: str, body: dict = Body(...)):
     if normalized not in _SETTINGS_META:
         raise HTTPException(status_code=404, detail=f"Unknown setting: '{key}'")
 
+    if normalized in _HOST_ONLY_SETTINGS:
+        raise HTTPException(
+            status_code=403,
+            detail=f"'{normalized}' decides which program or files the service uses and can only be "
+            f"changed on the host: nanio-orchestrator config set {normalized} <value>",
+        )
+
     if "value" not in body:
         raise HTTPException(status_code=422, detail="Missing 'value' field")
 
     value = str(body["value"])
+    # One setting per line in the config file: a line break would smuggle in another setting.
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        raise HTTPException(status_code=422, detail="Value must not contain control characters")
 
     config_path = _get_config_path()
     try:

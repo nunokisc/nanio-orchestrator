@@ -110,13 +110,10 @@ Requires `NANIO_ORCHESTRATOR_SECRET`. On an `http` pool these endpoints return `
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/pools/{id}/members/{mid}/node-config` | Render config snippets for a storage node (nanio options file, systemd unit, nginx server block). Nothing is deployed. |
-| GET | `/api/pools/{id}/members/{mid}/node-config` | Same, with query parameters |
-| GET | `/api/pools/{id}/node-config-summary` | Recently generated snippets per member |
+| POST | `/api/pools/{id}/members/{mid}/node-config` | Render config snippets for a storage node (nanio options file, systemd unit, nginx server block). Nothing is deployed or stored. |
 
 Body: `node_type` (`nanio-only`, `nginx-only`, `nginx-nanio`), `data_dir`, `nanio_port`,
-`nanio_host`, `nanio_region`, `access_key`, `secret_key`. Prefer `POST`: with `GET` the secret
-key travels in the URL.
+`nanio_host`, `nanio_region`, `access_key`, `secret_key`.
 
 ---
 
@@ -263,11 +260,11 @@ migration points at a different pool.
 | POST | `/api/config/rebuild` | **Database → files.** Regenerate every file, validate, reload. Previous files are restored if validation fails. |
 | POST | `/api/config/sync` | **Files → database, additive.** Imports pools, members, vhosts and routes found on disk. Never deletes. |
 | POST | `/api/config/rebuild-from-disk` | **Files → database, from scratch.** `?dry_run=true` previews; `?force=true` replaces existing data (otherwise `409` if the database is not empty). |
-| POST | `/api/config/absorb-file` | Body `{"path": "..."}`. Accept a drifted file as it is on disk. |
+| POST | `/api/config/absorb-file` | Body `{"path": "..."}`. Accept a drifted file as it is on disk. Only `.conf` files in the managed `pools/` and `vhosts/` directories. |
 | POST | `/api/config/rewrite-file` | Body `{"path": "..."}`. Overwrite a drifted file from the database, validate, reload. |
 | POST | `/api/config/backup` | Back up the database now |
 | GET | `/api/config/settings` | All settings, secrets masked |
-| PUT | `/api/config/settings/{key}` | Body `{"value": "..."}`. Writes the setting to the config file; takes effect after a restart. |
+| PUT | `/api/config/settings/{key}` | Body `{"value": "..."}`. Writes the setting to the config file; takes effect after a restart. `rclone_path`, `db_path`, `db_backup_path` and `nginx_config_dir` return `403`: change them on the host with `nanio-orchestrator config set`. |
 | POST | `/api/config/settings/restart` | Restart the service. Returns at once; the restart happens 1.5 s later. Not available in dev mode. |
 
 ---

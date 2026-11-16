@@ -68,7 +68,7 @@ const DESCRIPTIONS = {
 const SECRET_KEYS = new Set(["api_key","secret","s3_access_key","s3_secret_key"]);
 
 // Keys whose values should be treated as editable (excludes meta)
-const READONLY_KEYS = new Set(["config_file","dev_mode"]);
+const READONLY_KEYS = new Set(["config_file","dev_mode","host_only","rclone_path","db_path","db_backup_path","nginx_config_dir"]);
 
 function isSecret(key) { return SECRET_KEYS.has(key); }
 
@@ -136,7 +136,9 @@ function renderRow(key, val, desc) {
         </td>
         <td style="color:var(--text-muted)">${escapeHtml(desc)}</td>
         <td style="width:60px;text-align:right">
-            <button class="btn btn-xs" id="edit-btn-${key}" onclick="startEdit('${key}')">Edit</button>
+            ${READONLY_KEYS.has(key)
+                ? `<span class="badge" title="Change on the host: nanio-orchestrator config set ${key} <value>">host only</span>`
+                : `<button class="btn btn-xs" id="edit-btn-${key}" onclick="startEdit('${key}')">Edit</button>`}
         </td>
     </tr>`;
 }

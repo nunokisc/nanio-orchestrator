@@ -53,8 +53,12 @@ sudo systemctl restart nanio-orchestrator
 ```
 
 Keys are the variable name without the `NANIO_ORCHESTRATOR_` prefix, in lower case. The
-Settings page of the Web UI shows the same values and can edit most of them
+Settings page of the Web UI shows the same values and can edit them
 (`PUT /api/config/settings/{key}`), followed by *Restart Now*.
+
+Four settings can only be changed on the host with `config set`, never through the Web UI or the
+API: `RCLONE_PATH`, `DB_PATH`, `DB_BACKUP_PATH` and `NGINX_CONFIG_DIR`. They decide which program
+the service runs and where it writes, so the panel key alone must not be enough to change them.
 
 ## What each group is for
 
