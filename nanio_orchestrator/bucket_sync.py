@@ -12,15 +12,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from datetime import datetime, timezone
 from typing import List
 
 from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.credentials import get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
-from nanio_orchestrator.nginx.executor import reload_nginx, test_config
-from nanio_orchestrator.nginx.generator import generate_vhost_config, record_file_state, write_config_atomic
+from nanio_orchestrator.nginx.apply import apply_config_file
+from nanio_orchestrator.nginx.generator import generate_vhost_config, record_file_state
 from nanio_orchestrator.s3client import bucket_exists, list_buckets
 
 logger = logging.getLogger(__name__)
@@ -214,25 +213,17 @@ async def _reconcile_routed_buckets(vhost_id: int) -> List[dict]:
 
             # Phase 2: generate and apply nginx config
             filepath, content = await generate_vhost_config(vhost_id)
-            tmp_path = filepath + ".tmp"
-            # write_config_atomic gives us fsync durability; result lands at tmp_path
-            await write_config_atomic(tmp_path, content)
-            test_result = await test_config()
-            if test_result.ok:
-                os.rename(tmp_path, filepath)
-                await reload_nginx()
+            result = await apply_config_file(filepath, content, reload=True)
+            if result.ok:
                 async with get_db_ctx() as db:
                     await record_file_state(db, filepath, content)
                     await db.commit()
             else:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
                 logger.error(
-                    "nginx -t failed after auto-unrouting bucket %s: %s",
+                    "nginx %s failed after auto-unrouting bucket %s: %s",
+                    result.stage,
                     entry["bucket"],
-                    test_result.output,
+                    result.output,
                 )
 
             actions.append(

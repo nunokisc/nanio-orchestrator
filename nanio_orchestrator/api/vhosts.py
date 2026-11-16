@@ -5,10 +5,8 @@ from __future__ import annotations
 import asyncio as _asyncio
 import json
 import logging
-import os
 from typing import List, Optional
 
-import aiofiles
 from fastapi import APIRouter, HTTPException
 
 from nanio_orchestrator.audit_log import log_audit
@@ -22,10 +20,9 @@ from nanio_orchestrator.models import (
     VhostOut,
     VhostUpdate,
 )
-from nanio_orchestrator.nginx.executor import test_config
+from nanio_orchestrator.nginx.apply import write_vhost_config as _write_vhost_config
 from nanio_orchestrator.nginx.generator import (
     generate_vhost_config,
-    record_file_state,
     remove_config_file,
 )
 from nanio_orchestrator.s3client import count_objects
@@ -102,41 +99,6 @@ def _enrich_vhost(vhost: dict) -> dict:
     ips_raw = vhost.pop("ip_rule_ips_json", None)
     vhost["ip_rule_ips"] = json.loads(ips_raw) if ips_raw else None
     return vhost
-
-
-async def _write_vhost_config(vhost_id: int, db) -> tuple:
-    """Generate, test, write config to disk, record in DB. Returns (ok, output).
-    Does NOT reload nginx — the operator applies changes via the Config tab.
-    """
-    filepath, content = await generate_vhost_config(vhost_id)
-    tmp_path = filepath + ".tmp"
-    async with aiofiles.open(tmp_path, "w") as f:
-        await f.write(content)
-
-    # Save current config for rollback
-    old_content = None
-    if os.path.exists(filepath):
-        async with aiofiles.open(filepath, "r") as f:
-            old_content = await f.read()
-
-    # Rename .tmp → live, then test the actual config nginx will use
-    os.rename(tmp_path, filepath)
-
-    test_result = await test_config()
-    if not test_result.ok:
-        # Restore previous config on failure
-        if old_content is not None:
-            async with aiofiles.open(filepath, "w") as f:
-                await f.write(old_content)
-        else:
-            os.unlink(filepath)
-        return False, test_result.output
-
-    # Record in DB (no reload — operator applies via Config tab)
-    await record_file_state(db, filepath, content)
-    await db.commit()
-
-    return True, f"nginx -t: {test_result.output} (config written — apply via Config tab)"
 
 
 # ── Vhost CRUD ────────────────────────────────────────────────────────────────

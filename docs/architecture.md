@@ -46,8 +46,9 @@ Renders Jinja2 templates to produce nginx config text. Two template types:
 - `upstream.conf.j2` → pool upstream blocks
 - `vhost.conf.j2` → server blocks with all routes, IP rules, extra blocks
 
-**All config writes are atomic** (write to `.tmp`, run `nginx -t`, rename on success, rollback on
-failure). CRUD operations (pools, vhosts, routes, members) write and validate the config but do
+**All config writes go through `nginx/apply.py`**: write the file at its final path, run `nginx -t`,
+restore the previous content on failure (nginx only includes `*.conf`, so a `.tmp` candidate would
+not be validated). CRUD operations (pools, vhosts, routes, members) write and validate the config but do
 **not** reload nginx — the operator applies pending changes explicitly via `POST /api/config/reload`
 or the Config tab in the Web UI. Only the migration engine reloads nginx automatically during the
 `write_routing` and `switching` phases, because those transitions are autonomous and time-sensitive.

@@ -69,21 +69,6 @@ async def reload_nginx() -> NginxExecResult:
     return await _run_cmd(["sudo", _nginx_bin(), "-s", "reload"])
 
 
-async def test_and_reload() -> NginxExecResult:
-    """Test config first, then reload if valid. Returns the failing result if test fails."""
-    test_result = await test_config()
-    if not test_result.ok:
-        return test_result
-    reload_result = await reload_nginx()
-    # Combine output
-    combined = f"nginx -t: {test_result.output}\nnginx -s reload: {reload_result.output}"
-    return NginxExecResult(
-        ok=reload_result.ok,
-        output=combined,
-        return_code=reload_result.return_code,
-    )
-
-
 def detect_nginx() -> dict:
     """Synchronous check for nginx installation. Used by install command."""
     import shutil

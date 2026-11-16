@@ -28,12 +28,8 @@ from nanio_orchestrator.audit_log import log_audit
 from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.credentials import get_pool_credentials, get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
-from nanio_orchestrator.nginx.executor import reload_nginx, test_config
-from nanio_orchestrator.nginx.generator import (
-    generate_vhost_config,
-    record_file_state,
-    write_config_atomic,
-)
+from nanio_orchestrator.nginx.apply import apply_config_file
+from nanio_orchestrator.nginx.generator import generate_vhost_config, record_file_state
 from nanio_orchestrator.s3client import bucket_exists, bucket_has_objects, count_objects, create_bucket
 from nanio_orchestrator.sidecar import (
     delete_migration_state,
@@ -153,43 +149,23 @@ async def _cascade_http_write_routing(
                 filepath_h, content_h = await _generate_vhost_config_with_split(
                     vhost_id_h, bucket, http_dst_pool["name"]
                 )
-                tmp_h = filepath_h + ".tmp"
-                await write_config_atomic(tmp_h, content_h)
-                test_h = await test_config()
-                if test_h.ok:
-                    import os as _os_h
-
-                    _os_h.rename(tmp_h, filepath_h)
-                    reload_h = await reload_nginx()
-                    if reload_h.ok:
-                        async with get_db_ctx() as db:
-                            await record_file_state(db, filepath_h, content_h)
-                            await db.commit()
-                        await _log(
-                            migration_id,
-                            "write_routing",
-                            f"HTTP vhost '{server_name_h}': split-routing applied "
-                            f"(writes → {http_dst_pool['name']}, reads → {http_src_pool['name']})",
-                        )
-                    else:
-                        await _log(
-                            migration_id,
-                            "write_routing",
-                            f"WARNING: HTTP vhost '{server_name_h}': nginx reload failed — "
-                            f"{reload_h.output}. Vhost remains without split-routing.",
-                        )
-                else:
-                    try:
-                        import os as _os_h
-
-                        _os_h.unlink(tmp_h)
-                    except OSError:
-                        pass
+                result_h = await apply_config_file(filepath_h, content_h, reload=True)
+                if result_h.ok:
+                    async with get_db_ctx() as db:
+                        await record_file_state(db, filepath_h, content_h)
+                        await db.commit()
                     await _log(
                         migration_id,
                         "write_routing",
-                        f"WARNING: HTTP vhost '{server_name_h}': nginx test failed — "
-                        f"{test_h.output}. Vhost remains without split-routing.",
+                        f"HTTP vhost '{server_name_h}': split-routing applied "
+                        f"(writes → {http_dst_pool['name']}, reads → {http_src_pool['name']})",
+                    )
+                else:
+                    await _log(
+                        migration_id,
+                        "write_routing",
+                        f"WARNING: HTTP vhost '{server_name_h}': nginx {result_h.stage} failed — "
+                        f"{result_h.output}. Vhost remains without split-routing.",
                     )
             except Exception as exc:
                 await _log(
@@ -260,56 +236,29 @@ async def _cascade_http_switching(
                     await db.commit()
 
                 filepath_h, content_h = await _generate_vhost_config_with_split(vhost_id_h, bucket, None)
-                tmp_h = filepath_h + ".tmp"
-                await write_config_atomic(tmp_h, content_h)
-                test_h = await test_config()
-                if test_h.ok:
-                    import os as _os_h
-
-                    _os_h.rename(tmp_h, filepath_h)
-                    reload_h = await reload_nginx()
-                    if reload_h.ok:
-                        async with get_db_ctx() as db:
-                            await record_file_state(db, filepath_h, content_h)
-                            await db.commit()
-                        await _log(
-                            migration_id,
-                            "switching",
-                            f"HTTP vhost '{server_name_h}': route updated to {http_dst_pool['name']}",
-                        )
-                        swept.append(server_name_h)
-                    else:
-                        # Rollback route to src
-                        async with get_db_ctx() as db:
-                            await db.execute(
-                                "UPDATE routes SET pool_id = ?, updated_at = datetime('now') WHERE id = ?",
-                                (http_src_pool["id"], route_id_h),
-                            )
-                            await db.commit()
-                        await _log(
-                            migration_id,
-                            "switching",
-                            f"WARNING: HTTP vhost '{server_name_h}': nginx reload failed — "
-                            "route rolled back. Primary migration is still done.",
-                        )
+                result_h = await apply_config_file(filepath_h, content_h, reload=True)
+                if result_h.ok:
+                    async with get_db_ctx() as db:
+                        await record_file_state(db, filepath_h, content_h)
+                        await db.commit()
+                    await _log(
+                        migration_id,
+                        "switching",
+                        f"HTTP vhost '{server_name_h}': route updated to {http_dst_pool['name']}",
+                    )
+                    swept.append(server_name_h)
                 else:
-                    # Rollback route to src
+                    # Previous config file is back in place — roll the route back to src
                     async with get_db_ctx() as db:
                         await db.execute(
                             "UPDATE routes SET pool_id = ?, updated_at = datetime('now') WHERE id = ?",
                             (http_src_pool["id"], route_id_h),
                         )
                         await db.commit()
-                    try:
-                        import os as _os_h
-
-                        _os_h.unlink(tmp_h)
-                    except OSError:
-                        pass
                     await _log(
                         migration_id,
                         "switching",
-                        f"WARNING: HTTP vhost '{server_name_h}': nginx test failed — "
+                        f"WARNING: HTTP vhost '{server_name_h}': nginx {result_h.stage} failed — "
                         "route rolled back. Primary migration is still done.",
                     )
             except Exception as exc:
@@ -767,46 +716,6 @@ def _parse_rclone_stats(line: str) -> Optional[dict]:
     return result or None
 
 
-async def _restore_nginx_config(migration_id: int, phase: str, filepath: str) -> None:
-    """Restore a vhost nginx config from the DB content_snapshot after a failed reload.
-
-    Called when reload_nginx() fails after a file rename so the broken config
-    does not affect future nginx reloads.  Best-effort: logs a warning on failure.
-    """
-    try:
-        async with get_db_ctx() as db:
-            rows = await db.execute_fetchall("SELECT content_snapshot FROM config_files WHERE path = ?", (filepath,))
-        snapshot = dict(rows[0]).get("content_snapshot") if rows else None
-        if snapshot:
-            await write_config_atomic(filepath, snapshot)
-            await reload_nginx()
-            logger.info(
-                "migration %d [%s]: nginx config restored from snapshot (%s)",
-                migration_id,
-                phase,
-                filepath,
-            )
-        else:
-            await _log(
-                migration_id,
-                phase,
-                f"WARNING: No config snapshot available to restore {filepath}. "
-                "Run config rebuild to re-sync nginx configs.",
-            )
-    except Exception as exc:
-        logger.warning(
-            "migration %d [%s]: failed to restore nginx config from snapshot: %s",
-            migration_id,
-            phase,
-            exc,
-        )
-        await _log(
-            migration_id,
-            phase,
-            f"WARNING: Could not restore nginx config: {exc}. Run config rebuild to re-sync nginx configs.",
-        )
-
-
 # ── State machine: run a full migration ──────────────────────────────────────
 
 
@@ -1010,43 +919,24 @@ async def run_migration(migration_id: int) -> None:
             )
             vhost_id = m["vhost_id"]
             filepath, content_ng = await generate_vhost_config(vhost_id)
-            tmp_path = filepath + ".tmp"
-            await write_config_atomic(tmp_path, content_ng)
-            wr_test = await test_config()
-            if wr_test.ok:
-                import os as _os
-
-                _os.rename(tmp_path, filepath)
-                reload_result = await reload_nginx()
-                if reload_result.ok:
-                    async with get_db_ctx() as db:
-                        await record_file_state(db, filepath, content_ng)
-                        await db.commit()
-                    await _log(migration_id, "write_routing", "nginx reloaded with write-routing split config")
-                    # Cascade write-routing to linked http vhosts
-                    await _cascade_http_write_routing(migration_id, bucket, src_pool_id, dst_pool_id)
-                else:
-                    await _log(
-                        migration_id,
-                        "write_routing",
-                        f"nginx reload failed — restoring previous config: {reload_result.output}",
-                    )
-                    await _restore_nginx_config(migration_id, "write_routing", filepath)
-                    await _set_phase(
-                        migration_id, "error", f"nginx reload failed during write_routing: {reload_result.output}"
-                    )
-                    return
+            wr_result = await apply_config_file(filepath, content_ng, reload=True)
+            if wr_result.ok:
+                async with get_db_ctx() as db:
+                    await record_file_state(db, filepath, content_ng)
+                    await db.commit()
+                await _log(migration_id, "write_routing", "nginx reloaded with write-routing split config")
+                # Cascade write-routing to linked http vhosts
+                await _cascade_http_write_routing(migration_id, bucket, src_pool_id, dst_pool_id)
             else:
-                try:
-                    import os as _os
-
-                    _os.unlink(tmp_path)
-                except OSError:
-                    pass
                 await _log(
-                    migration_id, "write_routing", f"nginx test failed — write-routing not active: {wr_test.output}"
+                    migration_id,
+                    "write_routing",
+                    f"nginx {wr_result.stage} failed — previous config kept, write-routing not active: "
+                    f"{wr_result.output}",
                 )
-                await _set_phase(migration_id, "error", f"nginx test failed during write_routing: {wr_test.output}")
+                await _set_phase(
+                    migration_id, "error", f"nginx {wr_result.stage} failed during write_routing: {wr_result.output}"
+                )
                 return
 
         # ── Phase: verifying ──────────────────────────────────────────
@@ -1153,87 +1043,23 @@ async def run_migration(migration_id: int) -> None:
         # Regenerate nginx config (write_routing split is no longer needed)
         filepath, content = await generate_vhost_config(vhost_id)
 
-        # Write .tmp, test, rename, reload — only then is the switch durable
-        tmp_path = filepath + ".tmp"
-        await write_config_atomic(tmp_path, content)
-        test_result = await test_config()
-        if test_result.ok:
-            import os as _os
-
-            _os.rename(tmp_path, filepath)
-            reload_result = await reload_nginx()
-            if reload_result.ok:
-                async with get_db_ctx() as db:
-                    await record_file_state(db, filepath, content)
-                    await db.commit()
-                await _log(migration_id, "switching", "nginx reloaded with new route")
-                # Cascade switching to linked http vhosts
-                swept_http_vhosts = await _cascade_http_switching(migration_id, bucket, src_pool_id, dst_pool_id)
-            else:
-                # Reload failed — rollback DB route to source pool, then regenerate
-                # correct nginx config (pointing to src) so the broken file doesn't
-                # affect future nginx reloads.
-                await _log(
-                    migration_id,
-                    "switching",
-                    f"nginx reload failed: {reload_result.output} — rolling back route and restoring config",
-                )
-                async with get_db_ctx() as db:
-                    if route_id:
-                        await db.execute(
-                            "UPDATE routes SET pool_id = ?, updated_at = datetime('now') WHERE id = ?",
-                            (src_pool_id, route_id),
-                        )
-                    else:
-                        await db.execute(
-                            """UPDATE routes SET pool_id = ?, updated_at = datetime('now')
-                               WHERE vhost_id = ? AND path_prefix = ?""",
-                            (src_pool_id, vhost_id, f"/{bucket}/"),
-                        )
-                    await db.execute(
-                        """UPDATE bucket_sync SET status = 'migrating', routed_pool_id = NULL
-                           WHERE vhost_id = ? AND bucket = ?""",
-                        (vhost_id, bucket),
-                    )
-                    await db.commit()
-                # After DB rollback, route points to src. Regenerate config and reload
-                # so nginx on disk matches DB state. Best-effort: don't fail if this fails.
-                try:
-                    restored_fp, restored_content = await generate_vhost_config(vhost_id)
-                    await write_config_atomic(restored_fp, restored_content)
-                    restore_reload = await reload_nginx()
-                    if restore_reload.ok:
-                        async with get_db_ctx() as db:
-                            await record_file_state(db, restored_fp, restored_content)
-                            await db.commit()
-                        await _log(
-                            migration_id, "switching", "nginx config restored and reloaded (pointing to source pool)"
-                        )
-                    else:
-                        await _log(
-                            migration_id,
-                            "switching",
-                            f"WARNING: Config restoration reload also failed: {restore_reload.output}. "
-                            "Run config rebuild to re-sync nginx configs.",
-                        )
-                except Exception as restore_exc:
-                    await _log(
-                        migration_id,
-                        "switching",
-                        f"WARNING: Could not restore nginx config: {restore_exc}. "
-                        "Run config rebuild to re-sync nginx configs.",
-                    )
-                await _set_phase(migration_id, "error", f"nginx reload failed during switching: {reload_result.output}")
-                return
+        # Write, nginx -t, reload through the shared gate — rolled back on failure
+        sw_result = await apply_config_file(filepath, content, reload=True)
+        if sw_result.ok:
+            async with get_db_ctx() as db:
+                await record_file_state(db, filepath, content)
+                await db.commit()
+            await _log(migration_id, "switching", "nginx reloaded with new route")
+            # Cascade switching to linked http vhosts
+            swept_http_vhosts = await _cascade_http_switching(migration_id, bucket, src_pool_id, dst_pool_id)
         else:
-            # nginx -t failed — rollback DB route to source pool, remove .tmp
-            await _log(migration_id, "switching", f"nginx test failed: {test_result.output} — rolling back route")
-            try:
-                import os as _os
-
-                _os.unlink(tmp_path)
-            except OSError:
-                pass
+            # nginx test/reload failed — the previous config file is back in place;
+            # roll the DB route back to the source pool so DB and disk agree.
+            await _log(
+                migration_id,
+                "switching",
+                f"nginx {sw_result.stage} failed: {sw_result.output} — rolling back route",
+            )
             async with get_db_ctx() as db:
                 if route_id:
                     await db.execute(
@@ -1252,7 +1078,9 @@ async def run_migration(migration_id: int) -> None:
                     (vhost_id, bucket),
                 )
                 await db.commit()
-            await _set_phase(migration_id, "error", f"nginx test failed during switching: {test_result.output}")
+            await _set_phase(
+                migration_id, "error", f"nginx {sw_result.stage} failed during switching: {sw_result.output}"
+            )
             return
 
         # ── Record orphaned source data ───────────────────────────────────

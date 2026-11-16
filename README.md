@@ -375,10 +375,15 @@ Phases: `pending → copying → write_routing → verifying → switching → d
 Every CRUD config change (pool, vhost, route, member) follows this sequence:
 
 1. Render new config from DB state (Jinja2 templates)
-2. Write to `<file>.tmp`
-3. Run `nginx -t` — if it fails: delete `.tmp`, return error, stop
-4. `os.rename(<file>.tmp, <file>)` — atomic on POSIX
+2. Remember the current content of the target file
+3. Write the new content atomically (`<file>.tmp` + fsync + rename) at the final path — nginx only
+   includes `*.conf`, so the candidate has to be in place for `nginx -t` to actually see it
+4. Run `nginx -t` — if it fails: restore the previous content (or remove the file if it is new),
+   return error, stop
 5. Update DB: sha256, content snapshot, audit log with nginx output
+
+All of this lives in one place, `nginx/apply.py`, and runs under a single lock so two concurrent
+changes can never be validated against each other's half-applied files.
 
 Nginx is **not** reloaded automatically. The operator applies pending changes explicitly via
 `POST /api/config/reload` (Config tab in the Web UI). This allows making several configuration

@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import hashlib
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import aiofiles
 from jinja2 import Environment, FileSystemLoader
 
 from nanio_orchestrator.config import get_settings
@@ -91,24 +89,7 @@ def render_vhost(vhost: Dict[str, Any], routes: List[Dict[str, Any]]) -> str:
     )
 
 
-# ── Write config file (atomic: .tmp → rename) ────────────────────────────────
-
-
-async def write_config_atomic(filepath: str, content: str) -> str:
-    """Write content to filepath atomically. Returns sha256 of written content."""
-    tmp_path = filepath + ".tmp"
-    async with aiofiles.open(tmp_path, "w") as f:
-        await f.write(content)
-        await f.flush()
-        os.fsync(f.fileno())
-    os.rename(tmp_path, filepath)
-    # fsync the parent directory to ensure the rename is durable
-    dir_fd = os.open(os.path.dirname(filepath) or ".", os.O_RDONLY)
-    try:
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
-    return sha256_str(content)
+# ── Remove config file ───────────────────────────────────────────────────────
 
 
 async def remove_config_file(filepath: str) -> None:

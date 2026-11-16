@@ -12,7 +12,8 @@ from nanio_orchestrator.audit_log import log_audit
 from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator.models import ConfigFileStatus, ConfigStatus, NginxResult
-from nanio_orchestrator.nginx.executor import reload_nginx, test_config
+from nanio_orchestrator.nginx.apply import apply_config_file, apply_config_files, reload_nginx_locked
+from nanio_orchestrator.nginx.executor import test_config
 from nanio_orchestrator.nginx.generator import (
     generate_all_configs,
     generate_pool_config,
@@ -91,7 +92,7 @@ async def validate_config():
 @router.post("/reload", response_model=NginxResult)
 async def reload_config():
     """Run nginx -s reload without config change."""
-    result = await reload_nginx()
+    result = await reload_nginx_locked()
     async with get_db_ctx() as db:
         await log_audit(db, "manual_reload", "config", None, reload_ok=result.ok, reload_output=result.output)
         await db.commit()
@@ -321,7 +322,6 @@ async def sync_from_disk():
 @router.post("/rebuild")
 async def rebuild_all():
     """Rebuild all config files from DB, validate, and reload."""
-    import os
 
     configs = await generate_all_configs()
     errors = []
@@ -342,54 +342,28 @@ async def rebuild_all():
             await db.execute("DELETE FROM config_files WHERE path = ?", (filepath,))
         await db.commit()
 
-    # Write .tmp for real configs
-    for filepath, content in to_write:
-        tmp = filepath + ".tmp"
-        async with aiofiles.open(tmp, "w") as f:
-            await f.write(content)
+    # Write, nginx -t, reload — every file is restored if the test or the reload fails
+    try:
+        result = await apply_config_files(to_write, reload=True)
+    except OSError as e:
+        return {"ok": False, "output": str(e), "written": [], "removed": removed, "errors": [str(e)]}
 
-    # Save old configs for rollback, then rename .tmp → live
-    old_configs: dict = {}
-    for filepath, content in to_write:
-        tmp = filepath + ".tmp"
-        if os.path.exists(filepath):
-            async with aiofiles.open(filepath, "r") as f:
-                old_configs[filepath] = await f.read()
-        try:
-            os.rename(tmp, filepath)
-        except OSError as e:
-            errors.append(f"{filepath}: {e}")
+    if result.stage == "test" and not result.ok:
+        return {"ok": False, "output": result.output, "written": [], "removed": removed}
 
-    # Test the actual config nginx will use (all files now in place)
-    test_result = await test_config()
-    if not test_result.ok:
-        # Restore old configs on failure
-        for filepath, content in to_write:
-            if filepath in old_configs:
-                async with aiofiles.open(filepath, "w") as f:
-                    await f.write(old_configs[filepath])
-            elif os.path.exists(filepath):
-                try:
-                    os.unlink(filepath)
-                except OSError:
-                    pass
-        return {"ok": False, "output": test_result.output, "written": [], "removed": removed}
-
-    written = [fp for fp, _ in to_write if fp not in [e.split(":")[0] for e in errors]]
-
-    reload_result = await reload_nginx()
+    written = [fp for fp, _ in to_write] if result.ok else []
 
     # Record all in DB
     async with get_db_ctx() as db:
-        for filepath, content in to_write:
-            if filepath in written:
+        if result.ok:
+            for filepath, content in to_write:
                 await record_file_state(db, filepath, content)
-        await log_audit(db, "rebuild", "config", None, reload_ok=reload_result.ok, reload_output=reload_result.output)
+        await log_audit(db, "rebuild", "config", None, reload_ok=result.ok, reload_output=result.output)
         await db.commit()
 
     return {
-        "ok": reload_result.ok and not errors,
-        "output": reload_result.output,
+        "ok": result.ok,
+        "output": result.output,
         "written": written,
         "removed": removed,
         "errors": errors,
@@ -431,7 +405,6 @@ async def absorb_file(path: str = Body(..., embed=True)):
 @router.post("/rewrite-file")
 async def rewrite_file(path: str = Body(..., embed=True)):
     """Rewrite a single config file from DB state, validate, and reload."""
-    import os
 
     s = get_settings()
 
@@ -459,30 +432,18 @@ async def rewrite_file(path: str = Body(..., embed=True)):
     else:
         raise HTTPException(404, f"No pool or vhost found matching path: {path}")
 
-    # Write .tmp, test, rename, reload
-    tmp = filepath + ".tmp"
-    async with aiofiles.open(tmp, "w") as f:
-        await f.write(content)
-
-    test_result = await test_config()
-    if not test_result.ok:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        return {"ok": False, "output": test_result.output}
-
-    os.rename(tmp, filepath)
-    reload_result = await reload_nginx()
+    # Write, nginx -t, reload — the previous file is restored if either step fails
+    result = await apply_config_file(filepath, content, reload=True)
+    if result.stage == "test" and not result.ok:
+        return {"ok": False, "output": result.output}
 
     async with get_db_ctx() as db:
-        await record_file_state(db, filepath, content)
-        await log_audit(
-            db, "rewrite_file", "config", None, reload_ok=reload_result.ok, reload_output=reload_result.output
-        )
+        if result.ok:
+            await record_file_state(db, filepath, content)
+        await log_audit(db, "rewrite_file", "config", None, reload_ok=result.ok, reload_output=result.output)
         await db.commit()
 
-    return {"ok": reload_result.ok, "output": reload_result.output, "path": filepath}
+    return {"ok": result.ok, "output": result.output, "path": filepath}
 
 
 # ── Preview ───────────────────────────────────────────────────────────────────
