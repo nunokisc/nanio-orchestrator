@@ -90,7 +90,7 @@ async def create_migration(body: RcloneMigrationCreate):
         # Reject if an active migration for the same bucket already exists
         active = await db.execute_fetchall(
             """SELECT id FROM migrations
-               WHERE bucket = ? AND phase IN ('pending','copying','verifying','switching')""",
+               WHERE bucket = ? AND phase IN ('pending','copying','write_routing','verifying','switching')""",
             (body.bucket,),
         )
         if active:
@@ -98,6 +98,21 @@ async def create_migration(body: RcloneMigrationCreate):
                 409,
                 f"An active migration already exists for bucket '{body.bucket}' (id={active[0]['id']})",
             )
+
+        # A failed/cancelled migration may have left split routing in place: the destination
+        # then holds client writes, so the only safe next step is to finish that same move.
+        split = await db.execute_fetchall(
+            "SELECT id, src_pool_id, dst_pool_id FROM migrations WHERE bucket = ? AND split_routing = 1",
+            (body.bucket,),
+        )
+        for row in split:
+            if (row["src_pool_id"], row["dst_pool_id"]) != (body.src_pool_id, body.dst_pool_id):
+                raise HTTPException(
+                    409,
+                    f"Split routing from migration {row['id']} (pool {row['src_pool_id']} → "
+                    f"{row['dst_pool_id']}) is still active for bucket '{body.bucket}'. "
+                    "Finish that move first by migrating between the same two pools.",
+                )
 
         # Resolve vhost inside the same DB context
         bs_rows = await db.execute_fetchall(
@@ -493,4 +508,5 @@ def _to_out(m: dict) -> RcloneMigrationOut:
         orphaned_source_pool_id=m.get("orphaned_source_pool_id"),
         orphaned_source_prefix=m.get("orphaned_source_prefix"),
         orphaned_at=m.get("orphaned_at"),
+        split_routing=bool(m.get("split_routing")),
     )

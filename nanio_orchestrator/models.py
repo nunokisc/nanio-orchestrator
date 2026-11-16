@@ -365,6 +365,7 @@ class RcloneMigrationOut(BaseModel):
     orphaned_source_pool_id: Optional[int] = None
     orphaned_source_prefix: Optional[str] = None
     orphaned_at: Optional[str] = None
+    split_routing: bool = False  # nginx is serving this bucket through the live-migration split
     cascade_warnings: Optional[List[str]] = None
 
 

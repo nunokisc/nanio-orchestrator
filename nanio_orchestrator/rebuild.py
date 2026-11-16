@@ -283,8 +283,8 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
             await db.execute(
                 """INSERT INTO migrations
                    (vhost_id, bucket, src_pool_id, dst_pool_id, phase, mode, route_id,
-                    objects_total, objects_done, bytes_total, bytes_done)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    objects_total, objects_done, bytes_total, bytes_done, split_routing)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     vhost_id_for_migration,
                     state.get("bucket", ""),
@@ -297,6 +297,8 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
                     state.get("copied_objects", 0),
                     state.get("bytes_total", 0),
                     state.get("bytes_transferred", 0),
+                    # Older state files have no split_routing key: fall back to nginx_state
+                    1 if state.get("split_routing", state.get("nginx_state") == "split") else 0,
                 ),
             )
             migration_count += 1

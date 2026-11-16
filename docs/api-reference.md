@@ -267,8 +267,9 @@ rclone-based data migration between pools.
 ### Migration phases
 `pending → copying → write_routing → verifying → switching → done`
 
-The `verifying` phase runs a convergence loop — it copies, checks, and retries while diff count
-decreases. This handles uploads happening during migration.
+`split_routing` on a migration is `true` while nginx serves the bucket through the live-migration
+split. It remains `true` after `error`/`cancelled`; a new migration for that bucket is accepted only
+between the same two pools (`409` otherwise).
 
 ---
 
