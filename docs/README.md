@@ -1,14 +1,15 @@
-# docs/
+# Documentation
 
-This directory contains detailed documentation for nanio-orchestrator.
+| I want to… | Read |
+|------------|------|
+| Install, upgrade or remove it | [installation.md](installation.md) |
+| Understand the settings and secure the panel | [configuration.md](configuration.md) |
+| Manage pools, vhosts, buckets and replicas day to day | [operations.md](operations.md) |
+| Move a bucket to another pool | [migrations.md](migrations.md) |
+| Back up, and recover from a lost database, config or machine | [disaster-recovery.md](disaster-recovery.md) |
+| Fix a specific error | [troubleshooting.md](troubleshooting.md) |
+| Script it | [api-reference.md](api-reference.md) |
+| Know how it works inside | [architecture.md](architecture.md) |
+| Contribute | [contributing.md](contributing.md) |
 
-| File | Contents |
-|------|----------|
-| [installation.md](installation.md) | Installation from PyPI, from source, dev setup, upgrading, uninstalling |
-| [configuration.md](configuration.md) | Full environment variable reference, nginx config layout |
-| [api-reference.md](api-reference.md) | Complete REST API documentation |
-| [architecture.md](architecture.md) | System design, components, security model, drift detection |
-| [contributing.md](contributing.md) | Development workflow, conventions, PR process, release process |
-
-For quick-start instructions see the main [README](../README.md).
-For Claude/AI session operating rules see [CLAUDE.md](../CLAUDE.md).
+Start with the main [README](../README.md) for the five-minute overview.

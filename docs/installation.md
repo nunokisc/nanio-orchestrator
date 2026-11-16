@@ -38,7 +38,7 @@ This performs the following (requires root):
 | Creates dirs | `/opt/nanio-orchestrator/data/`, `/etc/nginx/nanio/pools/`, `/etc/nginx/nanio/vhosts/` |
 | Creates config | `/etc/nanio-orchestrator/config.env` with a generated API key |
 | Creates user | `nanio-orchestrator` system user (no login shell) |
-| Writes sudoers | Allows service user to run `nginx -t` and `nginx -s reload` without password |
+| Writes sudoers | Allows the service user to run `nginx -t`, `nginx -s reload` and restart its own service without a password |
 | Installs systemd | `/etc/systemd/system/nanio-orchestrator.service` |
 | Initialises DB | SQLite schema at `/opt/nanio-orchestrator/data/orchestrator.db` |
 
@@ -137,7 +137,18 @@ pipx upgrade nanio-orchestrator
 uv tool upgrade nanio-orchestrator
 ```
 
-The database schema is migrated automatically on startup — no manual steps needed.
+Then restart the service:
+
+```bash
+sudo systemctl restart nanio-orchestrator
+```
+
+The database schema is upgraded automatically on startup.
+
+A new version may also change how nginx config is generated. Existing files are only rewritten
+when their pool or vhost is saved, so after an upgrade regenerate them once: Web UI → **Config**
+→ *Rebuild All* (or `POST /api/config/rebuild`). Every file is validated with `nginx -t` before
+nginx is reloaded, and the previous files are restored if validation fails.
 
 ### Config file changes
 
