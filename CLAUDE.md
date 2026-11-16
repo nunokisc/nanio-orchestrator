@@ -87,9 +87,14 @@ Sidecars are the source of truth for DB rebuild. **Always update sidecars after 
 Phases: `pending → copying → write_routing → verifying → switching → done`
 Error exits: `error`, `cancelled`
 
-The verifying phase runs a convergence loop (up to `migration_max_copy_passes` passes) that
-copies then checks, retrying while the diff count decreases. This handles the case where
-files are being uploaded during migration.
+From `write_routing` on, nginx serves the bucket through split routing and the **destination is
+authoritative** (writes → dst, reads → dst with 404-fallback to src, DELETE mirrored to src). Rules:
+
+- The split is recorded in `migrations.split_routing`, never derived from the phase. It survives
+  error/cancel/restart/rebuild until a migration between the same two pools finishes the move.
+- Once the split is active every `rclone copy` uses `--update`, and verification is a one-way check
+  that accepts a differing object only if the destination copy is newer. A plain copy or a two-way
+  check here destroys or rejects client writes.
 
 ### DB rebuild
 `POST /api/config/rebuild-from-disk` (or `nanio-orchestrator rebuild`) reconstructs the entire

@@ -131,7 +131,7 @@ Every variable is prefixed with `NANIO_ORCHESTRATOR_`.
 | `MIGRATION_BANDWIDTH_LIMIT` | _(unset)_ | rclone `--bwlimit` value, e.g. `50M` |
 | `MIGRATION_CHECKERS` | `8` | rclone `--checkers` value |
 | `MIGRATION_TRANSFERS` | `4` | rclone `--transfers` value |
-| `MIGRATION_MAX_COPY_PASSES` | `10` | Maximum convergence loop passes during the `copying` phase before entering `write_routing`. |
+| `MIGRATION_MAX_COPY_PASSES` | `10` | Maximum passes in the `copying` phase, and again in the `verifying` phase. |
 | `S3_REQUEST_TIMEOUT` | `3600` | Socket timeout in seconds for S3 HTTP requests. Increase for buckets with very large objects. |
 
 ### Drift Detection
@@ -305,12 +305,14 @@ Full bucket migrations using rclone.
 
 Phases: `pending → copying → write_routing → verifying → switching → done`
 
-- **copying**: rclone copies data in a convergence loop (up to `MIGRATION_MAX_COPY_PASSES` passes). Ends early if counts stabilise across passes.
-- **write_routing**: nginx is reconfigured so writes go directly to the destination pool while reads still come from the source (with 404-fallback to destination). Freezes new writes to the source.
-- **verifying**: a copy→check convergence loop (up to `MIGRATION_MAX_COPY_PASSES` passes). Each pass does a final `rclone copy` followed by `rclone check`. If check passes cleanly the migration proceeds to switching. If differences are still found, the loop retries — this handles buckets that are still receiving uploads during migration. The loop aborts early if the diff count stops decreasing between passes (source diverging faster than rclone can copy).
+- **copying**: rclone copies data in passes (up to `MIGRATION_MAX_COPY_PASSES`) while the source pool keeps serving everything. Ends when the object counts match or the source stops growing.
+- **write_routing**: nginx is switched to split routing and the destination becomes authoritative. Writes go to the destination only; reads try the destination and fall back to the source on 404; `DELETE` is mirrored to the source so the fallback cannot bring a deleted object back. From here on the source receives no new data. This phase is always entered: switching straight from "counts match" would lose an object written between the last check and the switch.
+- **verifying**: each pass runs `rclone copy --update` followed by a one-way `rclone check` (up to `MIGRATION_MAX_COPY_PASSES` passes). `--update` never overwrites a destination object that is newer than its source — that is a client write made during the split. An object that differs is accepted only when the destination copy is newer; a missing or stale object fails the pass. The loop aborts if the number of unresolved objects stops decreasing.
 - **switching**: the nginx route is flipped to the destination pool and the DB is updated atomically. Fails hard if the route cannot be found — no silent data loss. If the source pool has linked `http` pools (via `source_nanio_pool_id`), their vhost routes are also updated to point to the destination pool. Any http vhosts that could not be updated are reported in `swept_http_vhosts` on the migration record.
 - **done**: migration complete. Source data is **never deleted automatically**. The migration record tracks `orphaned_source_pool_id`, `orphaned_source_prefix`, and `orphaned_at` so operators can locate and clean up the source bucket at their own pace.
-- **error** / **cancelled**: terminal failure states.
+- **error** / **cancelled**: terminal failure states. If split routing was already active it **stays active** (`split_routing: true` on the migration), because the destination holds client writes that a source-only route would hide. Start a new migration for the same bucket and the same two pools to finish the move; a migration to any other pool is refused until then.
+
+Known limits of the split: a multi-object delete (`POST ?delete`) is not mirrored to the source, so those objects can reappear until the migration finishes; a multipart upload started before the split fails and must be retried by the client; "newer" is decided by `Last-Modified`, so the storage nodes need synchronised clocks (nanio already requires this for SigV4).
 
 > **Source data is never purged automatically.** When a migration reaches `done`, the orchestrator records where the original data lives (pool + prefix + timestamp). Use `nanio-orchestrator orphaned list` or `GET /api/migrations/orphaned` to review, and delete the source objects manually when ready.
 

@@ -403,6 +403,62 @@ async def get_object(
     return body if status == 200 else None
 
 
+def _head_last_modified(
+    address: str,
+    path: str,
+    access_key: Optional[str],
+    secret_key: Optional[str],
+    region: str,
+) -> Tuple[int, Optional[datetime]]:
+    """Synchronous HEAD — returns (status, Last-Modified as an aware datetime or None)."""
+    from email.utils import parsedate_to_datetime
+
+    host, port = _parse_address(address)
+    full_host = f"{host}:{port}"
+    headers: Dict[str, str] = {"Host": full_host}
+    if access_key and secret_key:
+        headers.update(_make_auth_headers("HEAD", full_host, path, "", b"", access_key, secret_key, region))
+    conn = http.client.HTTPConnection(host, port, timeout=get_settings().s3_request_timeout)
+    try:
+        conn.request("HEAD", urllib.parse.quote(path, safe="/-_.~"), headers=headers)
+        resp = conn.getresponse()
+        resp.read()
+        raw = resp.getheader("Last-Modified")
+        modified = None
+        if raw:
+            try:
+                modified = parsedate_to_datetime(raw)
+                if modified.tzinfo is None:
+                    modified = modified.replace(tzinfo=timezone.utc)
+            except (TypeError, ValueError):
+                modified = None
+        return resp.status, modified
+    finally:
+        conn.close()
+
+
+async def object_last_modified(
+    address: str,
+    bucket: str,
+    key: str,
+    access_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+    region: str = "us-east-1",
+) -> Optional[datetime]:
+    """Return the object's Last-Modified time, or None if it does not exist.
+
+    Raises RuntimeError on any status other than 200/404.
+    """
+    status, modified = await asyncio.to_thread(
+        _head_last_modified, address, f"/{bucket}/{key}", access_key, secret_key, region
+    )
+    if status == 404:
+        return None
+    if status != 200:
+        raise RuntimeError(f"Unexpected HTTP {status} on HEAD {bucket}/{key}")
+    return modified
+
+
 async def delete_object(
     address: str,
     bucket: str,

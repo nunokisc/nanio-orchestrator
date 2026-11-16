@@ -162,14 +162,15 @@ async def generate_vhost_config(vhost_id: int) -> tuple:
         for route in routes:
             route.setdefault("key_prefix", None)
 
-        # Attach live-migration write-routing info: if a migration for this
-        # vhost is in write_routing or verifying phase, client writes must go
-        # directly to the destination pool while reads still come from source.
+        # Attach live-migration split-routing info. The split is driven by the persisted
+        # migrations.split_routing flag, NOT by the phase: once clients have written to the
+        # destination pool the split must survive an error/cancel/restart, otherwise those
+        # objects would silently disappear behind a source-only route.
         mig_rows = await db.execute_fetchall(
             """SELECT m.bucket, m.route_id, p.name AS dst_pool_name
                FROM migrations m
                JOIN pools p ON m.dst_pool_id = p.id
-               WHERE m.vhost_id = ? AND m.phase IN ('write_routing', 'verifying')""",
+               WHERE m.vhost_id = ? AND m.split_routing = 1""",
             (vhost_id,),
         )
         # Build two lookup maps: precise (by route_id) and legacy (by bucket name)

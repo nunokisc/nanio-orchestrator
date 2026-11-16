@@ -103,21 +103,22 @@ pending
   ▼ rclone copy (src → dst, all objects)
 copying
   │
-  ▼ add dedicated route for writes on dst; reads still go to src
+  ▼ split routing: dst authoritative (writes → dst, reads → dst then src on 404, DELETE mirrored)
 write_routing
   │
-  ▼ convergence loop: copy → check → retry while diff > 0
+  ▼ loop: copy --update → one-way check → retry while unresolved objects decrease
 verifying
   │
-  ▼ switch reads to dst; remove live migration split
+  ▼ point the route at dst; remove the split
 switching
   │
   ▼ mark src as orphaned (data still present, tracking added)
 done
 ```
 
-The verifying phase uses a convergence loop (up to `MIGRATION_MAX_COPY_PASSES` iterations)
-to handle files uploaded during migration — it retries as long as the diff count decreases.
+The split is always entered and is stored in `migrations.split_routing` (also in the migration
+state file, so `rebuild-from-disk` restores it). It stays in place if the migration fails or is
+cancelled, until a migration between the same two pools completes.
 
 ### Bucket sync (`bucket_sync.py`)
 
