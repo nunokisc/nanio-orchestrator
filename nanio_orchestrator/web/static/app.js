@@ -282,7 +282,8 @@ async function generateNodeConfig(e) {
         data_dir: form.data_dir.value,
     };
     if (nodeType !== 'nginx-only') {
-        data.nanio_port = parseInt(form.nanio_port.value);
+        data.nanio_port = form.nanio_port.value ? parseInt(form.nanio_port.value) : null;
+        data.nanio_bin = form.nanio_bin.value;
         data.nanio_host = form.nanio_host.value;
         data.nanio_region = form.nanio_region.value;
         data.access_key = form.access_key.value || null;
@@ -301,6 +302,17 @@ async function generateNodeConfig(e) {
             return;
         }
         const result = await res.json();
+
+        const warnDiv = document.getElementById('node-config-warnings');
+        warnDiv.innerHTML = '';
+        for (const w of (result.warnings || [])) {
+            const p = document.createElement('p');
+            p.className = 'badge warn';
+            p.style.display = 'block';
+            p.style.whiteSpace = 'normal';
+            p.textContent = w;
+            warnDiv.appendChild(p);
+        }
 
         // Render files
         const filesDiv = document.getElementById('node-config-files');

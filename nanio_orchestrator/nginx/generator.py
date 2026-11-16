@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -218,61 +219,152 @@ async def generate_all_configs() -> List[tuple]:
 # ── Node config generation ────────────────────────────────────────────────────
 
 
+def _address_port(address: str) -> int:
+    """Port of a `host:port` member address (80 when there is none)."""
+    _, sep, port = address.rpartition(":")
+    return int(port) if sep and port.isdigit() else 80
+
+
 def render_node_config(
     node_type: str,
     member_address: str,
     pool_name: str,
     pool_type: str,
     data_dir: str = "/data",
-    nanio_port: int = 9000,
+    nanio_port: Optional[int] = None,
     nanio_host: str = "0.0.0.0",
     nanio_region: str = "us-east-1",
     access_key: Optional[str] = None,
     secret_key: Optional[str] = None,
-) -> List[Dict[str, str]]:
-    """Render node config files for an upstream member. Returns list of {path, content}."""
+    nanio_bin: str = "/opt/nanio/bin/nanio",
+) -> Dict[str, Any]:
+    """Render everything a storage node needs to serve as `member_address`.
+
+    Returns {"files": [{path, content}], "instructions": str, "warnings": [str]}.
+
+    The gateway sends traffic to the member address, so that port is what must listen on the
+    node: nanio itself for `nanio-only`, nginx for the other two types (with nanio behind it on
+    a loopback port for `nginx-nanio`).
+    """
     env = _get_jinja_env()
+    member_port = _address_port(member_address)
+    warnings: List[str] = []
+
+    if node_type == "nanio-only":
+        if nanio_port is None:
+            nanio_port = member_port
+        elif nanio_port != member_port:
+            warnings.append(
+                f"nanio would listen on port {nanio_port}, but the gateway sends this member's traffic to "
+                f"port {member_port} ({member_address}). Use the same port, or change the member address."
+            )
+    elif node_type == "nginx-nanio":
+        if nanio_port is None:
+            nanio_port = 9000 if member_port != 9000 else 9001
+        if nanio_port == member_port:
+            warnings.append(f"nginx and nanio cannot both listen on port {member_port}. Give nanio a different port.")
+        if nanio_host == "0.0.0.0":
+            nanio_host = "127.0.0.1"  # only the local nginx talks to it
+
+    has_credentials = bool(access_key and secret_key)
+    if node_type != "nginx-only" and not has_credentials:
+        warnings.append(
+            "No credentials given: nanio refuses to start without them. Fill in the [[users]] block of "
+            f"options.toml with the credentials stored for pool '{pool_name}'."
+        )
+
     ctx = dict(
         member_address=member_address,
         pool_name=pool_name,
         pool_type=pool_type,
         data_dir=data_dir,
+        listen_port=member_port,
         nanio_port=nanio_port,
         nanio_host=nanio_host,
         nanio_region=nanio_region,
         access_key=access_key,
         secret_key=secret_key,
+        nanio_bin=nanio_bin,
     )
     files: List[Dict[str, str]] = []
 
     if node_type in ("nanio-only", "nginx-nanio"):
-        # nanio options file
-        tpl = env.get_template("nanio_options.toml.j2")
-        files.append({"path": "/etc/nanio/options.toml", "content": tpl.render(**ctx)})
-        # nanio systemd unit
-        tpl = env.get_template("nanio_service.j2")
-        files.append({"path": "/etc/systemd/system/nanio.service", "content": tpl.render(**ctx)})
+        files.append(
+            {"path": "/etc/nanio/options.toml", "content": env.get_template("nanio_options.toml.j2").render(**ctx)}
+        )
+        files.append(
+            {"path": "/etc/systemd/system/nanio.service", "content": env.get_template("nanio_service.j2").render(**ctx)}
+        )
 
     if node_type == "nginx-only":
-        tpl = env.get_template("node_nginx_http.conf.j2")
-        files.append({"path": "/etc/nginx/conf.d/nanio-serve.conf", "content": tpl.render(**ctx)})
+        files.append(
+            {
+                "path": "/etc/nginx/conf.d/nanio-serve.conf",
+                "content": env.get_template("node_nginx_http.conf.j2").render(**ctx),
+            }
+        )
 
     if node_type == "nginx-nanio":
-        tpl = env.get_template("node_nginx_nanio.conf.j2")
-        files.append({"path": "/etc/nginx/conf.d/nanio-proxy.conf", "content": tpl.render(**ctx)})
-
-    return files
-
-
-def node_config_instructions(node_type: str) -> str:
-    """Return human-readable instructions for applying node config."""
-    if node_type == "nanio-only":
-        return "Copy each file to the node and run:\n  systemctl daemon-reload && systemctl enable --now nanio"
-    elif node_type == "nginx-only":
-        return "Copy the nginx config to the node and run:\n  nginx -t && systemctl reload nginx"
-    else:  # nginx-nanio
-        return (
-            "Copy all files to the node and run:\n"
-            "  systemctl daemon-reload && systemctl enable --now nanio\n"
-            "  nginx -t && systemctl reload nginx"
+        files.append(
+            {
+                "path": "/etc/nginx/conf.d/nanio-proxy.conf",
+                "content": env.get_template("node_nginx_nanio.conf.j2").render(**ctx),
+            }
         )
+
+    return {"files": files, "instructions": _node_instructions(node_type, ctx), "warnings": warnings}
+
+
+def _node_instructions(node_type: str, ctx: Dict[str, Any]) -> str:
+    """Step-by-step setup of the node, in the order the commands have to run."""
+    nanio_steps = f"""\
+1. Install nanio (needs Python 3.11 or newer) and create its user:
+     python3 -m venv {os.path.dirname(os.path.dirname(ctx["nanio_bin"]))}
+     {os.path.dirname(ctx["nanio_bin"])}/pip install nanio
+     useradd --system --no-create-home --shell /usr/sbin/nologin nanio
+
+2. Data directory. Every member of pool '{ctx["pool_name"]}' must see the same files here
+   (shared storage); mount it before going on.
+     mkdir -p {ctx["data_dir"]}
+     chown nanio:nanio {ctx["data_dir"]}
+
+3. Copy the generated files, then protect the one holding the secret key:
+     mkdir -p /etc/nanio
+     chown root:nanio /etc/nanio/options.toml
+     chmod 640 /etc/nanio/options.toml
+
+4. Start it:
+     systemctl daemon-reload
+     systemctl enable --now nanio
+     systemctl status nanio
+"""
+    nginx_step = """\
+{n}. Load the nginx server block:
+     nginx -t && systemctl reload nginx
+"""
+    check = f"""\
+{{n}}. Check from the gateway machine that the node answers on the member address:
+     curl -i http://{ctx["member_address"]}/
+   {{expect}}
+"""
+    if node_type == "nanio-only":
+        return nanio_steps + check.format(n=5, expect="nanio replies 403 (it wants a signed request): the node is up.")
+    if node_type == "nginx-nanio":
+        return (
+            nanio_steps
+            + nginx_step.format(n=5)
+            + check.format(n=6, expect="nanio replies 403 through nginx (it wants a signed request): the node is up.")
+        )
+    return f"""\
+1. The data directory must hold the same files as the nanio pool this pool serves (a replica
+   kept in sync by rsync/lsyncd, or the same shared storage), readable by nginx:
+     ls {ctx["data_dir"]}
+
+2. Copy the generated server block, then load it:
+     nginx -t && systemctl reload nginx
+
+3. Check from the gateway machine:
+     curl -I http://{ctx["member_address"]}/<bucket>/<object>
+   Expect 200 for an existing object. Requests are not authenticated: restrict access with the
+   vhost IP rules on the gateway if the content is not public.
+"""

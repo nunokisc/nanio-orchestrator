@@ -436,14 +436,21 @@ class NodeConfigFile(BaseModel):
     content: str
 
 
+_NODE_PATH_RE = r"^/[A-Za-z0-9._/-]+$"
+# Values land inside quoted TOML strings: no quotes, backslashes or control characters.
+_NODE_SECRET_RE = r"^[^\"\\\x00-\x1f\x7f]+$"
+
+
 class NodeConfigRequest(BaseModel):
     node_type: str = Field(..., pattern=r"^(nanio-only|nginx-only|nginx-nanio)$")
-    data_dir: str = Field("/data")
-    nanio_port: int = Field(9000, ge=1, le=65535)
-    nanio_host: str = Field("0.0.0.0")
-    nanio_region: str = Field("us-east-1")
-    access_key: Optional[str] = None
-    secret_key: Optional[str] = None
+    data_dir: str = Field("/data", pattern=_NODE_PATH_RE)
+    # None = derive from the member address (see render_node_config)
+    nanio_port: Optional[int] = Field(None, ge=1, le=65535)
+    nanio_host: str = Field("0.0.0.0", pattern=r"^[A-Za-z0-9.:-]+$")
+    nanio_region: str = Field("us-east-1", pattern=r"^[A-Za-z0-9-]+$")
+    access_key: Optional[str] = Field(None, pattern=_NODE_SECRET_RE)
+    secret_key: Optional[str] = Field(None, pattern=_NODE_SECRET_RE)
+    nanio_bin: str = Field("/opt/nanio/bin/nanio", pattern=_NODE_PATH_RE)
 
 
 class NodeConfigOut(BaseModel):
@@ -451,6 +458,7 @@ class NodeConfigOut(BaseModel):
     member_address: str
     files: List[NodeConfigFile]
     instructions: str
+    warnings: List[str] = []
 
 
 # ── Audit ─────────────────────────────────────────────────────────────────────
