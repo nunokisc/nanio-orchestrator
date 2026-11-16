@@ -1,11 +1,29 @@
 """rclone-based migration engine with state machine and crash recovery.
 
 State machine phases:
-  pending → copying (convergence loop) → write_routing → verifying → switching → done
-                                       ↗ (skips write_routing if counts converged in copying)
-                                           → error
+  pending → copying (bulk passes) → write_routing → verifying → switching → done
   Any phase can transition to 'error' or 'cancelled'.
-  write_routing: nginx routes writes to dst pool; reads still come from src with 404-fallback.
+
+Data-safety model
+  copying        The source pool serves everything. rclone copies in passes until the object
+                 counts match or the source stops growing.
+  write_routing  nginx is switched to split routing and the destination becomes authoritative:
+                 writes go to the destination only, reads try the destination and fall back to
+                 the source on 404, DELETEs are mirrored to the source. From here on the source
+                 receives no new data. The split is ALWAYS entered — switching straight from
+                 "counts match" would lose any object written between the last check and the
+                 switch.
+  verifying      rclone copy --update (never overwrite a destination object that is newer than
+                 the source — that is a client write made during the split) followed by a
+                 one-way check. A differing object is accepted only when the destination copy
+                 is newer than the source copy.
+  switching      The route is pointed at the destination and the split is removed.
+
+  The split is recorded in migrations.split_routing, not derived from the phase: if the migration
+  fails or is cancelled after clients have written to the destination, the split stays in place
+  (regenerating the vhost keeps it) until a new migration for the same bucket and pools finishes
+  the job. Removing it would hide those objects behind a source-only route.
+
   On done, orphaned_source_pool_id/prefix/at are recorded — the source data is NEVER deleted
   automatically; that is the exclusive responsibility of the human operator.
 
@@ -30,7 +48,13 @@ from nanio_orchestrator.credentials import get_pool_credentials, get_pool_s3_par
 from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator.nginx.apply import apply_config_file
 from nanio_orchestrator.nginx.generator import generate_vhost_config, record_file_state
-from nanio_orchestrator.s3client import bucket_exists, bucket_has_objects, count_objects, create_bucket
+from nanio_orchestrator.s3client import (
+    bucket_exists,
+    bucket_has_objects,
+    count_objects,
+    create_bucket,
+    object_last_modified,
+)
 from nanio_orchestrator.sidecar import (
     delete_migration_state,
     write_migration_completion,
@@ -402,15 +426,29 @@ async def _set_phase(migration_id: int, phase: str, error_msg: Optional[str] = N
             await db.execute("UPDATE migrations SET phase=? WHERE id=?", (phase, migration_id))
         await db.commit()
 
-        # Write migration state sidecar (for rebuild recovery)
-        if phase not in ("done", "cancelled"):
+        split_rows = await db.execute_fetchall("SELECT split_routing FROM migrations WHERE id = ?", (migration_id,))
+        split_active = bool(split_rows and split_rows[0]["split_routing"])
+
+        # Write migration state sidecar (for rebuild recovery). A cancelled migration normally
+        # has nothing left to recover, unless its split routing is still serving traffic.
+        keep_state = phase != "done" and (phase != "cancelled" or split_active)
+        if keep_state:
             await _write_state_sidecar(migration_id, db)
 
     # Delete outside the DB context: the commit is durable at this point.
     # A crash between commit and here leaves a stale state file, which rebuild
     # will re-import as pending — safe because the migration is terminal in the DB.
-    if phase in ("done", "cancelled"):
+    if not keep_state:
         delete_migration_state(migration_id)
+
+    if phase in ("error", "cancelled") and split_active:
+        await _log(
+            migration_id,
+            phase,
+            "Split routing stays active: clients keep writing to the destination pool and reading "
+            "from it with a fallback to the source, so no object becomes unreachable. Start a new "
+            "migration for the same bucket and pools to finish the move.",
+        )
 
 
 async def _write_state_sidecar(migration_id: int, db) -> None:
@@ -443,11 +481,12 @@ async def _write_state_sidecar(migration_id: int, db) -> None:
         "bytes_total": m["bytes_total"],
         "started_at": m.get("started_at"),
         "finished_at": m.get("finished_at"),
+        "split_routing": bool(m.get("split_routing")),
         "nginx_state": (
-            "source"
+            "split"
+            if m.get("split_routing") or m["phase"] in ("write_routing", "verifying")
+            else "source"
             if m["phase"] in ("pending", "copying")
-            else "split"
-            if m["phase"] in ("write_routing", "verifying")
             else "target"
         ),
     }
@@ -481,8 +520,14 @@ async def _run_rclone(
     dst_remote: str,
     phase: str,
     check_only: bool = False,
+    update: bool = False,
 ) -> bool:
-    """Run rclone copy or check. Returns True on success."""
+    """Run rclone copy or check. Returns True on success.
+
+    update=True adds --update: a destination object newer than its source is left alone.
+    Required as soon as split routing is active, because the destination then holds client
+    writes that a plain copy would overwrite with the older source version.
+    """
     s = get_settings()
     cmd = [s.rclone_path]
 
@@ -507,6 +552,9 @@ async def _run_rclone(
 
     if s.migration_bandwidth_limit and not check_only:
         cmd += ["--bwlimit", s.migration_bandwidth_limit]
+
+    if update and not check_only:
+        cmd += ["--update"]
 
     await _log(migration_id, phase, f"Running: {' '.join(cmd)}")
     logger.info("migration %d [%s]: starting rclone %s → %s", migration_id, phase, src_remote, dst_remote)
@@ -588,19 +636,37 @@ async def _run_rclone_check(
     config_path: str,
     src_remote: str,
     dst_remote: str,
-) -> tuple[bool, int]:
-    """Run rclone check. Returns (ok, diff_count).
+) -> tuple[bool, int, Optional[Dict[str, list]]]:
+    """Run a one-way rclone check: every source object must exist, identical, at the destination.
 
-    diff_count is the number of differences reported by rclone check, parsed from
-    the NOTICE output line "N differences found".  Returns 0 if check passes or if
-    the count cannot be parsed.
+    One-way because during split routing the destination legitimately holds objects the source
+    never had (written by clients after the split).
+
+    Returns (ok, diff_count, report). diff_count is parsed from the "N differences found" line
+    (0 if the check passes or the count cannot be parsed). report maps "differ" / "missing" /
+    "error" to the object keys rclone listed in each category, or is None when the report files
+    could not be read.
     """
     s = get_settings()
+    report_dir = os.path.dirname(config_path)
+    report_paths = {name: os.path.join(report_dir, f"check-{name}.txt") for name in ("differ", "missing", "error")}
+    for path in report_paths.values():
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
     cmd = [
         s.rclone_path,
         "check",
         src_remote,
         dst_remote,
+        "--one-way",
+        "--differ",
+        report_paths["differ"],
+        "--missing-on-dst",
+        report_paths["missing"],
+        "--error",
+        report_paths["error"],
         "--config",
         config_path,
         "--checkers",
@@ -658,7 +724,7 @@ async def _run_rclone_check(
         if proc.returncode == 0:
             logger.info("migration %d [verifying]: rclone check passed", migration_id)
             await _log(migration_id, "verifying", "rclone check completed successfully")
-            return True, 0
+            return True, 0, None
         else:
             logger.warning(
                 "migration %d [verifying]: rclone check exit code %d, diffs=%d",
@@ -669,14 +735,82 @@ async def _run_rclone_check(
             await _log(
                 migration_id, "verifying", f"rclone check exit code {proc.returncode} — {diff_count} difference(s)"
             )
-            return False, diff_count
+            return False, diff_count, _read_check_report(report_paths)
 
     except FileNotFoundError:
         await _log(migration_id, "verifying", f"rclone binary not found at: {s.rclone_path}")
-        return False, 0
+        return False, 0, None
     except Exception as e:
         await _log(migration_id, "verifying", f"rclone check error: {e}")
-        return False, 0
+        return False, 0, None
+
+
+def _read_check_report(report_paths: Dict[str, str]) -> Optional[Dict[str, list]]:
+    """Read the key lists written by rclone check. None if any of them is unreadable."""
+    report: Dict[str, list] = {}
+    try:
+        for name, path in report_paths.items():
+            with open(path, encoding="utf-8") as f:
+                report[name] = [line.rstrip("\n") for line in f if line.strip()]
+    except OSError:
+        return None
+    return report
+
+
+async def _verify_destination(
+    migration_id: int,
+    config_path: str,
+    src_remote: str,
+    dst_remote: str,
+    bucket: str,
+    src_pool_id: int,
+    dst_pool_id: int,
+) -> tuple[bool, int]:
+    """Verify that the destination holds everything the source has. Returns (ok, unresolved).
+
+    A source object missing from the destination, or unreadable, is always a failure. An object
+    that differs is accepted only when the destination copy is strictly newer than the source
+    copy: that is a client write made while split routing was active, and it must win. Anything
+    else is counted in `unresolved`, which the caller uses to decide whether another pass helps.
+    """
+    check_ok, diff_count, report = await _run_rclone_check(migration_id, config_path, src_remote, dst_remote)
+    if check_ok:
+        return True, 0
+    if report is None or report["missing"] or report["error"] or not report["differ"]:
+        return False, diff_count
+
+    src_addr = await _first_member_endpoint(src_pool_id)
+    dst_addr = await _first_member_endpoint(dst_pool_id)
+    if not src_addr or not dst_addr:
+        return False, diff_count
+    src_ak, src_sk, _ = await get_pool_s3_params(src_pool_id)
+    dst_ak, dst_sk, _ = await get_pool_s3_params(dst_pool_id)
+
+    stale = []
+    for key in report["differ"]:
+        try:
+            src_time = await object_last_modified(src_addr, bucket, key, access_key=src_ak, secret_key=src_sk)
+            dst_time = await object_last_modified(dst_addr, bucket, key, access_key=dst_ak, secret_key=dst_sk)
+        except Exception as exc:
+            await _log(migration_id, "verifying", f"Could not compare '{key}' on both pools: {exc}")
+            stale.append(key)
+            continue
+        if src_time is None or dst_time is None or dst_time <= src_time:
+            stale.append(key)
+
+    newer = len(report["differ"]) - len(stale)
+    if newer:
+        await _log(
+            migration_id,
+            "verifying",
+            f"{newer} object(s) differ because clients overwrote them on the destination during "
+            "split routing — the destination version is newer and is kept",
+        )
+    if stale:
+        sample = ", ".join(stale[:5])
+        await _log(migration_id, "verifying", f"{len(stale)} object(s) at the destination are stale: {sample}")
+        return False, len(stale)
+    return True, 0
 
 
 # Matches rclone stats lines such as:
@@ -737,6 +871,9 @@ async def run_migration(migration_id: int) -> None:
         dst_pool_id = m["dst_pool_id"]
         mode = m.get("mode", "copy")
         route_id = m.get("route_id")  # may be None for legacy migrations
+        # True once nginx routes this bucket through the split (set below, or inherited from
+        # an interrupted run of this migration).
+        split_active = bool(m.get("split_routing"))
 
         # ── Safety: refuse if source and destination are the same pool ────
         if src_pool_id == dst_pool_id:
@@ -761,6 +898,43 @@ async def run_migration(migration_id: int) -> None:
             await _log(migration_id, "error", msg)
             await _set_phase(migration_id, "error", msg)
             return
+
+        # ── Safety: a previous migration may have left split routing in place ──
+        # The destination then already holds client writes. Finishing the same move is fine
+        # (and takes over the split); pointing the bucket anywhere else is not.
+        async with get_db_ctx() as db:
+            prior_rows = await db.execute_fetchall(
+                """SELECT id, src_pool_id, dst_pool_id FROM migrations
+                   WHERE vhost_id = ? AND bucket = ? AND split_routing = 1 AND id != ?""",
+                (m["vhost_id"], bucket, migration_id),
+            )
+            prior = [dict(r) for r in prior_rows]
+            mismatched = [p for p in prior if (p["src_pool_id"], p["dst_pool_id"]) != (src_pool_id, dst_pool_id)]
+            if prior and not mismatched:
+                await db.execute(
+                    f"UPDATE migrations SET split_routing = 0 WHERE id IN ({','.join('?' * len(prior))})",
+                    [p["id"] for p in prior],
+                )
+                await db.execute("UPDATE migrations SET split_routing = 1 WHERE id = ?", (migration_id,))
+                await db.commit()
+        if mismatched:
+            msg = (
+                f"Split routing from migration {mismatched[0]['id']} (pool {mismatched[0]['src_pool_id']} → "
+                f"{mismatched[0]['dst_pool_id']}) is still active for bucket '{bucket}'. Finish that move "
+                "first by migrating the bucket between the same two pools."
+            )
+            logger.error("Migration %d aborted: %s", migration_id, msg)
+            await _log(migration_id, "error", msg)
+            await _set_phase(migration_id, "error", msg)
+            return
+        if prior:
+            split_active = True
+            await _log(
+                migration_id,
+                "copying",
+                f"Taking over split routing left by migration {prior[0]['id']} — the destination already "
+                "holds client writes, every copy pass uses --update",
+            )
 
         # Generate rclone config
         config_content = await _build_rclone_config(src_pool_id, dst_pool_id)
@@ -868,7 +1042,7 @@ async def run_migration(migration_id: int) -> None:
         for pass_num in range(1, s.migration_max_copy_passes + 1):
             pass_label = f"pass {pass_num}/{s.migration_max_copy_passes}"
             await _log(migration_id, "copying", f"Starting rclone copy {pass_label}: {src_remote} → {dst_remote}")
-            ok = await _run_rclone(migration_id, config_path, src_remote, dst_remote, "copying")
+            ok = await _run_rclone(migration_id, config_path, src_remote, dst_remote, "copying", update=split_active)
             if not ok:
                 await _set_phase(migration_id, "error", f"rclone copy failed ({pass_label})")
                 return
@@ -886,9 +1060,7 @@ async def run_migration(migration_id: int) -> None:
                         migration_id, "copying", f"{pass_label}: src={src_count} objects, dst={dst_count} objects"
                     )
                     if src_count == dst_count:
-                        await _log(
-                            migration_id, "copying", f"Converged after {pass_num} pass(es) — skipping write-routing"
-                        )
+                        await _log(migration_id, "copying", f"Converged after {pass_num} pass(es)")
                         converged = True
                         break
                     if src_count == prev_src_count:
@@ -909,14 +1081,19 @@ async def run_migration(migration_id: int) -> None:
             )
 
         # ── Phase: write_routing ───────────────────────────────────────
-        # nginx routes client writes (PUT/POST/DELETE) directly to the dst
-        # pool.  Reads still come from source with a 404-fallback to dst.
-        # The source is frozen for new objects from this point on.
-        if not converged:
+        # Always entered, even when the counts already match: without the split, an object
+        # written to the source between the final check and the switch would be left behind.
+        # From here on the destination is authoritative and the source receives no new data.
+        if not split_active:
             await _set_phase(migration_id, "write_routing")
             await _log(
-                migration_id, "write_routing", "nginx: writes → dst pool | reads → src pool (404-fallback to dst)"
+                migration_id,
+                "write_routing",
+                "nginx: writes → dst pool | reads → dst pool (404-fallback to src) | DELETE mirrored to src",
             )
+            async with get_db_ctx() as db:
+                await db.execute("UPDATE migrations SET split_routing = 1 WHERE id = ?", (migration_id,))
+                await db.commit()
             vhost_id = m["vhost_id"]
             filepath, content_ng = await generate_vhost_config(vhost_id)
             wr_result = await apply_config_file(filepath, content_ng, reload=True)
@@ -924,10 +1101,15 @@ async def run_migration(migration_id: int) -> None:
                 async with get_db_ctx() as db:
                     await record_file_state(db, filepath, content_ng)
                     await db.commit()
+                split_active = True
                 await _log(migration_id, "write_routing", "nginx reloaded with write-routing split config")
                 # Cascade write-routing to linked http vhosts
                 await _cascade_http_write_routing(migration_id, bucket, src_pool_id, dst_pool_id)
             else:
+                # The previous config file is back in place — the split never went live
+                async with get_db_ctx() as db:
+                    await db.execute("UPDATE migrations SET split_routing = 0 WHERE id = ?", (migration_id,))
+                    await db.commit()
                 await _log(
                     migration_id,
                     "write_routing",
@@ -940,13 +1122,10 @@ async def run_migration(migration_id: int) -> None:
                 return
 
         # ── Phase: verifying ──────────────────────────────────────────
-        # Source may still be receiving writes (not frozen — write-routing was skipped
-        # when counts converged early).  We run copy → check in a loop until check
-        # passes cleanly, or until diff_count stops shrinking (genuinely stuck).
-        #
-        # This handles the common case where an upload is in progress during
-        # migration: rclone check would see a size mismatch on the in-flight file,
-        # but a subsequent copy + check picks it up once the upload completes.
+        # Split routing is active: the source is frozen and the destination may hold client
+        # writes. Each pass copies with --update (never overwriting a newer destination object)
+        # and then verifies. Passes repeat while the number of unresolved objects shrinks, which
+        # covers an upload that was still in flight to the source when the split went live.
         await _set_phase(migration_id, "verifying")
         s_verify = get_settings()
         max_verify_passes = s_verify.migration_max_copy_passes
@@ -955,15 +1134,19 @@ async def run_migration(migration_id: int) -> None:
         for verify_pass in range(1, max_verify_passes + 1):
             await _log(migration_id, "verifying", f"Verify pass {verify_pass}/{max_verify_passes}: copy then check")
 
-            ok = await _run_rclone(migration_id, config_path, src_remote, dst_remote, "verifying")
+            ok = await _run_rclone(migration_id, config_path, src_remote, dst_remote, "verifying", update=True)
             if not ok:
                 await _set_phase(migration_id, "error", f"Verify pass {verify_pass}: copy step failed")
                 return
 
-            await _log(migration_id, "verifying", f"Verify pass {verify_pass}: rclone check — verifying src == dst")
-            check_ok, diff_count = await _run_rclone_check(migration_id, config_path, src_remote, dst_remote)
+            await _log(
+                migration_id, "verifying", f"Verify pass {verify_pass}: rclone check — every source object at dst"
+            )
+            check_ok, diff_count = await _verify_destination(
+                migration_id, config_path, src_remote, dst_remote, bucket, src_pool_id, dst_pool_id
+            )
             if check_ok:
-                await _log(migration_id, "verifying", f"Verify pass {verify_pass}: check passed — src == dst")
+                await _log(migration_id, "verifying", f"Verify pass {verify_pass}: check passed — dst holds all of src")
                 break
 
             await _log(
@@ -1038,6 +1221,7 @@ async def run_migration(migration_id: int) -> None:
                    WHERE vhost_id = ? AND bucket = ?""",
                 (dst_pool_id, vhost_id, bucket),
             )
+            await db.execute("UPDATE migrations SET split_routing = 0 WHERE id = ?", (migration_id,))
             await db.commit()
 
         # Regenerate nginx config (write_routing split is no longer needed)
@@ -1077,6 +1261,7 @@ async def run_migration(migration_id: int) -> None:
                        WHERE vhost_id = ? AND bucket = ?""",
                     (vhost_id, bucket),
                 )
+                await db.execute("UPDATE migrations SET split_routing = 1 WHERE id = ?", (migration_id,))
                 await db.commit()
             await _set_phase(
                 migration_id, "error", f"nginx {sw_result.stage} failed during switching: {sw_result.output}"

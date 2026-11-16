@@ -81,10 +81,11 @@ def _make_rclone_mock(returncode: int = 0):
 class TestConvergenceLoop:
     """Tests for the copying-phase convergence loop."""
 
-    async def test_converges_on_first_pass_skips_write_routing(
+    async def test_converged_migration_still_enters_split_routing(
         self, client, mock_nginx, mock_rclone, mock_s3
     ):
-        """When src_count == dst_count after the first copy, write_routing is skipped."""
+        """Matching counts end the bulk passes, but the split is still entered: switching straight
+        away would lose an object written between the last check and the switch."""
         src = await create_pool(client, "conv-src-1")
         await create_member(client, src["id"], "10.0.0.1:9000")
         dst = await create_pool(client, "conv-dst-1")
@@ -112,13 +113,20 @@ class TestConvergenceLoop:
         log_resp = await client.get(f"/api/migrations/{mig_id}/log")
         log_lines = [e["message"] for e in log_resp.json()]
 
-        # Should mention convergence
-        assert any("skipping write-routing" in m.lower() or "converged" in m.lower()
-                   for m in log_lines), f"No convergence message in: {log_lines}"
+        assert any("converged" in m.lower() for m in log_lines), f"No convergence message in: {log_lines}"
+        assert any("write-routing split" in m.lower() for m in log_lines), f"Split not entered: {log_lines}"
 
-        # write_routing phase should NOT appear in any log line
-        assert not any("write_routing" in m.lower() or "write-routing split" in m.lower()
-                       for m in log_lines), f"Unexpected write_routing log: {log_lines}"
+        # Bulk passes run before the split and may overwrite; once the destination can hold
+        # client writes every copy must use --update.
+        copies = [m for m in reversed(log_lines) if m.startswith("Running: rclone copy")]
+        assert len(copies) == 2, copies
+        assert "--update" not in copies[0]
+        assert "--update" in copies[1]
+        checks = [m for m in log_lines if m.startswith("Running: rclone check")]
+        assert checks and all("--one-way" in m for m in checks)
+
+        mig = (await client.get(f"/api/migrations/{mig_id}")).json()
+        assert mig["phase"] == "done" and mig["split_routing"] is False
 
     async def test_multiple_passes_before_convergence(
         self, client, mock_nginx, mock_rclone, mock_s3
@@ -422,7 +430,8 @@ class TestNginxStateSidecar:
                    side_effect=capture):
             async with get_db_ctx() as db:
                 await db.execute(
-                    "UPDATE migrations SET phase=? WHERE id=?", (phase, migration_id)
+                    "UPDATE migrations SET phase=?, split_routing=? WHERE id=?",
+                    (phase, 1 if phase in ("write_routing", "verifying") else 0, migration_id),
                 )
                 await db.commit()
                 await _write_state_sidecar(migration_id, db)
@@ -555,8 +564,8 @@ class TestGeneratorMigrationMap:
         async with get_db_ctx() as db:
             await db.execute(
                 """INSERT INTO migrations
-                   (vhost_id, bucket, src_pool_id, dst_pool_id, phase, mode)
-                   VALUES (?, ?, ?, ?, 'write_routing', 'copy')""",
+                   (vhost_id, bucket, src_pool_id, dst_pool_id, phase, mode, split_routing)
+                   VALUES (?, ?, ?, ?, 'write_routing', 'copy', 1)""",
                 (vhost_id, "wr-bk2", src_id, dst_id),
             )
             await db.commit()
@@ -564,7 +573,7 @@ class TestGeneratorMigrationMap:
         _, content = await generate_vhost_config(vhost_id)
 
         assert "@nanio_mig_" in content, f"Expected split block in:\n{content}"
-        assert "error_page 418" in content, f"Expected 418 error_page in:\n{content}"
+        assert "error_page 404 = @nanio_mig_" in content, f"Expected source fallback in:\n{content}"
         assert dst_name in content, f"Expected dst pool name '{dst_name}' in:\n{content}"
         # Source pool (read path) should also be in the location block
         assert "wr-gsrc" in content
@@ -583,8 +592,8 @@ class TestGeneratorMigrationMap:
         async with get_db_ctx() as db:
             await db.execute(
                 """INSERT INTO migrations
-                   (vhost_id, bucket, src_pool_id, dst_pool_id, phase, mode)
-                   VALUES (?, ?, ?, ?, 'verifying', 'copy')""",
+                   (vhost_id, bucket, src_pool_id, dst_pool_id, phase, mode, split_routing)
+                   VALUES (?, ?, ?, ?, 'verifying', 'copy', 1)""",
                 (vhost_id, "ver-bk", src_id, dst_id),
             )
             await db.commit()
@@ -592,7 +601,7 @@ class TestGeneratorMigrationMap:
         _, content = await generate_vhost_config(vhost_id)
 
         assert "@nanio_mig_" in content
-        assert "error_page 418" in content
+        assert "error_page 404 = @nanio_mig_" in content
         assert dst_name in content
 
     async def test_no_split_for_copying_phase_migration(
@@ -659,33 +668,74 @@ class TestVhostTemplateSplitRouting:
         assert "@nanio_mig_" not in content
         assert "error_page 418" not in content
 
-    def test_split_route_emits_418_and_named_location(self):
+    def test_split_route_makes_destination_authoritative(self):
         routes = [{
             "id": 7,
             "path_prefix": "/migbucket/",
-            "pool_name": "src-pool",     # reads come from source
+            "pool_name": "src-pool",
             "enabled": True,
             "key_prefix": None,
             "extra_directives": None,
             "migration_dst_pool_name": "dst-pool",
         }]
         content = self._render(routes)
+        main, fallback, mirror = (
+            content.split("location /migbucket/ {")[1].split("}")[0],
+            content.split("location @nanio_mig_7 {")[1].split("location")[0],
+            content.split("location = /__nanio_mig_7_delete {")[1],
+        )
 
-        # The primary location routes reads to src-pool
-        assert "proxy_pass         http://src-pool" in content
+        # Everything goes to the destination first; nothing sends writes to the source
+        assert "proxy_pass         http://dst-pool" in main
+        assert "src-pool" not in main.replace("(src-pool)", "")
+        assert "return 418" not in content
 
-        # 418 trick routes writes to dst-pool
-        assert "error_page 418 = @nanio_mig_7" in content
-        assert "$request_method !~ ^(GET|HEAD|OPTIONS)$" in content
-        assert "return 418" in content
+        # Reads fall back to the source on 404 — and only reads
+        assert "proxy_intercept_errors on" in main
+        assert "error_page 404 = @nanio_mig_7" in main
+        assert "if ($request_method !~ ^(GET|HEAD)$) { return 404; }" in fallback
+        assert "proxy_pass         http://src-pool" in fallback
 
-        # 404 fallback keeps newly-uploaded files visible
-        assert "error_page 404 = @nanio_mig_7" in content
-        assert "proxy_intercept_errors on" in content
+        # DELETEs are mirrored to the source so the fallback cannot resurrect the object
+        assert "mirror /__nanio_mig_7_delete;" in main
+        assert "mirror_request_body off;" in main  # keeps streaming uploads unbuffered
+        assert "internal;" in mirror
+        assert "if ($request_method != DELETE) { return 204; }" in mirror
+        assert "proxy_pass         http://src-pool$request_uri;" in mirror
 
-        # Named location sends to dst-pool
-        assert "location @nanio_mig_7 {" in content
-        assert "proxy_pass         http://dst-pool" in content
+    def test_host_header_keeps_the_port_the_client_signed(self):
+        """SigV4 signs the Host header as sent; $host drops a non-default port and breaks it."""
+        routes = [{
+            "id": 1, "path_prefix": "/", "pool_name": "pool-a", "enabled": True,
+            "key_prefix": None, "extra_directives": None, "migration_dst_pool_name": None,
+        }]
+        content = self._render(routes)
+        assert "proxy_set_header   Host              $http_host;" in content
+        assert "$host;" not in content
+
+    def test_bucket_route_also_matches_requests_without_trailing_slash(self):
+        """`GET /bucket?list-type=2` has no trailing slash; with only `location /bucket/` nginx
+        answers it with a 301 instead of proxying (verified against real nginx)."""
+        def route(i, prefix, key_prefix=None):
+            return {"id": i, "path_prefix": prefix, "pool_name": "pool-b", "enabled": True,
+                    "key_prefix": key_prefix, "extra_directives": None, "migration_dst_pool_name": None}
+
+        content = self._render([route(1, "/"), route(2, "/photos/"), route(3, "/a/b/"), route(4, "/kp/", "x/")])
+
+        assert "location = /photos {" in content
+        exact = content.split("location = /photos {")[1].split("}")[0]
+        assert "proxy_pass         http://pool-b;" in exact
+        # Only plain single-segment bucket routes get one
+        assert content.count("location = ") == 1
+
+    def test_bucket_exact_location_follows_split_routing(self):
+        routes = [{"id": 5, "path_prefix": "/moving/", "pool_name": "src-pool", "enabled": True,
+                   "key_prefix": None, "extra_directives": None, "migration_dst_pool_name": "dst-pool"}]
+        content = self._render(routes)
+        exact = content.split("location = /moving {")[1].split("}")[0]
+        assert "proxy_pass         http://dst-pool;" in exact
+        assert "error_page 404 = @nanio_mig_5;" in exact
+        assert "mirror /__nanio_mig_5_delete;" in exact
 
     def test_multiple_routes_each_get_named_location(self):
         routes = [
@@ -741,7 +791,7 @@ class TestVhostTemplateSplitRouting:
         content = self._render(routes)
         # Split routing takes precedence; no rewrite directive should appear
         assert "rewrite" not in content
-        assert "error_page 418 = @nanio_mig_3" in content
+        assert "error_page 404 = @nanio_mig_3" in content
 
     def test_split_comment_mentions_live_migration(self):
         routes = [{

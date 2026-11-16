@@ -146,6 +146,7 @@ CREATE TABLE IF NOT EXISTS migrations (
     orphaned_source_pool_id INTEGER REFERENCES pools(id),
     orphaned_source_prefix  TEXT,
     orphaned_at             TEXT,
+    split_routing           INTEGER NOT NULL DEFAULT 0,
     created_at              TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -379,6 +380,14 @@ async def _run_migrations_async(db) -> None:
         await db.commit()
         await db.execute("PRAGMA foreign_keys=ON")
 
+    # migrations.split_routing (live-migration split persisted independently of the phase)
+    info = await db.execute_fetchall("PRAGMA table_info(migrations)")
+    if "split_routing" not in {r["name"] for r in info}:
+        await db.execute("ALTER TABLE migrations ADD COLUMN split_routing INTEGER NOT NULL DEFAULT 0")
+        # Before this column existed the split was implied by these two phases
+        await db.execute("UPDATE migrations SET split_routing = 1 WHERE phase IN ('write_routing', 'verifying')")
+        await db.commit()
+
 
 def init_db_sync() -> None:
     """Synchronous schema creation for CLI / install commands."""
@@ -500,5 +509,11 @@ def init_db_sync() -> None:
         conn.execute("ALTER TABLE node_configs_new RENAME TO node_configs")
         conn.commit()
         conn.execute("PRAGMA foreign_keys=ON")
+
+    # migrations.split_routing (live-migration split persisted independently of the phase)
+    info = conn.execute("PRAGMA table_info(migrations)").fetchall()
+    if "split_routing" not in {r[1] for r in info}:
+        conn.execute("ALTER TABLE migrations ADD COLUMN split_routing INTEGER NOT NULL DEFAULT 0")
+        conn.execute("UPDATE migrations SET split_routing = 1 WHERE phase IN ('write_routing', 'verifying')")
     conn.commit()
     conn.close()

@@ -54,7 +54,7 @@ nanio_orchestrator/
     ├── static/         # app.js, style.css
     └── templates/      # HTML templates (base.html, vhosts.html, …)
 
-tests/                  # pytest suite (211 tests, asyncio_mode=auto)
+tests/                  # pytest suite (asyncio_mode=auto)
 docs/                   # Detailed documentation
 scripts/                # bootstrap.sh (bare-server setup)
 systemd/                # nanio-orchestrator.service template
@@ -87,16 +87,21 @@ Sidecars are the source of truth for DB rebuild. **Always update sidecars after 
 Phases: `pending → copying → write_routing → verifying → switching → done`
 Error exits: `error`, `cancelled`
 
-The verifying phase runs a convergence loop (up to `migration_max_copy_passes` passes) that
-copies then checks, retrying while the diff count decreases. This handles the case where
-files are being uploaded during migration.
+From `write_routing` on, nginx serves the bucket through split routing and the **destination is
+authoritative** (writes → dst, reads → dst with 404-fallback to src, DELETE mirrored to src). Rules:
+
+- The split is recorded in `migrations.split_routing`, never derived from the phase. It survives
+  error/cancel/restart/rebuild until a migration between the same two pools finishes the move.
+- Once the split is active every `rclone copy` uses `--update`, and verification is a one-way check
+  that accepts a differing object only if the destination copy is newer. A plain copy or a two-way
+  check here destroys or rejects client writes.
 
 ### DB rebuild
-`POST /api/config/rebuild-from-disk` (or `nanio-orchestrator rebuild`) reconstructs the entire
+`POST /api/config/rebuild-from-disk` (or `nanio-orchestrator rebuild-db`) reconstructs the entire
 SQLite database from:
 1. `nginx/*.conf` files → pools, members, vhosts, routes
 2. `*.meta.json` sidecars → pool type/credentials, vhost defaults/extra_blocks/IP rules
-3. `*.state.json` files → in-progress migrations
+3. `*.state.json` files → in-progress migrations (including `split_routing`)
 4. Live `ListBuckets` → bucket_sync state
 
 **This is a core feature. Never break it.**
@@ -115,8 +120,8 @@ SQLite database from:
    validates nothing. Never write a managed `.conf` any other way. `_write_vhost_config()` /
    `_write_pool_config()` are thin wrappers over it and do **not**
    reload nginx — the operator applies changes explicitly via the Config tab (`POST /api/config/reload`).
-   Only the migration engine auto-reloads (it is an autonomous process that must apply its own routing
-   changes without operator intervention).
+   Two things reload on their own: the migration engine (it must apply its own routing steps) and
+   the bucket-sync reconcile that removes a route whose bucket no longer exists on its pool.
 
 4. **HTTP pools are second-class.** They have no S3 credentials, no bucket sync, no migration.
    Filter them out in bucket-related endpoints — see `bucket_sync.py` and `api/pools.py`.
@@ -130,8 +135,8 @@ SQLite database from:
    - Validate all IP/CIDR entries in `ip_rule_ips` with `_IP_ENTRY_RE`
    - XML and JSON bodies are bounded (no unbounded buffering)
 
-7. **No new background tasks.** The only background tasks are `bucket_sync` and `backup`. They're
-   started in `app.py` startup. New recurring work should follow the same pattern.
+7. **No new background tasks.** The only background tasks are `drift`, `bucket_sync` and `backup`.
+   They're started in `app.py` startup. New recurring work should follow the same pattern.
 
 9. **Bucket creation is not the orchestrator's job.** Route creation and `promote_bucket` do not create
    buckets on the target pool. Bucket provisioning is the responsibility of whoever uses the S3 service.
@@ -212,4 +217,5 @@ Key settings:
 - Pool-type consistency within a vhost (all routes must be same type)
 - The audit log — all mutations should call `log_audit()`
 - Migration convergence loop in `migration_engine.py`
-- The 177-test suite (run before every commit)
+- The test suite (`make test`, run before every commit)
+- The docs: `docs/*.md` describe behaviour operators rely on — update them in the same change

@@ -53,26 +53,26 @@ server {
     {{ block.content | indent(4) }}
 {% endfor %}
 {% endif %}
-{% for route in routes %}
-{% if route.enabled %}
-
-    # route_id:{{ route.id }} prefix:{{ route.path_prefix }}{% if route.migration_dst_pool_name %} [LIVE MIGRATION → {{ route.migration_dst_pool_name }}]{% endif %}
-
-    location {{ route.path_prefix }} {
+{% macro route_location(route, location) %}
+    location {{ location }} {
 {% if route.migration_dst_pool_name %}
-        # Live migration split routing:
-        #   writes (PUT/POST/DELETE) → destination pool ({{ route.migration_dst_pool_name }})
-        #   reads  (GET/HEAD)        → source pool ({{ route.pool_name }}), 404-fallback to destination
-        error_page 418 = @nanio_mig_{{ route.id }};
-        if ($request_method !~ ^(GET|HEAD|OPTIONS)$) { return 418; }
+        # Live migration split routing — the destination pool ({{ route.migration_dst_pool_name }}) is authoritative:
+        #   writes            → destination only (the source receives no new data)
+        #   reads (GET/HEAD)  → destination, falling back to the source ({{ route.pool_name }}) on 404
+        #   DELETE            → destination, mirrored to the source so the fallback cannot resurrect it
+        mirror /__nanio_mig_{{ route.id }}_delete;
+        mirror_request_body off;
         proxy_intercept_errors on;
         error_page 404 = @nanio_mig_{{ route.id }};
-{% elif route.key_prefix %}
+        proxy_pass         http://{{ route.migration_dst_pool_name }};
+{% else %}
+{% if route.key_prefix %}
         rewrite ^{{ route.path_prefix }}(.*)$ /{{ route.key_prefix }}$1 break;
 {% endif %}
         proxy_pass         http://{{ route.pool_name }};
+{% endif %}
         proxy_http_version 1.1;
-        proxy_set_header   Host              $host;
+        proxy_set_header   Host              $http_host;
         proxy_set_header   X-Real-IP         $remote_addr;
         proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header   Connection        "";
@@ -80,16 +80,46 @@ server {
         {{ route.extra_directives }}
 {% endif %}
     }
+{% endmacro %}
+{% for route in routes %}
+{% if route.enabled %}
+
+{% if route.migration_dst_pool_name %}
+    # route_id:{{ route.id }} prefix:{{ route.path_prefix }} migration_src:{{ route.pool_name }} migration_dst:{{ route.migration_dst_pool_name }} [LIVE MIGRATION → {{ route.migration_dst_pool_name }}]
+{% else %}
+    # route_id:{{ route.id }} prefix:{{ route.path_prefix }}
+{% endif %}
+{{ route_location(route, route.path_prefix) }}
+{%- if route.bucket_location %}
+
+    # Bucket-level requests (ListObjects, HeadBucket, multi-delete) have no trailing slash.
+    # Without this, nginx answers them with a 301 to {{ route.path_prefix }} instead of proxying.
+{{ route_location(route, "= " ~ route.bucket_location) }}
+{%- endif %}
 {% endif %}
 {% endfor %}
 {% for route in routes %}
 {% if route.enabled and route.migration_dst_pool_name %}
 
-    # Named fallback/write location for live migration route_id:{{ route.id }}
+    # Source fallback for reads during live migration route_id:{{ route.id }}
     location @nanio_mig_{{ route.id }} {
-        proxy_pass         http://{{ route.migration_dst_pool_name }};
+        if ($request_method !~ ^(GET|HEAD)$) { return 404; }
+        proxy_pass         http://{{ route.pool_name }};
         proxy_http_version 1.1;
-        proxy_set_header   Host              $host;
+        proxy_set_header   Host              $http_host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   Connection        "";
+    }
+
+    # DELETE mirror to the source during live migration route_id:{{ route.id }}
+    location = /__nanio_mig_{{ route.id }}_delete {
+        internal;
+        if ($request_method != DELETE) { return 204; }
+        proxy_pass         http://{{ route.pool_name }}$request_uri;
+        proxy_pass_request_body off;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $http_host;
         proxy_set_header   X-Real-IP         $remote_addr;
         proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header   Connection        "";

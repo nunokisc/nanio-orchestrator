@@ -38,7 +38,7 @@ The HTTP server. Provides:
 - REST API under `/api/`
 - Server-rendered web UI under `/web/`
 - Auth middleware (API key + session cookie)
-- Startup tasks: DB init, background bucket sync, background backup
+- Startup tasks: DB init, recovery of interrupted migrations, and three background loops (drift detection, bucket sync, database backup)
 
 ### Config generation (`nginx/generator.py`)
 
@@ -50,8 +50,9 @@ Renders Jinja2 templates to produce nginx config text. Two template types:
 restore the previous content on failure (nginx only includes `*.conf`, so a `.tmp` candidate would
 not be validated). CRUD operations (pools, vhosts, routes, members) write and validate the config but do
 **not** reload nginx — the operator applies pending changes explicitly via `POST /api/config/reload`
-or the Config tab in the Web UI. Only the migration engine reloads nginx automatically during the
-`write_routing` and `switching` phases, because those transitions are autonomous and time-sensitive.
+or the Config tab in the Web UI. Two things reload nginx on their own: the migration engine during
+the `write_routing` and `switching` phases, and the bucket-sync reconcile when it removes a route
+whose bucket no longer exists on its pool.
 
 ### Sidecar files (`sidecar.py`)
 
@@ -103,21 +104,22 @@ pending
   ▼ rclone copy (src → dst, all objects)
 copying
   │
-  ▼ add dedicated route for writes on dst; reads still go to src
+  ▼ split routing: dst authoritative (writes → dst, reads → dst then src on 404, DELETE mirrored)
 write_routing
   │
-  ▼ convergence loop: copy → check → retry while diff > 0
+  ▼ loop: copy --update → one-way check → retry while unresolved objects decrease
 verifying
   │
-  ▼ switch reads to dst; remove live migration split
+  ▼ point the route at dst; remove the split
 switching
   │
   ▼ mark src as orphaned (data still present, tracking added)
 done
 ```
 
-The verifying phase uses a convergence loop (up to `MIGRATION_MAX_COPY_PASSES` iterations)
-to handle files uploaded during migration — it retries as long as the diff count decreases.
+The split is always entered and is stored in `migrations.split_routing` (also in the migration
+state file, so `rebuild-from-disk` restores it). It stays in place if the migration fails or is
+cancelled, until a migration between the same two pools completes.
 
 ### Bucket sync (`bucket_sync.py`)
 

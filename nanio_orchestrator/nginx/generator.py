@@ -58,6 +58,13 @@ def render_vhost(vhost: Dict[str, Any], routes: List[Dict[str, Any]]) -> str:
     # Sort routes by path_prefix length (longest first) for correct nginx matching
     sorted_routes = sorted(routes, key=lambda r: len(r["path_prefix"]), reverse=True)
 
+    # A bucket route is `location /bucket/`. S3 bucket-level requests address `/bucket` with no
+    # trailing slash; nginx answers those with a 301 unless an exact-match location exists.
+    for route in sorted_routes:
+        prefix = route["path_prefix"]
+        is_bucket = len(prefix) > 2 and prefix.startswith("/") and prefix.endswith("/") and "/" not in prefix[1:-1]
+        route["bucket_location"] = prefix[:-1] if is_bucket and not route.get("key_prefix") else None
+
     # Parse extra_blocks and split by zone
     raw_blocks = vhost.get("extra_blocks_json") or vhost.get("extra_blocks") or []
     if isinstance(raw_blocks, str):
@@ -162,14 +169,15 @@ async def generate_vhost_config(vhost_id: int) -> tuple:
         for route in routes:
             route.setdefault("key_prefix", None)
 
-        # Attach live-migration write-routing info: if a migration for this
-        # vhost is in write_routing or verifying phase, client writes must go
-        # directly to the destination pool while reads still come from source.
+        # Attach live-migration split-routing info. The split is driven by the persisted
+        # migrations.split_routing flag, NOT by the phase: once clients have written to the
+        # destination pool the split must survive an error/cancel/restart, otherwise those
+        # objects would silently disappear behind a source-only route.
         mig_rows = await db.execute_fetchall(
             """SELECT m.bucket, m.route_id, p.name AS dst_pool_name
                FROM migrations m
                JOIN pools p ON m.dst_pool_id = p.id
-               WHERE m.vhost_id = ? AND m.phase IN ('write_routing', 'verifying')""",
+               WHERE m.vhost_id = ? AND m.split_routing = 1""",
             (vhost_id,),
         )
         # Build two lookup maps: precise (by route_id) and legacy (by bucket name)

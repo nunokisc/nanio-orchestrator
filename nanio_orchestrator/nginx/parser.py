@@ -190,10 +190,15 @@ def parse_vhost_block(content: str) -> Optional[Dict[str, Any]]:
         pp_match = re.search(r"proxy_pass\s+http://(\S+);", loc_block)
         if pp_match:
             pool_name = pp_match.group(1)
+            meta = route_metas.get(prefix, {})
+            # Live-migration split: the location proxies to the destination pool, but the
+            # route still belongs to the source pool until the migration switches.
+            if meta.get("migration_src"):
+                pool_name = meta["migration_src"]
             route: Dict[str, Any] = {
                 "path_prefix": prefix,
                 "pool_name": pool_name,
-                "metadata": route_metas.get(prefix, {}),
+                "metadata": meta,
             }
             # Extract key_prefix from rewrite directive
             rewrite_match = re.search(
