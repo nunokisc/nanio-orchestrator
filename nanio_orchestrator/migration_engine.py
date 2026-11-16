@@ -406,6 +406,20 @@ async def _log(migration_id: int, phase: str, message: str) -> None:
 
 async def _set_phase(migration_id: int, phase: str, error_msg: Optional[str] = None) -> None:
     """Update migration phase in DB and write state sidecar."""
+    if phase in ("error", "cancelled"):
+        # Logged before the phase changes, so whoever sees the terminal phase also finds
+        # the explanation in the log.
+        async with get_db_ctx() as db:
+            rows = await db.execute_fetchall("SELECT split_routing FROM migrations WHERE id = ?", (migration_id,))
+        if rows and rows[0]["split_routing"]:
+            await _log(
+                migration_id,
+                phase,
+                "Split routing stays active: clients keep writing to the destination pool and reading "
+                "from it with a fallback to the source, so no object becomes unreachable. Start a new "
+                "migration for the same bucket and pools to finish the move.",
+            )
+
     async with get_db_ctx() as db:
         if phase == "error":
             await db.execute(
@@ -440,15 +454,6 @@ async def _set_phase(migration_id: int, phase: str, error_msg: Optional[str] = N
     # will re-import as pending — safe because the migration is terminal in the DB.
     if not keep_state:
         delete_migration_state(migration_id)
-
-    if phase in ("error", "cancelled") and split_active:
-        await _log(
-            migration_id,
-            phase,
-            "Split routing stays active: clients keep writing to the destination pool and reading "
-            "from it with a fallback to the source, so no object becomes unreachable. Start a new "
-            "migration for the same bucket and pools to finish the move.",
-        )
 
 
 async def _write_state_sidecar(migration_id: int, db) -> None:
