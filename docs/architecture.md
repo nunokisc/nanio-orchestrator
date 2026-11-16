@@ -38,7 +38,7 @@ The HTTP server. Provides:
 - REST API under `/api/`
 - Server-rendered web UI under `/web/`
 - Auth middleware (API key + session cookie)
-- Startup tasks: DB init, background bucket sync, background backup
+- Startup tasks: DB init, recovery of interrupted migrations, and three background loops (drift detection, bucket sync, database backup)
 
 ### Config generation (`nginx/generator.py`)
 
@@ -50,8 +50,9 @@ Renders Jinja2 templates to produce nginx config text. Two template types:
 restore the previous content on failure (nginx only includes `*.conf`, so a `.tmp` candidate would
 not be validated). CRUD operations (pools, vhosts, routes, members) write and validate the config but do
 **not** reload nginx — the operator applies pending changes explicitly via `POST /api/config/reload`
-or the Config tab in the Web UI. Only the migration engine reloads nginx automatically during the
-`write_routing` and `switching` phases, because those transitions are autonomous and time-sensitive.
+or the Config tab in the Web UI. Two things reload nginx on their own: the migration engine during
+the `write_routing` and `switching` phases, and the bucket-sync reconcile when it removes a route
+whose bucket no longer exists on its pool.
 
 ### Sidecar files (`sidecar.py`)
 
