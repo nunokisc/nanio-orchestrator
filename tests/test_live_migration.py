@@ -713,6 +713,30 @@ class TestVhostTemplateSplitRouting:
         assert "proxy_set_header   Host              $http_host;" in content
         assert "$host;" not in content
 
+    def test_bucket_route_also_matches_requests_without_trailing_slash(self):
+        """`GET /bucket?list-type=2` has no trailing slash; with only `location /bucket/` nginx
+        answers it with a 301 instead of proxying (verified against real nginx)."""
+        def route(i, prefix, key_prefix=None):
+            return {"id": i, "path_prefix": prefix, "pool_name": "pool-b", "enabled": True,
+                    "key_prefix": key_prefix, "extra_directives": None, "migration_dst_pool_name": None}
+
+        content = self._render([route(1, "/"), route(2, "/photos/"), route(3, "/a/b/"), route(4, "/kp/", "x/")])
+
+        assert "location = /photos {" in content
+        exact = content.split("location = /photos {")[1].split("}")[0]
+        assert "proxy_pass         http://pool-b;" in exact
+        # Only plain single-segment bucket routes get one
+        assert content.count("location = ") == 1
+
+    def test_bucket_exact_location_follows_split_routing(self):
+        routes = [{"id": 5, "path_prefix": "/moving/", "pool_name": "src-pool", "enabled": True,
+                   "key_prefix": None, "extra_directives": None, "migration_dst_pool_name": "dst-pool"}]
+        content = self._render(routes)
+        exact = content.split("location = /moving {")[1].split("}")[0]
+        assert "proxy_pass         http://dst-pool;" in exact
+        assert "error_page 404 = @nanio_mig_5;" in exact
+        assert "mirror /__nanio_mig_5_delete;" in exact
+
     def test_multiple_routes_each_get_named_location(self):
         routes = [
             {
