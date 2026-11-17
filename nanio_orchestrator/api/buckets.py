@@ -29,6 +29,16 @@ from nanio_orchestrator.s3client import (
 )
 
 router = APIRouter(prefix="/api/vhosts", tags=["buckets"])
+
+
+async def _start_or_429(*args, **kwargs) -> int:
+    """Start a migration; the slot seen free a moment ago may have been taken since."""
+    try:
+        return await engine_start_migration(*args, **kwargs)
+    except RuntimeError as exc:
+        raise HTTPException(429, str(exc)) from None
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -226,7 +236,7 @@ async def promote_bucket(vhost_id: int, bucket: str, body: BucketPromoteRequest)
 
     if src_has_data and not body.migrate and body.pool_id != default_pool_id and not body.allow_orphan:
         raise HTTPException(
-            400,
+            409,
             f"Bucket '{bucket}' already has objects on the source pool. "
             "Routing to a different pool without migration will leave existing data "
             "inaccessible via this route. Either enable 'Migrate existing objects' "
@@ -287,7 +297,7 @@ async def promote_bucket(vhost_id: int, bucket: str, body: BucketPromoteRequest)
 
     # ── Optionally start migration (via rclone engine) ───────────────────────────
     if body.migrate:
-        migration_id = await engine_start_migration(vhost_id, bucket, default_pool_id, body.pool_id, route_id=route_id)
+        migration_id = await _start_or_429(vhost_id, bucket, default_pool_id, body.pool_id, route_id=route_id)
         result["migration_started"] = True
         result["migration_id"] = migration_id
 
@@ -357,7 +367,7 @@ async def start_migration(vhost_id: int, bucket: str):
             "source and destination are the same pool. No migration needed.",
         )
 
-    migration_id = await engine_start_migration(vhost_id, bucket, src_pool_id, dst_pool_id)
+    migration_id = await _start_or_429(vhost_id, bucket, src_pool_id, dst_pool_id)
     async with get_db_ctx() as db:
         await log_audit(
             db,

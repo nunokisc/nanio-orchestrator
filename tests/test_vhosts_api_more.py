@@ -499,27 +499,26 @@ class TestCreateSubfolderRoute:
         assert await routes(client, vhost) == {"/photos/2025/": "pb", "/": "pa"}
         assert "proxy_pass         http://pb;" in _location(_vhost_conf(tmp_dirs), "/photos/2025/")
 
-    async def test_http_vhost_that_nginx_will_not_follow_is_reported(self, client, mock_nginx, mock_s3, tmp_dirs):
+    async def test_folder_route_is_not_saved_when_nginx_refuses_the_http_vhost(
+        self, client, mock_nginx, mock_s3, tmp_dirs
+    ):
+        """The folder route and the http routes that follow it are one change: nginx judges the
+        vhosts together, and a refusal leaves the database and every file as they were."""
         pa, pb, vhost = await _cluster(client)
         web_a = await _http_pool(client, "web-a", "10.0.1.1:80", source=pa)
         await _http_pool(client, "web-b", "10.0.1.2:80", source=pb)
         cdn = await create_vhost(client, "cdn.example.com", default_pool_id=web_a["id"])
         await create_route(client, cdn["id"], "photos", web_a["id"])
-        cdn_conf = _vhost_conf(tmp_dirs, "cdn.example.com")
-        accepted = MagicMock(ok=True, output="syntax ok")
-        mock_nginx["test_config"].side_effect = [accepted, MagicMock(ok=False, output="[emerg] cdn is broken")]
+        before = (await routes(client, vhost), await routes(client, cdn), managed_files(tmp_dirs))
+        mock_nginx["test_config"].return_value = MagicMock(ok=False, output="[emerg] cdn is broken")
 
         resp = await client.post(
             f"/api/vhosts/{vhost['id']}/routes", json={"path_prefix": "/photos/2025/", "pool_id": pb["id"]}
         )
 
-        assert resp.status_code == 201
-        assert resp.json()["warnings"] == [
-            f"http vhost {cdn['id']}: nginx rejected the new route: [emerg] cdn is broken"
-        ]
-        assert await routes(client, vhost) == {"/photos/2025/": "pb", "/": "pa"}
-        assert "location /photos/2025/ {" in _vhost_conf(tmp_dirs)
-        assert _vhost_conf(tmp_dirs, "cdn.example.com") == cdn_conf
+        assert resp.status_code == 422
+        assert "cdn is broken" in resp.json()["detail"]
+        assert (await routes(client, vhost), await routes(client, cdn), managed_files(tmp_dirs)) == before
 
 
 class TestUpdateRoute:
@@ -639,19 +638,14 @@ class TestUpdateRoute:
         )
         assert await sql("SELECT id FROM migrations") == []
 
-    async def test_route_without_a_bucket_name_is_repointed_without_asking_any_pool(self, client, mock_nginx, tmp_dirs):
-        pa, pb, vhost = await _cluster(client, default=False)
-        resp = await client.post(f"/api/vhosts/{vhost['id']}/routes", json={"path_prefix": "//", "pool_id": pa["id"]})
-        assert resp.status_code == 201
-        count = AsyncMock(return_value=5)
+    async def test_route_cannot_be_pointed_at_a_pool_of_another_type(self, client, mock_nginx, tmp_dirs):
+        pa, _pb, vhost = await _cluster(client)
+        web = await _http_pool(client, "web", "10.0.1.1:80", source=pa)
+        route = await create_route(client, vhost["id"], "photos", pa["id"])
 
-        with patch("nanio_orchestrator.api.vhosts.count_objects", new=count):
-            resp = await client.put(f"/api/vhosts/{vhost['id']}/routes/{resp.json()['id']}", json={"pool_id": pb["id"]})
+        detail = await self._refused(client, tmp_dirs, vhost, route, {"pool_id": web["id"]}, 400)
 
-        assert resp.status_code == 200
-        count.assert_not_awaited()
-        assert await routes(client, vhost) == {"//": "pb"}
-        assert await sql("SELECT id FROM migrations") == []
+        assert "cannot mix pool types" in detail
 
     async def test_route_is_repointed_when_its_pool_has_no_member_left_to_ask(self, client, mock_nginx, tmp_dirs):
         _pa, pb, vhost = await _cluster(client)

@@ -81,6 +81,11 @@ Creating or editing a pool, member, vhost or route does three things:
 
 So the database, the files and nginx always describe the same state.
 
+A change that touches several files is still one change: nginx judges them together and either
+all of it is kept or none. That covers renaming a pool (its upstream file under the new name,
+every vhost that uses it, and the old file removed), renaming a vhost, and a folder route
+together with the routes it adds to `http` vhosts.
+
 It does **not** reload nginx. You apply the pending changes when you are ready:
 
 - Web UI: **Config** tab → *Reload nginx*

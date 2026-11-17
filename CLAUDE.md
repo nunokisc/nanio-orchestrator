@@ -143,6 +143,10 @@ Schema upgrades live only in `db._run_migrations_async()`; `init_db_sync()` just
    then `await reject_if_refused(db, ok, output)` (`api/common.py`): on refusal it rolls back and
    answers 422. Never commit before the write, and never answer 2xx for a refused change.
 
+   A change that spans several files (a rename, a folder route plus the routes it adds to http
+   vhosts) goes through `apply.write_configs(db, pool_ids=…, vhost_ids=…, remove=…)`: one
+   `nginx -t` for all of them, all kept or none.
+
 4. **HTTP pools are second-class.** They have no S3 credentials, no bucket sync, no migration.
    Filter them out in bucket-related endpoints — see `bucket_sync.py` and `api/pools.py`.
 
