@@ -21,6 +21,7 @@ from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.credentials import get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator.s3client import bucket_exists, list_buckets
+from nanio_orchestrator.subfolders import ensure_markers
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +141,9 @@ async def sync_vhost_buckets_once(vhost_id: int) -> dict:
     logger.info("vhost %d: sync done — %d bucket(s) found", vhost_id, len(buckets))
 
     missing = await _flag_missing_routed_buckets(vhost_id, now)
+    # Sub-folder markers are idempotent: rewriting them restores one lost to a bucket migration
+    for warning in await ensure_markers(vhost_id):
+        logger.warning("vhost %d: %s", vhost_id, warning)
     result: dict = {"vhost_id": vhost_id, "buckets_found": len(buckets), "synced_at": now}
     if missing:
         result["missing_on_pool"] = missing

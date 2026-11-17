@@ -218,7 +218,9 @@ class VhostOut(BaseModel):
 class RouteCreate(BaseModel):
     path_prefix: str = Field(..., min_length=1)
     pool_id: int
-    key_prefix: Optional[str] = None
+    # Sub-folder routes only: create the route although objects already exist under the
+    # folder on the bucket's own pool (they stay there, hidden behind the new route).
+    allow_orphan: bool = False
     enabled: bool = True
 
     @field_validator("path_prefix")
@@ -236,7 +238,6 @@ class RouteCreate(BaseModel):
 class RouteUpdate(BaseModel):
     path_prefix: Optional[str] = None
     pool_id: Optional[int] = None
-    key_prefix: Optional[str] = None
     enabled: Optional[bool] = None
 
     @field_validator("path_prefix")
@@ -259,7 +260,6 @@ class RouteOut(BaseModel):
     path_prefix: str
     pool_id: int
     pool_name: Optional[str] = None
-    key_prefix: Optional[str] = None
     enabled: bool
     created_at: str
     updated_at: str

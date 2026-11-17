@@ -39,15 +39,6 @@ class TestDatabase:
             rows = await db.execute_fetchall("PRAGMA foreign_keys")
             assert rows[0][0] == 1
 
-    async def test_routes_has_key_prefix(self, tmp_dirs):
-        set_db_path(tmp_dirs["db_path"])
-        await init_db()
-
-        async with get_db_ctx() as db:
-            info = await db.execute_fetchall("PRAGMA table_info(routes)")
-            col_names = {r["name"] for r in info}
-            assert "key_prefix" in col_names
-
     async def test_pool_credentials_table(self, tmp_dirs):
         set_db_path(tmp_dirs["db_path"])
         await init_db()

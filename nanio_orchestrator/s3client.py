@@ -265,13 +265,18 @@ async def bucket_has_objects(
     access_key: Optional[str] = None,
     secret_key: Optional[str] = None,
     region: str = "us-east-1",
+    prefix: str = "",
 ) -> bool:
     """Return True if bucket contains at least one object (single S3 request).
 
-    Returns False for non-existent buckets (404). Raises RuntimeError on other errors.
+    With ``prefix`` only keys starting with it count. Returns False for non-existent
+    buckets (404). Raises RuntimeError on other errors.
     """
+    query = "list-type=2&max-keys=1"
+    if prefix:
+        query += "&prefix=" + urllib.parse.quote(prefix, safe="")
     status, body = await asyncio.to_thread(
-        _do_request, "GET", address, f"/{bucket}", "list-type=2&max-keys=1", b"", access_key, secret_key, region
+        _do_request, "GET", address, f"/{bucket}", query, b"", access_key, secret_key, region
     )
     if status == 404:
         return False

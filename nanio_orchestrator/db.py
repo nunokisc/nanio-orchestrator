@@ -61,7 +61,6 @@ CREATE TABLE IF NOT EXISTS routes (
     vhost_id        INTEGER NOT NULL REFERENCES vhosts(id),
     path_prefix     TEXT NOT NULL,
     pool_id         INTEGER NOT NULL REFERENCES pools(id),
-    key_prefix      TEXT,
     extra_directives TEXT,
     enabled         INTEGER NOT NULL DEFAULT 1,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
@@ -213,12 +212,6 @@ async def _run_migrations_async(db) -> None:
     col_names = {r["name"] for r in info}
     if "default_pool_id" not in col_names:
         await db.execute("ALTER TABLE vhosts ADD COLUMN default_pool_id INTEGER REFERENCES pools(id)")
-    # routes.key_prefix (added for sub-folder routing)
-    info = await db.execute_fetchall("PRAGMA table_info(routes)")
-    col_names = {r["name"] for r in info}
-    if "key_prefix" not in col_names:
-        await db.execute("ALTER TABLE routes ADD COLUMN key_prefix TEXT")
-
     # vhosts.extra_blocks_json (structured extra nginx blocks per zone)
     info = await db.execute_fetchall("PRAGMA table_info(vhosts)")
     col_names = {r["name"] for r in info}

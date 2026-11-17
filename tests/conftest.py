@@ -188,6 +188,13 @@ def mock_s3():
         "put_object": [
             "nanio_orchestrator.s3client.put_object",
         ],
+        # Sub-folder routes (api/vhosts) call the s3client module directly
+        "folder_has_objects": [
+            "nanio_orchestrator.s3client.bucket_has_objects",
+        ],
+        "delete_object": [
+            "nanio_orchestrator.s3client.delete_object",
+        ],
     }
 
     defaults = {
@@ -202,6 +209,8 @@ def mock_s3():
         "count_objects": 1,
         "get_object": b"data",
         "put_object": True,
+        "folder_has_objects": False,
+        "delete_object": True,
     }
 
     active_patches = []

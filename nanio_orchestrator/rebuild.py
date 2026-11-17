@@ -215,11 +215,11 @@ async def import_configs(db, warnings: List[str]) -> Dict[str, Any]:
                 )
                 continue
             await db.execute(
-                """INSERT INTO routes (vhost_id, path_prefix, pool_id, key_prefix, enabled)
-                   VALUES (?, ?, ?, ?, 1)
+                """INSERT INTO routes (vhost_id, path_prefix, pool_id, enabled)
+                   VALUES (?, ?, ?, 1)
                    ON CONFLICT(vhost_id, path_prefix) DO UPDATE SET
-                     pool_id=excluded.pool_id, key_prefix=excluded.key_prefix, updated_at=datetime('now')""",
-                (vhost_id, route["path_prefix"], pool_id, route.get("key_prefix")),
+                     pool_id=excluded.pool_id, updated_at=datetime('now')""",
+                (vhost_id, route["path_prefix"], pool_id),
             )
             counts["routes"] += 1
 

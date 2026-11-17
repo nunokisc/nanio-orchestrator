@@ -464,33 +464,8 @@ async function addRoute(e) {
         const result = await res.json();
         hideModal('add-route-modal');
 
-        // Offer migration if the bucket has objects on the source (default) pool
-        if (result.objects_on_source > 0 && result.bucket && result.default_pool_id) {
-            const msg = result.bucket_provisioned
-                ? `Route created. Bucket "${result.bucket}" was provisioned on the target pool.\n\n`
-                : `Route created.\n\n`;
-            const doMigrate = confirm(
-                msg +
-                `The bucket has ${result.objects_on_source} object(s) on the default pool.\n` +
-                `Start rclone migration to the new pool now?`
-            );
-            if (doMigrate) {
-                const migRes = await fetch('/api/migrations', {
-                    method: 'POST',
-                    headers: getHeaders(),
-                    body: JSON.stringify({
-                        bucket: result.bucket,
-                        src_pool_id: result.default_pool_id,
-                        dst_pool_id: data.pool_id,
-                    }),
-                });
-                if (migRes.ok) {
-                    alert('Migration started. Track progress on the Migrations page.');
-                } else {
-                    const err = await migRes.json();
-                    alert('Migration failed to start: ' + (err.detail || JSON.stringify(err)));
-                }
-            }
+        if (result.warnings && result.warnings.length) {
+            alert('Route created, with warnings:\n\n' + result.warnings.join('\n\n'));
         }
 
         location.reload();

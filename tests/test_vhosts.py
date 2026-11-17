@@ -61,19 +61,6 @@ class TestRouteCRUD:
         assert resp.status_code == 201
         assert resp.json()["path_prefix"] == "/assets/"
 
-    async def test_create_route_with_key_prefix(self, client, mock_nginx):
-        pool = await create_pool(client, "rt-kp-pool")
-        await create_member(client, pool["id"])
-        vh = await create_vhost(client, "kp.example.com")
-        resp = await client.post(f"/api/vhosts/{vh['id']}/routes", json={
-            "path_prefix": "/photos/",
-            "pool_id": pool["id"],
-            "key_prefix": "photos-2025/",
-        })
-        assert resp.status_code == 201
-        data = resp.json()
-        assert data["key_prefix"] == "photos-2025/"
-
     async def test_create_route_invalid_prefix(self, client):
         pool = await create_pool(client, "rt-inv-pool")
         vh = await create_vhost(client, "inv.example.com")
@@ -228,32 +215,29 @@ class TestRouteScenarios:
         assert mig["dst_pool_id"] == dst["id"]
         assert mig["bucket"] == "bucket4"
 
-    async def test_update_subpath_route_pool_change_is_direct(
-        self, client, mock_nginx, mock_s3
-    ):
-        """Scenario 1: updating pool on a sub-path route is always direct (no migration)."""
+    async def test_subfolder_route_cannot_change_pool(self, client, mock_nginx, mock_s3):
+        """Pointing a sub-folder route at another pool would leave its objects behind."""
         p1 = await create_pool(client, "sc5-p1")
         await create_member(client, p1["id"], "10.0.0.1:9000")
         p2 = await create_pool(client, "sc5-p2")
         await create_member(client, p2["id"], "10.0.0.2:9000")
+        p3 = await create_pool(client, "sc5-p3")
+        await create_member(client, p3["id"], "10.0.0.3:9000")
         vh = await create_vhost(client, "sc5.example.com")
 
-        # Parent route
         await client.post(f"/api/vhosts/{vh['id']}/routes", json={
             "path_prefix": "/bucket5/", "pool_id": p1["id"],
         })
-        # Sub-path route
         sub_resp = await client.post(f"/api/vhosts/{vh['id']}/routes", json={
-            "path_prefix": "/bucket5/subpath/", "pool_id": p1["id"],
+            "path_prefix": "/bucket5/subpath/", "pool_id": p2["id"],
         })
+        assert sub_resp.status_code == 201, sub_resp.text
         sub_route = sub_resp.json()
-
-        mock_s3["count_objects"].return_value = 200  # has objects but is sub-path
 
         resp = await client.put(
             f"/api/vhosts/{vh['id']}/routes/{sub_route['id']}",
-            json={"pool_id": p2["id"]},
+            json={"pool_id": p3["id"]},
         )
-        assert resp.status_code == 200
-        assert resp.json()["pool_id"] == p2["id"]  # direct update
-        assert resp.json().get("migration_id") is None
+        assert resp.status_code == 400
+        assert "sub-folder route" in resp.json()["detail"]
+        assert len((await client.get("/api/migrations")).json()) == 0

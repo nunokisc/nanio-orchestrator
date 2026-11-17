@@ -9,6 +9,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
 
+from nanio_orchestrator import s3client, subfolders
 from nanio_orchestrator.audit_log import log_audit
 from nanio_orchestrator.credentials import get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
@@ -22,7 +23,10 @@ from nanio_orchestrator.models import (
 )
 from nanio_orchestrator.nginx.apply import write_vhost_config as _write_vhost_config
 from nanio_orchestrator.nginx.generator import (
+    SUBFOLDER_MARKER,
     generate_vhost_config,
+    is_subfolder_prefix,
+    path_segments,
     remove_config_file,
 )
 from nanio_orchestrator.s3client import count_objects
@@ -41,6 +45,59 @@ async def delete_vhost_sidecar(*args, **kwargs):
 
 
 router = APIRouter(prefix="/api/vhosts", tags=["vhosts"])
+
+
+# ── Sub-folder routes (see nanio_orchestrator/subfolders.py) ─────────────────
+
+
+async def _prepare_subfolder_route(db, vhost: dict, body: RouteCreate, target_pool: dict) -> dict:
+    """Checks and provisioning for a new sub-folder route. Changes nothing in the database.
+
+    Returns what the caller needs to finish: parent pool, bucket, folder key and endpoints.
+    """
+    bucket = path_segments(body.path_prefix)[0]
+    folder = subfolders.folder_key(body.path_prefix)
+    parent = await subfolders.parent_pool(db, vhost["id"], body.path_prefix)
+    if parent is None:
+        raise HTTPException(
+            400,
+            f"Bucket '{bucket}' is not served by this vhost: it has no '/{bucket}/' route and the vhost has no "
+            "default pool. A sub-folder route needs the bucket itself to be served first.",
+        )
+    if parent["type"] != "nanio":
+        raise HTTPException(400, f"Bucket '{bucket}' is served by pool '{parent['name']}', which is not an S3 pool.")
+    if parent["id"] == target_pool["id"]:
+        raise HTTPException(
+            400, f"'{body.path_prefix}' is already served by pool '{parent['name']}': nothing to route elsewhere."
+        )
+    parent_addr = await subfolders.pool_endpoint(db, parent["id"])
+    target_addr = await subfolders.pool_endpoint(db, target_pool["id"])
+    if not parent_addr or not target_addr:
+        missing = parent["name"] if not parent_addr else target_pool["name"]
+        raise HTTPException(400, f"Pool '{missing}' has no enabled member to talk to.")
+
+    parent_ak, parent_sk, _ = await get_pool_s3_params(parent["id"])
+    target_ak, target_sk, _ = await get_pool_s3_params(target_pool["id"])
+    try:
+        if not body.allow_orphan and await s3client.bucket_has_objects(
+            parent_addr, bucket, access_key=parent_ak, secret_key=parent_sk, prefix=folder
+        ):
+            raise HTTPException(
+                409,
+                f"Bucket '{bucket}' already has objects under '{folder}' on pool '{parent['name']}'. Routing the "
+                f"folder to '{target_pool['name']}' would hide them. Move them first, or send allow_orphan=true "
+                "to leave them behind.",
+            )
+        ok, message = await s3client.create_bucket(target_addr, bucket, access_key=target_ak, secret_key=target_sk)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, f"Could not check the pools before creating the route: {exc}")
+    if not ok:
+        raise HTTPException(
+            502, f"Could not create bucket '{bucket}' on pool '{target_pool['name']}': {message}. Nothing was changed."
+        )
+    return {"bucket": bucket, "parent": parent}
 
 
 async def _sync_default_route(vhost_id: int, pool_id: int | None, db) -> None:
@@ -370,19 +427,23 @@ async def create_route(vhost_id: int, body: RouteCreate):
                     f"uses '{default_pool_type}' pools. You cannot mix pool types within a vhost.",
                 )
 
+        # A folder of a bucket on an S3 pool: checks + bucket on the target pool, before anything is written
+        subfolder = None
+        if route_pool["type"] == "nanio" and is_subfolder_prefix(body.path_prefix):
+            subfolder = await _prepare_subfolder_route(db, vhost_row, body, route_pool)
+
     # The S3 bucket name is the first path segment (e.g. /photos/2025/ → bucket=photos)
     bucket_segment = body.path_prefix.strip("/").split("/")[0]
 
     async with get_db_ctx() as db:
         try:
             cursor = await db.execute(
-                """INSERT INTO routes (vhost_id, path_prefix, pool_id, key_prefix, enabled)
-                   VALUES (?, ?, ?, ?, ?)""",
+                """INSERT INTO routes (vhost_id, path_prefix, pool_id, enabled)
+                   VALUES (?, ?, ?, ?)""",
                 (
                     vhost_id,
                     body.path_prefix,
                     body.pool_id,
-                    body.key_prefix,
                     1 if body.enabled else 0,
                 ),
             )
@@ -405,11 +466,27 @@ async def create_route(vhost_id: int, body: RouteCreate):
         await log_audit(db, "create", "route", route_id, after=route, reload_ok=ok, reload_output=output)
         await db.commit()
 
+    warnings: List[str] = []
+    if subfolder and ok:
+        warnings += await subfolders.ensure_markers(vhost_id)
+        # http vhosts serving this bucket from the parent pool's files follow the folder
+        async with get_db_ctx() as db:
+            changed, http_warnings = await subfolders.sync_http_routes(
+                db, subfolder["bucket"], body.path_prefix, subfolder["parent"]["id"], body.pool_id
+            )
+            await db.commit()
+            warnings += http_warnings
+            for http_vhost_id in changed:
+                http_ok, http_output = await _write_vhost_config(http_vhost_id, db)
+                if not http_ok:
+                    warnings.append(f"http vhost {http_vhost_id}: nginx rejected the new route: {http_output}")
+
     return {
         **route,
         "bucket": bucket_segment,
-        "bucket_provisioned": False,
+        "bucket_provisioned": subfolder is not None,
         "default_pool_id": vhost_default_pool_id,
+        "warnings": warnings,
     }
 
 
@@ -428,6 +505,20 @@ async def update_route(vhost_id: int, route_id: int, body: RouteUpdate):
                 400,
                 "The '/' route pool is controlled by the vhost's default_pool_id; update the vhost to change it",
             )
+        if "path_prefix" in updates and updates["path_prefix"] != before["path_prefix"]:
+            raise HTTPException(400, "A route's path cannot be changed: delete it and create the new one.")
+        if (
+            "pool_id" in updates
+            and updates["pool_id"] != before["pool_id"]
+            and is_subfolder_prefix(before["path_prefix"])
+        ):
+            target_type = await _get_pool_type(db, before["pool_id"])
+            if target_type == "nanio":
+                raise HTTPException(
+                    400,
+                    "A sub-folder route cannot be pointed at another pool: its objects would stay behind on the "
+                    "current one. Delete the route and create it again on an empty folder.",
+                )
         if not updates:
             rrows2 = await db.execute_fetchall(
                 """SELECT r.*, p.name as pool_name
@@ -550,7 +641,9 @@ async def update_route(vhost_id: int, route_id: int, body: RouteUpdate):
 
 
 @router.delete("/{vhost_id}/routes/{route_id}", status_code=204)
-async def delete_route(vhost_id: int, route_id: int):
+async def delete_route(vhost_id: int, route_id: int, allow_orphan: bool = False):
+    marker = None
+    http_changed: List[int] = []
     async with get_db_ctx() as db:
         rrows = await db.execute_fetchall("SELECT * FROM routes WHERE id = ? AND vhost_id = ?", (route_id, vhost_id))
         if not rrows:
@@ -563,6 +656,35 @@ async def delete_route(vhost_id: int, route_id: int):
                 "The '/' catch-all route cannot be deleted; set default_pool_id to null on the vhost to remove it",
             )
 
+        # Sub-folder route on an S3 pool: without it the folder's objects are unreachable
+        if is_subfolder_prefix(before["path_prefix"]) and await _get_pool_type(db, before["pool_id"]) == "nanio":
+            bucket = path_segments(before["path_prefix"])[0]
+            folder = subfolders.folder_key(before["path_prefix"])
+            target_addr = await subfolders.pool_endpoint(db, before["pool_id"])
+            if not allow_orphan and target_addr:
+                target_ak, target_sk, _ = await get_pool_s3_params(before["pool_id"])
+                try:
+                    has_objects = await s3client.bucket_has_objects(
+                        target_addr, bucket, access_key=target_ak, secret_key=target_sk, prefix=folder
+                    )
+                except Exception as exc:
+                    raise HTTPException(502, f"Could not check the folder before deleting its route: {exc}")
+                if has_objects:
+                    raise HTTPException(
+                        409,
+                        f"'{folder}' of bucket '{bucket}' still has objects on its pool. Without the route they "
+                        "become unreachable. Empty the folder first, or send ?allow_orphan=true to leave them there.",
+                    )
+            parent = await subfolders.parent_pool(db, vhost_id, before["path_prefix"])
+            parent_addr = await subfolders.pool_endpoint(db, parent["id"]) if parent else None
+            if parent_addr:
+                parent_ak, parent_sk, _ = await get_pool_s3_params(parent["id"])
+                marker = (parent_addr, bucket, folder + SUBFOLDER_MARKER, parent_ak, parent_sk)
+            if parent:
+                http_changed, _ = await subfolders.sync_http_routes(
+                    db, bucket, before["path_prefix"], parent["id"], None
+                )
+
         # Null-out route_id in any migrations that reference this route
         # to avoid FK constraint failures (route_id has no ON DELETE SET NULL)
         await db.execute("UPDATE migrations SET route_id = NULL WHERE route_id = ?", (route_id,))
@@ -571,7 +693,16 @@ async def delete_route(vhost_id: int, route_id: int):
 
         ok, output = await _write_vhost_config(vhost_id, db)
         await log_audit(db, "delete", "route", route_id, before=before, reload_ok=ok, reload_output=output)
+        for http_vhost_id in http_changed:
+            await _write_vhost_config(http_vhost_id, db)
         await db.commit()
+
+    if marker and ok:
+        address, bucket, key, access_key, secret_key = marker
+        try:
+            await s3client.delete_object(address, bucket, key, access_key=access_key, secret_key=secret_key)
+        except Exception as exc:
+            logger.warning("Could not remove sub-folder marker %s/%s: %s", bucket, key, exc)
 
 
 # ── Preview ───────────────────────────────────────────────────────────────────

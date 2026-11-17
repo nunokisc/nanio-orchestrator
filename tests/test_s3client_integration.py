@@ -105,3 +105,30 @@ async def test_wrong_credentials_are_an_error_not_an_empty_answer(bucket):
         await s3client.bucket_exists(ENDPOINT, bucket, **bad)
     with pytest.raises(Exception):
         await s3client.bucket_has_objects(ENDPOINT, bucket, **bad)
+
+
+async def test_subfolder_marker_keeps_the_folder_visible_but_is_not_listed(bucket):
+    """Sub-folder routes rely on this nanio behaviour: a `.nanio*` object is stored, makes its
+    folder appear when the bucket is browsed, and is left out of object listings — so clients
+    cannot see or delete it, and an empty-folder check is not fooled by it."""
+    import xml.etree.ElementTree as ET
+
+    from nanio_orchestrator.nginx.generator import SUBFOLDER_MARKER
+
+    key = f"2025/{SUBFOLDER_MARKER}"
+    assert await s3client.put_object(ENDPOINT, bucket, key, b"marker", **AUTH)
+    await s3client.put_object(ENDPOINT, bucket, "2024/a.txt", b"a", **AUTH)
+
+    assert await s3client.get_object(ENDPOINT, bucket, key, **AUTH) == b"marker"
+    assert await s3client.list_objects(ENDPOINT, bucket, **AUTH) == ["2024/a.txt"]
+    assert await s3client.bucket_has_objects(ENDPOINT, bucket, prefix="2025/", **AUTH) is False
+    assert await s3client.bucket_has_objects(ENDPOINT, bucket, prefix="2024/", **AUTH) is True
+
+    status, body = s3client._do_request(
+        "GET", ENDPOINT, f"/{bucket}", "delimiter=%2F&list-type=2", b"", AUTH["access_key"], AUTH["secret_key"], "us-east-1"
+    )
+    assert status == 200
+    folders = [el.text for el in ET.fromstring(body).iter() if el.tag.endswith("Prefix") and el.text]
+    assert sorted(set(folders)) == ["2024/", "2025/"]
+
+    assert await s3client.delete_object(ENDPOINT, bucket, key, **AUTH)

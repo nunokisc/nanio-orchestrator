@@ -716,17 +716,17 @@ class TestVhostTemplateSplitRouting:
     def test_bucket_route_also_matches_requests_without_trailing_slash(self):
         """`GET /bucket?list-type=2` has no trailing slash; with only `location /bucket/` nginx
         answers it with a 301 instead of proxying (verified against real nginx)."""
-        def route(i, prefix, key_prefix=None):
+        def route(i, prefix):
             return {"id": i, "path_prefix": prefix, "pool_name": "pool-b", "enabled": True,
-                    "key_prefix": key_prefix, "extra_directives": None, "migration_dst_pool_name": None}
+                    "migration_dst_pool_name": None}
 
-        content = self._render([route(1, "/"), route(2, "/photos/"), route(3, "/a/b/"), route(4, "/kp/", "x/")])
+        content = self._render([route(1, "/"), route(2, "/photos/")])
 
         assert "location = /photos {" in content
         exact = content.split("location = /photos {")[1].split("}")[0]
         assert "proxy_pass         http://pool-b;" in exact
         assert "location = /photos/ {" in content
-        # Only plain single-segment bucket routes get the two exact-match locations
+        # One pair per bucket route; the catch-all gets none
         assert content.count("location = ") == 2
 
     def test_bucket_exact_location_follows_split_routing(self):
@@ -801,23 +801,6 @@ class TestVhostTemplateSplitRouting:
         content = self._render(routes)
         assert "@nanio_mig_5" not in content
         assert "/disabled-bk/" not in content
-
-    def test_split_does_not_apply_key_prefix_rewrite(self):
-        """key_prefix rewrite must be skipped in split routing mode
-        (the rewrite would conflict with proxy_intercept_errors logic)."""
-        routes = [{
-            "id": 3,
-            "path_prefix": "/kp/",
-            "pool_name": "src-pool",
-            "enabled": True,
-            "key_prefix": "prefix/",     # would normally add a rewrite
-            "extra_directives": None,
-            "migration_dst_pool_name": "dst-pool",
-        }]
-        content = self._render(routes)
-        # Split routing takes precedence; no rewrite directive should appear
-        assert "rewrite" not in content
-        assert "error_page 404 = @nanio_mig_3" in content
 
     def test_split_comment_mentions_live_migration(self):
         routes = [{
