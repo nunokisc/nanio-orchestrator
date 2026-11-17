@@ -36,8 +36,9 @@ ORCHESTRATOR (:8080, internal network only)
 
 The HTTP server. Provides:
 - REST API under `/api/`
-- Server-rendered web UI under `/web/`
-- Auth middleware (API key + session cookie)
+- The web panel on every other path (see below)
+- Auth middleware: everything under `/api/` needs the API key header or the session cookie,
+  except the health check, the API documentation pages and the session endpoints
 - Startup tasks: DB init, recovery of interrupted migrations, and three background loops (drift detection, bucket sync, database backup)
 
 ### Config generation (`nginx/generator.py`)
@@ -50,8 +51,39 @@ Renders Jinja2 templates to produce nginx config text. Two template types:
 restore the previous content on failure (nginx only includes `*.conf`, so a `.tmp` candidate would
 not be validated). CRUD operations (pools, vhosts, routes, members) write and validate the config but do
 **not** reload nginx — the operator applies pending changes explicitly via `POST /api/config/reload`
-or the Config tab in the Web UI. Only the migration engine reloads nginx on its own, during
+or *Reload nginx* in the web panel. Only the migration engine reloads nginx on its own, during
 the `write_routing` and `switching` phases.
+
+### What is waiting for a reload (`nginx/applied.py`)
+
+Every successful reload records the sha256 of each managed `.conf` in
+`<nginx_config_dir>/.applied.json`. Comparing the files on disk with that record gives the
+changes that nginx has not loaded yet (`pending_reload` and `pending_files` in
+`GET /api/config/status`). The record is a file, not a database row, because the CLI reloads
+from another process and the record must survive a database rebuild. A reload done without the
+orchestrator is not seen; before the first recorded reload the answer is "unknown", not "no".
+
+### Web panel (`ui/` → `web/dist`, served by `web/spa.py`)
+
+A single-page application: React, TypeScript and Vite, with hand-written CSS and no runtime
+dependency loaded from the network, so it works on isolated networks. `make ui` builds it into
+`nanio_orchestrator/web/dist`, which is package data: a wheel and the Docker image contain it,
+and only a source checkout needs Node.js. FastAPI serves the files of the build and answers
+every other non-API path with the application shell (the application does its own routing).
+
+The shell and its assets are public and contain no data. The application signs in with
+`POST /api/auth/login`, which sets the `HttpOnly` session cookie; from then on it calls the same
+REST API as any other client. It keeps no state of its own: what it shows is polled from the
+API, so two operators see the same thing.
+
+### Explorer (`api/explorer.py`)
+
+Read-only S3 browsing for the operator: list a pool's buckets and one level of a bucket, read
+an object's metadata, download an object up to 64 MiB. It asks one enabled member of the pool,
+with the pool's stored credentials, when an operator asks: management traffic, like bucket
+discovery. It never writes to a pool, and client traffic still does not pass through the
+orchestrator. `locate` answers which pool serves a bucket or folder according to a vhost's
+routes, which is what lets the panel show where data really is.
 
 ### Sidecar files (`sidecar.py`)
 
@@ -151,7 +183,8 @@ Custom async S3 HTTP client using stdlib only (no boto3/aiobotocore). Implements
 | Internal-only API | The orchestrator should not be exposed to the internet |
 
 The orchestrator is designed for **internal network use only**. It should sit behind a firewall
-or be accessible only from trusted management machines. The web UI and API have no rate limiting.
+or be accessible only from trusted management machines. The panel and the API have no rate
+limiting, and the panel key can read object contents through the Explorer.
 
 ---
 
@@ -160,7 +193,7 @@ or be accessible only from trusted management machines. The web UI and API have 
 The `drift.py` module compares sha256 hashes of managed config files on disk against the
 sha256 stored in the `config_files` table. Drift is reported in:
 - `GET /api/config/status` (API)
-- The Config page in the web UI
+- The Overview and Configuration screens of the web panel
 
 Causes of drift:
 - Manual edits to nginx files

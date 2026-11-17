@@ -409,10 +409,33 @@ class ConfigFileStatus(BaseModel):
     last_synced_at: Optional[str]
 
 
+class PendingFile(BaseModel):
+    path: str
+    change: str  # added | modified | removed — compared with what nginx last loaded
+
+
 class ConfigStatus(BaseModel):
     files: list[ConfigFileStatus]
     last_reload_ok: Optional[bool] = None
     last_reload_at: Optional[str] = None
+    # True/False: whether managed files differ from what nginx loaded at the last reload done
+    # through the orchestrator. None: no reload recorded yet, so it cannot be told.
+    pending_reload: Optional[bool] = None
+    pending_files: list[PendingFile] = []
+    last_applied_at: Optional[str] = None
+
+
+# ── Session (the panel's login) ───────────────────────────────────────────────
+
+
+class LoginRequest(BaseModel):
+    key: str = Field(..., max_length=1024)
+
+
+class SessionOut(BaseModel):
+    authenticated: bool
+    dev_mode: bool
+    version: str
 
 
 class NginxResult(BaseModel):

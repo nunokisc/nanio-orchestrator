@@ -83,8 +83,8 @@ sudo chown nanio-orchestrator: orchestrator.db && sudo chmod 600 orchestrator.db
 sudo systemctl start nanio-orchestrator
 ```
 
-The backup can be a few minutes older than the files on disk. Open the Config tab: anything
-changed since the backup shows as drift. Use *Sync from Disk* (`POST /api/config/sync`) to bring
+The backup can be a few minutes older than the files on disk. Open the Configuration screen:
+anything changed since the backup shows as drift. Use *Sync from disk* (`POST /api/config/sync`) to bring
 the database up to date with the files.
 
 **Option B — rebuild from the files** (no backup needed):
@@ -140,7 +140,7 @@ sudo nanio-orchestrator config rebuild
 sudo chown -R nanio-orchestrator: /etc/nginx/nanio              # the command ran as root
 ```
 
-or, with the service running, Config tab → *Rebuild All* (no ownership fix needed). Every file is written, validated with `nginx -t` and nginx is
+or, with the service running, Configuration → *Rebuild all from the database* (no ownership fix needed). Every file is written, validated with `nginx -t` and nginx is
 reloaded; if validation fails the previous files are put back.
 
 The `.meta.json` sidecars are rewritten too (pool type, encrypted credentials, vhost default

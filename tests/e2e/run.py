@@ -61,6 +61,16 @@ def api(method: str, path: str, body: dict | None = None, expect: int | None = N
     return data if expect is not None else (status, data)
 
 
+def download(path: str) -> tuple[int, dict, bytes]:
+    """GET that is not JSON: status, headers (lower-cased names) and the raw body."""
+    request = urllib.request.Request(API + path, headers={"X-Orchestrator-Key": API_KEY})
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            return response.status, {k.lower(): v for k, v in response.headers.items()}, response.read()
+    except urllib.error.HTTPError as error:
+        return error.code, {k.lower(): v for k, v in error.headers.items()}, error.read()
+
+
 def wait_for_migration(migration_id: int) -> dict:
     deadline = time.monotonic() + 180
     while time.monotonic() < deadline:
@@ -145,6 +155,58 @@ async def main() -> None:
         await s3client.get_object(NODE_A, "photos", "2025/.nanio-shard", **AUTH) is not None,
         "marker object exists on pool-a",
     )
+
+    step("The explorer shows which pool holds what")
+    a, b = pools["pool-a"], pools["pool-b"]
+    for name, pool_id in pools.items():
+        listed = api("GET", f"/api/explorer/pools/{pool_id}/buckets", expect=200)
+        check("photos" in listed["buckets"], f"bucket photos exists on {name}")
+    root = api("GET", f"/api/explorer/pools/{a}/buckets/photos/objects?vhost_id={vhost['id']}", expect=200)
+    served_by = {f["prefix"]: (f["routed_pool"] or {}).get("name") for f in root["folders"]}
+    check(
+        served_by == {"2024/": None, "2025/": "pool-b"},
+        f"seen through the vhost on pool-a, folder 2025/ is flagged as served by pool-b: {served_by}",
+    )
+    plain = api("GET", f"/api/explorer/pools/{a}/buckets/photos/objects", expect=200)
+    check(
+        [f for f in plain["folders"] if f["prefix"] == "2025/"] == [{"prefix": "2025/", "routed_pool": None}],
+        "the marker keeps 2025/ visible on pool-a; without a vhost nothing is flagged",
+    )
+    inside = api("GET", f"/api/explorer/pools/{b}/buckets/photos/objects?prefix=2025/", expect=200)
+    check(
+        {o["key"]: o["size"] for o in inside["objects"]} == {"2025/b.txt": 10, "2025/new.txt": 3}
+        and [f["prefix"] for f in inside["folders"]] == ["2025/deep/"],
+        f"pool-b reports the folder's objects, one level at a time: {inside['objects']} {inside['folders']}",
+    )
+    check(
+        inside["pool"]["name"] == "pool-b" and inside["next_token"] is None,
+        "the listing names its pool and is complete",
+    )
+    page = api("GET", f"/api/explorer/pools/{b}/buckets/photos/objects?prefix=2025/&limit=1", expect=200)
+    check(page["next_token"] is not None, "a short page gives a token to continue with")
+    where = api("GET", f"/api/explorer/vhosts/{vhost['id']}/locate?bucket=photos&prefix=2025/deep/", expect=200)
+    check(
+        (where["pool"]["name"], where["route"]) == ("pool-b", "/photos/2025/"),
+        f"locate: photos/2025/deep/ is served by pool-b through /photos/2025/ ({where['pool']['name']}, {where['route']})",
+    )
+    where = api("GET", f"/api/explorer/vhosts/{vhost['id']}/locate?bucket=photos&prefix=2024/", expect=200)
+    check(
+        (where["pool"]["name"], where["route"]) == ("pool-a", "/"),
+        "locate: the rest of the bucket is on the default pool",
+    )
+    meta = api("GET", f"/api/explorer/pools/{b}/buckets/photos/object?key=2025/deep/c.txt", expect=200)
+    check(meta["size"] == 15 and meta["last_modified"] and meta["etag"], f"object details from pool-b: {meta}")
+    status, headers, body = download(f"/api/explorer/pools/{b}/buckets/photos/download?key=2025/deep/c.txt")
+    check(
+        status == 200
+        and body == b"2025/deep/c.txt"
+        and headers.get("content-disposition", "").startswith("attachment"),
+        f"download from pool-b is the object, sent as an attachment (got {status})",
+    )
+    status, _ = api("GET", f"/api/explorer/pools/{b}/buckets/photos/object?key=2024/a.txt")
+    check(status == 404, f"an object that is only on pool-a is a 404 on pool-b (got {status})")
+    status, _ = api("GET", f"/api/explorer/pools/{b}/buckets/no-such-bucket/objects")
+    check(status == 404, f"a bucket that does not exist is a 404, not an empty listing (got {status})")
 
     step("Routing over a folder that has data is refused")
     status, body = api(

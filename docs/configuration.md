@@ -51,11 +51,12 @@ sudo systemctl restart nanio-orchestrator
 ```
 
 Keys are the variable name without the `NANIO_ORCHESTRATOR_` prefix, in lower case. The
-Settings page of the Web UI shows the same values and can edit them
-(`PUT /api/config/settings/{key}`), followed by *Restart Now*.
+Settings screen of the web panel shows the same values, grouped, with secrets masked, and can
+edit them (`PUT /api/config/settings/{key}`), followed by *Restart the service*. A saved setting
+is marked *restart required* until then.
 
-Four settings can only be changed on the host with `config set`, never through the Web UI or the
-API: `RCLONE_PATH`, `DB_PATH`, `DB_BACKUP_PATH` and `NGINX_CONFIG_DIR`. They decide which program
+Four settings can only be changed on the host with `config set`, never through the panel or the
+API (the panel shows them read-only, with the reason): `RCLONE_PATH`, `DB_PATH`, `DB_BACKUP_PATH` and `NGINX_CONFIG_DIR`. They decide which program
 the service runs and where it writes, so the panel key alone must not be enough to change them.
 
 ## What each group is for
@@ -76,8 +77,14 @@ as an internal administration tool:
 
 - Bind it to a management address (`HOST`) and restrict port 8080 with the firewall.
 - It speaks plain HTTP. For remote access put it behind a TLS-terminating reverse proxy or a VPN.
-- There is a single API key, which is also the Web UI password. Rotate it with
+- There is a single API key, which is also the panel's password. Rotate it with
   `config set api_key <new>` and restart; every session is invalidated.
+- The panel's pages and scripts are served without authentication: they contain no data. All
+  data is behind `/api/*`, which answers 401 without the key or a session. The session cookie is
+  `HttpOnly`, so the key is not kept in the browser.
+- The panel key can read object contents: the Explorer lists every bucket and downloads objects
+  (up to 64 MiB each) on every pool that has stored credentials. One more reason to keep the
+  panel behind a firewall. Downloads are recorded in the audit log.
 - `config.env` is readable only by root and the service user. Keep it that way: it contains
   the API key and the Fernet key.
 

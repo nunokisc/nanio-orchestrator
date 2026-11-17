@@ -59,13 +59,14 @@ managed config into nginx, starts the service and prints the Web UI address and 
 Run it again to upgrade. `sudo nanio-orchestrator doctor` checks an installation and prints the
 fix for anything that is wrong.
 
-Then, in the Web UI:
+Then, in the web panel (the **Overview** screen walks you through the same steps):
 
 1. **Pools** → create a pool, add your nanio machines as members, store its S3 credentials.
 2. **Vhosts** → create a vhost with that pool as default.
-3. **Config** → *Reload nginx*. Changes are validated when you make them and applied only when
-   you reload.
-4. **Buckets** → promote a bucket to another pool when you want to move it.
+3. *Reload nginx*. Changes are validated when you make them and applied only when you reload;
+   while something is waiting, a bar at the top of every screen says so and has the button.
+4. **Buckets** → *Route to a pool* when you want to move a bucket to other machines.
+5. **Explorer** → look inside a bucket and see which pool really holds what (read-only).
 
 The same steps with `curl` are in [docs/operations.md](docs/operations.md).
 
@@ -102,6 +103,7 @@ credentials of every pool and can change what nginx serves.
 git clone https://github.com/nunokisc/nanio-orchestrator
 cd nanio-orchestrator
 make install-dev       # creates .venv and installs dependencies
+make ui                # builds the web panel (needs Node.js); once, and after changing ui/
 make run               # dev server at http://localhost:8080, API key "dev"
 make test              # pytest
 make lint              # ruff
@@ -110,7 +112,9 @@ make e2e               # end-to-end test against that cluster
 ```
 
 In dev mode the database and generated config live under `./dev-data/` and nginx commands are
-printed instead of executed. See [docs/contributing.md](docs/contributing.md).
+printed instead of executed. The panel is a React application in `ui/`; its build is shipped
+inside the Python package, so only a source checkout needs Node.js. See
+[docs/contributing.md](docs/contributing.md).
 
 ## License
 

@@ -20,7 +20,7 @@ Requirements on the machine:
 curl -fsSL https://raw.githubusercontent.com/nunokisc/nanio-orchestrator/main/install.sh | sudo bash
 ```
 
-When it finishes the service is running and the output shows the Web UI address and the
+When it finishes the service is running and the output shows the web panel's address and the
 generated API key. There are no further steps.
 
 What it does:
@@ -59,6 +59,11 @@ sudo bash install.sh --source /path/to/nanio-orchestrator        # or a .whl fil
 `--source` still needs the Python dependencies to be reachable by `pip` (a local package index
 or a wheel directory configured in `pip.conf`).
 
+A wheel contains the web panel already built. A **checkout** contains only its source (`ui/`):
+build it first with `make ui`, which needs Node.js 20 or newer, on the machine where you prepare
+the checkout. Installing a checkout without it works, and the API is complete, but the panel
+shows a page saying that it is not built.
+
 ---
 
 ## Check an installation
@@ -81,8 +86,8 @@ config, and restarts the service. nginx is not touched, so client traffic is not
 The database schema is upgraded automatically on startup.
 
 A new version may also change how nginx config is generated. Existing files are only rewritten
-when their pool or vhost is saved, so after an upgrade regenerate them once: Web UI → **Config**
-→ *Rebuild All* (or `POST /api/config/rebuild`). Every file is validated with `nginx -t` before
+when their pool or vhost is saved, so after an upgrade regenerate them once: web panel →
+**Configuration** → *Rebuild all from the database* (or `POST /api/config/rebuild`). Every file is validated with `nginx -t` before
 nginx is reloaded, and the previous files are restored if validation fails.
 
 New settings always have defaults: an existing `config.env` keeps working.
@@ -148,7 +153,8 @@ echo "NANIO_ORCHESTRATOR_SECRET=$(docker run --rm ghcr.io/nunokisc/nanio-orchest
 docker compose up -d
 ```
 
-The panel is on `http://127.0.0.1:8080`; log in with the API key from `.env`. Keep a copy of
+The panel is on `http://127.0.0.1:8080`; sign in with the API key from `.env`. The image is
+built with the panel inside (a Node.js build stage), so nothing else is needed. Keep a copy of
 `NANIO_ORCHESTRATOR_SECRET`: it encrypts the stored pool credentials.
 
 What to adapt in `compose.yaml`:
@@ -185,8 +191,13 @@ Differences from a host install:
 git clone https://github.com/nunokisc/nanio-orchestrator.git
 cd nanio-orchestrator
 make install-dev          # creates .venv with the dev dependencies (uses uv when available)
+make ui                   # builds the web panel into nanio_orchestrator/web/dist (needs Node.js 20+)
 make run                  # dev server, no root required
 ```
+
+Without `make ui` the API works and the panel's address shows how to build it. While working on
+the panel itself, `make ui-dev` serves it with hot reload on `http://localhost:5173` and proxies
+`/api` to the dev server.
 
 `make run` does not need nginx: nginx commands are printed, not executed. To work against a
 real cluster — nginx, two nanio servers and rclone — start the development stack instead:
@@ -197,7 +208,8 @@ make e2e                  # end-to-end test against it (pools, routes, bucket an
 make stack-down
 ```
 
-The stack runs the code in your checkout and reloads when you edit it. The API key is `dev-key`.
+The stack runs the code in your checkout and reloads when you edit it, the panel included
+(`make stack` builds it when `npm` is available). The API key is `dev-key`.
 
 The dev server (`make run`):
 - Reads config from `dev.env` (copy `dev.env.example` to `dev.env` to customise)

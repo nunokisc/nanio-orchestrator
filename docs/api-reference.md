@@ -10,10 +10,18 @@ An interactive version generated from the code is served by the orchestrator its
 | Client | How |
 |--------|-----|
 | API | `X-Orchestrator-Key: <api key>` header on every `/api/*` request |
-| Web UI | `POST /login` (form field `key`) sets the `nanio_session` cookie, valid for `SESSION_TTL` seconds. The cookie is also accepted on `/api/*`. `POST /logout` clears it. |
+| Web panel | `POST /api/auth/login` sets the `nanio_session` cookie (`HttpOnly`, `SameSite=Lax`), valid for `SESSION_TTL` seconds. The cookie is accepted on `/api/*` like the header. |
 
-No authentication: `GET /api/health`, `/api/docs`, `/api/redoc`, `/login`, `/static/*`.
-A missing or wrong key returns `401`.
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/auth/login` | Body `{"key": "<api key>"}`. Sets the session cookie and answers the session. `401` with `{"detail": "Invalid API key"}` on a wrong key. |
+| POST | `/api/auth/logout` | Expires the session cookie |
+| GET | `/api/auth/session` | `{"authenticated": bool, "dev_mode": bool, "version": str}`. Never `401`: it is how the panel finds out whether to show the sign-in screen. |
+
+No authentication: `GET /api/health`, `/api/docs`, `/api/redoc`, `/api/auth/*`, and everything
+outside `/api/`, which is the web panel's shell and assets (they contain no data). Every other
+`/api/*` path, the OpenAPI schema at `/api/openapi.json` included, answers `401` with a JSON
+`detail` when the key or the session is missing or wrong.
 
 ```bash
 curl -H "X-Orchestrator-Key: $KEY" http://localhost:8080/api/pools
@@ -38,6 +46,19 @@ the response carries the nginx output.
 `status` is `degraded` when the database cannot be read. `drift_alerts` is the number of
 managed files that differ from what the orchestrator wrote. `missing_buckets` is the number of
 routed buckets whose pool reports that the bucket does not exist.
+
+`GET /api/overview` (authenticated) is the summary the panel polls:
+
+```json
+{"pools": [{"id": 1, "name": "pool-a", "type": "nanio", "members": 2, "enabled_members": 2,
+            "has_credentials": true}],
+ "vhosts": 1, "routes": 3, "unrouted_buckets": 12,
+ "missing_buckets": [{"vhost_id": 1, "server_name": "s3.example.com", "bucket": "photos",
+                      "pool_name": "pool-b", "missing_since": "2026-01-02T03:04:05Z"}]}
+```
+
+`routes` counts bucket and folder routes (not the default `/`); `unrouted_buckets` the
+discovered buckets still served by a default pool.
 
 ---
 
@@ -289,7 +310,8 @@ migration points at a different pool.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/config/status` | Every managed file with its hash on disk, the hash the orchestrator wrote, and whether it drifted; time and result of the last reload |
+| GET | `/api/config/status` | Every managed file with its hash on disk, the hash the orchestrator wrote, and whether it drifted; what is waiting for a reload (below) |
+| GET | `/api/config/file?path=` | One managed file: `content` (on disk, `null` if missing), `recorded` (what the orchestrator wrote, `null` if it never wrote it) and `drifted`. Only `.conf` files in the managed `pools/` and `vhosts/` directories. |
 | POST | `/api/config/validate` | `nginx -t` |
 | POST | `/api/config/reload` | `nginx -s reload`: applies pending changes |
 | GET | `/api/config/preview/pool/{id}` | The upstream block that would be generated |
@@ -304,10 +326,71 @@ migration points at a different pool.
 | PUT | `/api/config/settings/{key}` | Body `{"value": "..."}`. Writes the setting to the config file; takes effect after a restart. `rclone_path`, `db_path`, `db_backup_path` and `nginx_config_dir` return `403`: change them on the host with `nanio-orchestrator config set`. |
 | POST | `/api/config/settings/restart` | Restart the service. Returns at once; the restart happens 1.5 s later. Not available in dev mode. |
 
+Fields of `GET /api/config/status` about applying changes:
+
+| Field | Meaning |
+|-------|---------|
+| `pending_reload` | `true`: managed files differ from what nginx loaded at the last reload done through the orchestrator. `false`: they do not. `null`: files exist but no reload has been recorded yet, so it cannot be told. |
+| `pending_files` | `[{"path": "...", "change": "added" \| "modified" \| "removed"}]` |
+| `last_applied_at` | When that last reload happened (`null` if none was recorded) |
+| `last_reload_ok`, `last_reload_at` | Result and time of the last audited change that ran nginx. This includes the `nginx -t` of ordinary changes, so it is not the time of the last reload: use `last_applied_at` for that. |
+
+A reload done without the orchestrator (`systemctl reload nginx`) is not seen: see
+[operations.md](operations.md#applying-changes).
+
+---
+
+## Explorer
+
+Read-only browsing of what a `nanio` pool holds. The orchestrator asks the first enabled member
+of the pool with the pool's stored credentials. Nothing here writes to a pool. See
+[operations.md](operations.md#look-inside-a-bucket-the-explorer).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/explorer/pools/{id}/buckets` | The buckets on the pool: `{"pool": {"id", "name"}, "member": "host:port", "buckets": ["..."]}` |
+| GET | `/api/explorer/pools/{id}/buckets/{bucket}/objects` | One page of one level of the bucket (delimiter `/`) |
+| GET | `/api/explorer/pools/{id}/buckets/{bucket}/object?key=` | Metadata of one object (HEAD): `size`, `last_modified`, `etag`, `content_type` |
+| GET | `/api/explorer/pools/{id}/buckets/{bucket}/download?key=` | The bytes of one object, as an attachment (`application/octet-stream`). `413` above 64 MiB. Recorded in the audit log (`download_object`). |
+| GET | `/api/explorer/vhosts/{id}/locate?bucket=&prefix=` | Which pool serves that bucket, or that prefix inside it, according to the vhost's routes: the most specific enabled route wins, the default pool otherwise. `{"vhost", "bucket", "prefix", "route", "pool": {"id", "name", "type"}}` |
+
+Query parameters of `objects`:
+
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `prefix` | empty | The folder to list (`2025/`), optionally followed by the start of a name to filter on (`2025/rep`) |
+| `token` | empty | `next_token` of the previous page |
+| `limit` | `200` | Keys per page, 1 to 1000 |
+| `vhost_id` | none | Mark the folders that a route of this vhost sends to another pool |
+
+```json
+{"pool": {"id": 1, "name": "pool-a"}, "bucket": "photos", "prefix": "",
+ "folders": [{"prefix": "2024/", "routed_pool": null},
+             {"prefix": "2025/", "routed_pool": {"id": 2, "name": "pool-b"}}],
+ "objects": [{"key": "readme.md", "size": 360, "last_modified": "2026-01-02T03:04:05.000Z",
+              "etag": "4056fcee807fa6e2ba6f6fd222f7ed8e"}],
+ "next_token": null}
+```
+
+`routed_pool` is set when `vhost_id` is given and an enabled folder route of that vhost sends
+that folder to a pool other than the one being listed: what clients see under it is on that
+pool. Such a folder is listed even when this pool holds nothing under it. A server may repeat a
+folder on the page after the one that first listed it; merge folders by `prefix`.
+
+Errors:
+
+| Status | When |
+|--------|------|
+| `400` | The pool is an `http` pool (no S3 API), has no enabled member, or has no stored credentials; for `locate`, the vhost has no route that serves the bucket |
+| `404` | The pool or vhost is unknown, or the bucket or object really does not exist on that pool |
+| `413` | Download of an object larger than 64 MiB: fetch it with an S3 client through the gateway |
+| `502` | The pool could not be asked (unreachable, refused the credentials, answered an error). Never an empty listing. |
+
 ---
 
 ## Audit
 
 `GET /api/audit` returns the changes, newest first, each with the action, the entity, before and
 after values, and the nginx output. Paging: `?page=` (default 1) and `?per_page=` (default 50,
-max 200). Date filter: `?from=` and `?to=`.
+max 200). Filters: `?entity_type=` (`pool`, `pool_member`, `vhost`, `route`, `bucket`,
+`migration`, `config`, `object`), `?entity_id=`, and dates with `?from=` and `?to=`.

@@ -3,14 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import hmac
 import logging
 from contextlib import asynccontextmanager, suppress
-from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import RedirectResponse
-from fastapi.staticfiles import StaticFiles
 
 from nanio_orchestrator import __version__
 from nanio_orchestrator.backup import backup_loop, stop_backup
@@ -22,9 +18,16 @@ from nanio_orchestrator.migration_engine import recover_interrupted_migrations
 
 logger = logging.getLogger(__name__)
 
-# Paths that never require any authentication
-_UNPROTECTED = {"/api/health", "/api/docs", "/api/redoc", "/login", "/logout"}
-_UNPROTECTED_PREFIXES = ("/static/",)
+# /api/* paths that need no authentication. Everything else under /api/ does; everything
+# outside /api/ is the panel's shell and assets, which hold no data.
+_UNPROTECTED = {
+    "/api/health",
+    "/api/docs",
+    "/api/redoc",
+    "/api/auth/login",
+    "/api/auth/logout",
+    "/api/auth/session",
+}
 
 
 @asynccontextmanager
@@ -89,66 +92,56 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
         docs_url="/api/docs",
         redoc_url="/api/redoc",
+        # under /api/ so that the schema is behind the same authentication as the API
+        openapi_url="/api/openapi.json",
     )
 
     # ── Auth middleware ────────────────────────────────────────────────────
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
-        from nanio_orchestrator.auth import is_authenticated
+        from nanio_orchestrator.auth import is_authorized
 
         path = request.url.path
-
-        # Static files and login endpoints: always pass through
-        if path in _UNPROTECTED or any(path.startswith(p) for p in _UNPROTECTED_PREFIXES):
+        if not path.startswith("/api/") or path in _UNPROTECTED:
             return await call_next(request)
 
-        # ── /api/* — header OR cookie auth ─────────────────────────────────
-        if path.startswith("/api/"):
-            key = request.headers.get("X-Orchestrator-Key", "")
-            if key and hmac.compare_digest(key.encode(), s.api_key.encode()):
-                return await call_next(request)
-            # Also allow a browser session cookie (Web UI calls the API directly)
-            if is_authenticated(request, s.api_key, s.session_ttl):
-                return await call_next(request)
-            return Response(
-                content='{"detail":"Invalid or missing X-Orchestrator-Key"}',
-                status_code=401,
-                media_type="application/json",
-            )
-
-        # ── /web/* and / — cookie-based auth ─────────────────────────────
-        if not is_authenticated(request, s.api_key, s.session_ttl):
-            return RedirectResponse(url="/login", status_code=302)
-
-        return await call_next(request)
+        # API key header, or the session cookie of the panel
+        if is_authorized(request, s.api_key, s.session_ttl):
+            return await call_next(request)
+        return Response(
+            content='{"detail":"Invalid or missing X-Orchestrator-Key"}',
+            status_code=401,
+            media_type="application/json",
+        )
 
     # ── API routers ───────────────────────────────────────────────────────
     from nanio_orchestrator.api.audit import router as audit_router
+    from nanio_orchestrator.api.auth import router as auth_router
     from nanio_orchestrator.api.buckets import router as buckets_router
     from nanio_orchestrator.api.config import router as config_router
     from nanio_orchestrator.api.credentials import router as credentials_router
+    from nanio_orchestrator.api.explorer import router as explorer_router
     from nanio_orchestrator.api.health import router as health_router
     from nanio_orchestrator.api.migrations import router as migrations_router
+    from nanio_orchestrator.api.overview import router as overview_router
     from nanio_orchestrator.api.pools import router as pools_router
     from nanio_orchestrator.api.vhosts import router as vhosts_router
 
+    app.include_router(auth_router)
     app.include_router(pools_router)
     app.include_router(vhosts_router)
     app.include_router(config_router)
     app.include_router(health_router)
+    app.include_router(overview_router)
     app.include_router(audit_router)
     app.include_router(buckets_router)
     app.include_router(credentials_router)
     app.include_router(migrations_router)
+    app.include_router(explorer_router)
 
-    # ── Web UI (includes /login, /logout, /, /web/*) ──────────────────────
-    from nanio_orchestrator.web.routes import router as web_router
+    # ── Web panel: every other path (last, it matches anything) ───────────
+    from nanio_orchestrator.web.spa import router as panel_router
 
-    app.include_router(web_router)
-
-    # ── Static files ──────────────────────────────────────────────────────
-    static_dir = Path(__file__).parent / "web" / "static"
-    if static_dir.exists():
-        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+    app.include_router(panel_router)
 
     return app
