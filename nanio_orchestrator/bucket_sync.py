@@ -17,6 +17,7 @@ import logging
 from datetime import datetime, timezone
 from typing import List
 
+from nanio_orchestrator import s3client
 from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.credentials import get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
@@ -80,6 +81,12 @@ async def sync_vhost_buckets_once(vhost_id: int) -> dict:
     except Exception as e:
         logger.warning("Bucket sync failed for vhost %d (%s): %s", vhost_id, member_address, e)
         return {"vhost_id": vhost_id, "error": str(e)}
+
+    listed = {b["name"] for b in buckets}
+    for name in await _list_routed_buckets_on_default_pool(
+        vhost_id, vhost["default_pool_id"], member_address, routed, listed, access_key, secret_key
+    ):
+        buckets.append({"name": name})
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -148,6 +155,51 @@ async def sync_vhost_buckets_once(vhost_id: int) -> dict:
     if missing:
         result["missing_on_pool"] = missing
     return result
+
+
+async def _list_routed_buckets_on_default_pool(
+    vhost_id: int,
+    default_pool_id: int,
+    default_member: str,
+    routed: dict,
+    listed: set,
+    access_key,
+    secret_key,
+) -> List[str]:
+    """Make buckets that live on another pool show up in ListBuckets.
+
+    ListBuckets is answered by the default pool, so a bucket routed elsewhere would be usable
+    but invisible. For every bucket route whose bucket exists on its pool and is not listed, an
+    empty bucket of the same name is created on the default pool. It never receives objects:
+    every request for that bucket follows the route. Returns the names created.
+    """
+    created: List[str] = []
+    for bucket, pool_id in routed.items():
+        if "/" in bucket or bucket in listed or pool_id == default_pool_id:
+            continue  # a folder route, already listed, or routed to the default pool itself
+        try:
+            async with get_db_ctx() as db:
+                rows = await db.execute_fetchall(
+                    """SELECT pm.address FROM pool_members pm JOIN pools p ON p.id = pm.pool_id
+                       WHERE pm.pool_id = ? AND pm.enabled = 1 AND p.type = 'nanio' ORDER BY pm.id LIMIT 1""",
+                    (pool_id,),
+                )
+            if not rows:
+                continue
+            ak, sk, _ = await get_pool_s3_params(pool_id)
+            if not await bucket_exists(rows[0]["address"], bucket, access_key=ak, secret_key=sk):
+                continue  # nothing to show yet: the bucket has not been created on its pool
+            ok, message = await s3client.create_bucket(
+                default_member, bucket, access_key=access_key, secret_key=secret_key
+            )
+        except Exception as exc:
+            ok, message = False, str(exc)
+        if ok:
+            logger.info("vhost %d: bucket '%s' lives on another pool — listed on the default pool", vhost_id, bucket)
+            created.append(bucket)
+        else:
+            logger.warning("vhost %d: could not list bucket '%s' on the default pool: %s", vhost_id, bucket, message)
+    return created
 
 
 async def _flag_missing_routed_buckets(vhost_id: int, now: str) -> List[dict]:

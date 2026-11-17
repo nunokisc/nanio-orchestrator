@@ -53,12 +53,20 @@ are replicas, so that it can write them into the upstream:
 
 ### What clients must know
 
-- **One set of credentials.** nanio verifies the request signature itself. Every pool behind a
-  vhost must accept the credentials the clients use.
-- **`ListBuckets` shows the default pool only.** A bucket routed to another pool is fully usable
-  but does not appear in the bucket list unless it also exists on the default pool.
-- **Buckets are not created for you.** Adding a route does not create the bucket on the target
-  pool. Only a migration creates the destination bucket.
+The short version; [clients.md](clients.md) is the page to hand to whoever writes the
+application.
+
+- **Path-style addressing and one set of credentials.** Requests are routed by their path, and
+  nanio verifies the signature itself, so every pool behind a vhost must accept the credentials
+  the clients use.
+- **A new bucket is created on the default pool.** Adding a bucket route does not create the
+  bucket on the target pool; the owner creates it through the gateway once the route is applied.
+- **`ListBuckets` is answered by the default pool.** For a bucket that lives on another pool the
+  orchestrator keeps an empty bucket of the same name on the default pool, so that it is listed.
+  It never receives objects: every request for the bucket follows its route.
+- **Some operations cannot span pools**: server-side copy between pools, and a recursive listing
+  of a bucket that has a folder on another pool. They are listed, with what to do instead, in
+  [clients.md](clients.md#limits-that-cannot-be-removed).
 
 ---
 
@@ -214,9 +222,12 @@ Limits:
 | Situation | Effect |
 |-----------|--------|
 | Listing the **whole** bucket without a delimiter (recursive listing from the root) | Does not include the folder's objects. Browsing folder by folder works, and so does a recursive listing that starts inside the folder. |
-| Server-side copy (`CopyObject`) between the folder and the rest of the bucket | Fails with 404: the two sides are on different machines. Download and upload instead. |
+| Server-side copy (`CopyObject`) between the folder and the rest of the bucket | Fails with 404: the two sides are on different machines. The client must download and upload. |
 | A folder that already holds data | Cannot be routed yet; empty it first (or `"allow_orphan": true` to leave the objects behind, hidden). |
-| The bucket's own credentials | Both pools must accept the credentials the clients use. |
+| Credentials | Both pools must accept the credentials the clients use. |
+
+The first two cannot be removed without putting a component in the request path. What a client
+can do instead is in [clients.md](clients.md#limits-that-cannot-be-removed).
 
 ### Move a bucket that is already routed
 
@@ -250,6 +261,13 @@ enabled member of each vhost's default pool. Bucket states:
 | `migrating` | A migration is moving it |
 | `ignored` | Hidden by the operator |
 | `deleted` | No longer returned by `ListBuckets` |
+
+A bucket that lives on another pool is not returned by the default pool, so it would be
+missing from `ListBuckets` and from this page. When a bucket route points at another pool and the
+bucket exists there, bucket sync creates an **empty bucket of the same name on the default
+pool**. It only makes the name appear; all requests for the bucket follow the route. If the
+owner later deletes the bucket, that empty bucket stays until you remove the route and delete
+it.
 
 If a routed bucket's target pool answers that the bucket does not exist, the bucket is marked
 **missing on pool** on the Buckets page, in `GET /api/vhosts/{id}/buckets` (`missing_since`) and

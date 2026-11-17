@@ -5,6 +5,7 @@
 | Install, upgrade or remove it | [installation.md](installation.md) |
 | Understand the settings and secure the panel | [configuration.md](configuration.md) |
 | Manage pools, vhosts, buckets and replicas day to day | [operations.md](operations.md) |
+| Know what an S3 application must be aware of, and the limits | [clients.md](clients.md) |
 | Move a bucket to another pool | [migrations.md](migrations.md) |
 | Back up, and recover from a lost database, config or machine | [disaster-recovery.md](disaster-recovery.md) |
 | Fix a specific error | [troubleshooting.md](troubleshooting.md) |
