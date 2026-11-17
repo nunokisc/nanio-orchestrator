@@ -43,10 +43,6 @@ server {
     client_max_body_size 0;
     proxy_request_buffering off;
     proxy_buffering         off;
-{% if vhost.extra_directives %}
-
-    {{ vhost.extra_directives }}
-{% endif %}
 {% if extra_blocks_proxy %}
 {% for block in extra_blocks_proxy %}
 
@@ -76,9 +72,6 @@ server {
         proxy_set_header   X-Real-IP         $remote_addr;
         proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header   Connection        "";
-{% if route.extra_directives %}
-        {{ route.extra_directives }}
-{% endif %}
     }
 {% endmacro %}
 {% for route in routes %}

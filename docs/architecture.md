@@ -76,7 +76,6 @@ SQLite with WAL mode and foreign keys enabled. Schema:
 | `migrations` | Migration records with phase, progress, orphan tracking |
 | `migration_log` | Per-migration phase change log |
 | `config_files` | Tracked config files with sha256 for drift detection |
-| `node_configs` | Generated node configs per pool member |
 | `audit_log` | All mutation events with before/after state |
 | `credentials` | Fernet-encrypted pool credentials |
 

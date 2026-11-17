@@ -477,7 +477,6 @@ async def _write_state_sidecar(migration_id: int, db) -> None:
         "source_pool_name": m.get("source_pool_name"),
         "target_pool_id": m["dst_pool_id"],
         "target_pool_name": m.get("target_pool_name"),
-        "mode": m.get("mode", "copy"),
         "route_id": m.get("route_id"),
         "status": m["phase"],
         "copied_objects": m["objects_done"],
@@ -874,7 +873,6 @@ async def run_migration(migration_id: int) -> None:
         bucket = m["bucket"]
         src_pool_id = m["src_pool_id"]
         dst_pool_id = m["dst_pool_id"]
-        mode = m.get("mode", "copy")
         route_id = m.get("route_id")  # may be None for legacy migrations
         # True once nginx routes this bucket through the split (set below, or inherited from
         # an interrupted run of this migration).
@@ -1302,7 +1300,6 @@ async def run_migration(migration_id: int) -> None:
                 "source_pool_name": pool_names.get(src_pool_id),
                 "target_pool_id": dst_pool_id,
                 "target_pool_name": pool_names.get(dst_pool_id),
-                "mode": mode,
                 "route_id": route_id,
                 "status": "done",
                 "orphaned_source_pool_id": src_pool_id,
@@ -1365,7 +1362,6 @@ async def start_migration(
     bucket: str,
     src_pool_id: int,
     dst_pool_id: int,
-    mode: str = "copy",
     route_id: Optional[int] = None,
 ) -> int:
     """Create a migration record and launch the background task. Returns migration id.
@@ -1387,9 +1383,9 @@ async def start_migration(
         async with get_db_ctx() as db:
             cursor = await db.execute(
                 """INSERT INTO migrations
-                   (vhost_id, bucket, src_pool_id, dst_pool_id, phase, mode, route_id)
-                   VALUES (?, ?, ?, ?, 'pending', ?, ?)""",
-                (vhost_id, bucket, src_pool_id, dst_pool_id, mode, route_id),
+                   (vhost_id, bucket, src_pool_id, dst_pool_id, phase, route_id)
+                   VALUES (?, ?, ?, ?, 'pending', ?)""",
+                (vhost_id, bucket, src_pool_id, dst_pool_id, route_id),
             )
             migration_id = cursor.lastrowid
             await log_audit(
@@ -1401,7 +1397,6 @@ async def start_migration(
                     "bucket": bucket,
                     "src_pool_id": src_pool_id,
                     "dst_pool_id": dst_pool_id,
-                    "mode": mode,
                     "vhost_id": vhost_id,
                     "route_id": route_id,
                 },

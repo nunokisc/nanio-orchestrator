@@ -1,4 +1,4 @@
-.PHONY: install-dev run test lint fmt clean install remove build
+.PHONY: install-dev run test lint fmt clean build
 
 # ── Development ───────────────────────────────────────────────────────────────
 
@@ -39,15 +39,7 @@ clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -name '*.pyc' -delete 2>/dev/null || true
 
-# ── Production ────────────────────────────────────────────────────────────────
-
-install:
-	@echo "Running production install (requires root)..."
-	nanio-orchestrator install
-
-remove:
-	@echo "Removing nanio-orchestrator (requires root)..."
-	nanio-orchestrator remove
+# ── Packaging ─────────────────────────────────────────────────────────────────
 
 build:
 	@echo "Building wheel..."

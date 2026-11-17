@@ -307,16 +307,15 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
 
             await db.execute(
                 """INSERT INTO migrations
-                   (vhost_id, bucket, src_pool_id, dst_pool_id, phase, mode, route_id,
+                   (vhost_id, bucket, src_pool_id, dst_pool_id, phase, route_id,
                     objects_total, objects_done, bytes_total, bytes_done, split_routing)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     vhost_id_for_migration,
                     state.get("bucket", ""),
                     src_id,
                     dst_id,
                     phase,
-                    state.get("mode", "copy"),
                     state.get("route_id"),
                     state.get("total_objects", 0),
                     state.get("copied_objects", 0),
@@ -359,15 +358,14 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
 
             await db.execute(
                 """INSERT INTO migrations
-                   (vhost_id, bucket, src_pool_id, dst_pool_id, phase, mode, route_id,
+                   (vhost_id, bucket, src_pool_id, dst_pool_id, phase, route_id,
                     orphaned_source_pool_id, orphaned_source_prefix, orphaned_at)
-                   VALUES (?, ?, ?, ?, 'done', ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, 'done', ?, ?, ?, ?)""",
                 (
                     vhost_id_for_completion,
                     state.get("bucket", ""),
                     src_id,
                     dst_id,
-                    state.get("mode", "copy"),
                     state.get("route_id"),
                     state.get("orphaned_source_pool_id"),
                     state.get("orphaned_source_prefix"),
@@ -422,8 +420,10 @@ async def _rebuild_bucket_sync(
                     continue
 
                 address = members[0]["address"]
-                s = get_settings()
-                raw_buckets = await list_buckets(address, s.s3_access_key, s.s3_secret_key)
+                from nanio_orchestrator.credentials import get_pool_s3_params
+
+                access_key, secret_key, _ = await get_pool_s3_params(pool_id)
+                raw_buckets = await list_buckets(address, access_key, secret_key)
                 # list_buckets returns [{"name": ..., "created": ...}]
                 bucket_names = [b["name"] for b in raw_buckets if b.get("name")]
 

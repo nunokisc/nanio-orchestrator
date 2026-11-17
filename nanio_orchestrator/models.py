@@ -130,7 +130,6 @@ class VhostCreate(BaseModel):
     ssl: bool = True
     ssl_cert_path: Optional[str] = None
     ssl_key_path: Optional[str] = None
-    extra_directives: Optional[str] = None
     extra_blocks: Optional[List[VhostExtraBlock]] = None
     enabled: bool = True
     default_pool_id: Optional[int] = None
@@ -167,7 +166,6 @@ class VhostUpdate(BaseModel):
     ssl: Optional[bool] = None
     ssl_cert_path: Optional[str] = None
     ssl_key_path: Optional[str] = None
-    extra_directives: Optional[str] = None
     extra_blocks: Optional[List[VhostExtraBlock]] = None
     enabled: Optional[bool] = None
     default_pool_id: Optional[int] = None
@@ -205,7 +203,6 @@ class VhostOut(BaseModel):
     ssl: bool
     ssl_cert_path: Optional[str]
     ssl_key_path: Optional[str]
-    extra_directives: Optional[str]
     extra_blocks: Optional[List[VhostExtraBlock]] = None
     enabled: bool
     default_pool_id: Optional[int] = None
@@ -222,7 +219,6 @@ class RouteCreate(BaseModel):
     path_prefix: str = Field(..., min_length=1)
     pool_id: int
     key_prefix: Optional[str] = None
-    extra_directives: Optional[str] = None
     enabled: bool = True
 
     @field_validator("path_prefix")
@@ -236,22 +232,11 @@ class RouteCreate(BaseModel):
             )
         return v
 
-    @field_validator("extra_directives")
-    @classmethod
-    def validate_extra_directives(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and _NGINX_DANGEROUS_RE.search(v):
-            raise ValueError(
-                "extra_directives contains dangerous characters (; { } \\). "
-                "Use the config rebuild API for advanced directives."
-            )
-        return v
-
 
 class RouteUpdate(BaseModel):
     path_prefix: Optional[str] = None
     pool_id: Optional[int] = None
     key_prefix: Optional[str] = None
-    extra_directives: Optional[str] = None
     enabled: Optional[bool] = None
 
     @field_validator("path_prefix")
@@ -267,16 +252,6 @@ class RouteUpdate(BaseModel):
             )
         return v
 
-    @field_validator("extra_directives")
-    @classmethod
-    def validate_extra_directives(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and _NGINX_DANGEROUS_RE.search(v):
-            raise ValueError(
-                "extra_directives contains dangerous characters (; { } \\). "
-                "Use the config rebuild API for advanced directives."
-            )
-        return v
-
 
 class RouteOut(BaseModel):
     id: int
@@ -285,7 +260,6 @@ class RouteOut(BaseModel):
     pool_id: int
     pool_name: Optional[str] = None
     key_prefix: Optional[str] = None
-    extra_directives: Optional[str]
     enabled: bool
     created_at: str
     updated_at: str
@@ -344,7 +318,6 @@ class RcloneMigrationCreate(BaseModel):
     bucket: str = Field(..., min_length=1)
     src_pool_id: int
     dst_pool_id: int
-    mode: str = Field("copy", pattern=r"^copy$")
 
 
 class RcloneMigrationOut(BaseModel):
@@ -353,7 +326,6 @@ class RcloneMigrationOut(BaseModel):
     bucket: str
     src_pool_id: int
     dst_pool_id: int
-    mode: str = "copy"
     phase: str
     objects_total: int
     objects_done: int

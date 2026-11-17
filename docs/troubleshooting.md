@@ -69,7 +69,7 @@ put back. Nothing changed. The nginx message is in the API response and in the a
 | `cannot load certificate` | `ssl_cert_path` / `ssl_key_path` do not exist or are not readable by nginx |
 | `duplicate upstream` / `conflicting server name` | Something outside `/etc/nginx/nanio` already defines that name |
 | Errors in a file you never touched | The existing configuration is already invalid. `nginx -t` validates everything, so no change can be applied until it is fixed. |
-| Syntax error inside a vhost | An `extra_blocks` entry or `extra_directives` is not valid nginx syntax |
+| Syntax error inside a vhost | An `extra_blocks` entry is not valid nginx syntax |
 
 ### I changed something and nothing happened for clients
 

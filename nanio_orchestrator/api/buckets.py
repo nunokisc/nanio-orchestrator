@@ -79,7 +79,6 @@ async def _all_enabled_members(pool_id: int, db) -> List[str]:
 @router.get("/{vhost_id}/buckets", response_model=BucketListOut)
 async def list_vhost_buckets(vhost_id: int, fetch_counts: bool = False):
     """List all tracked buckets for this vhost with routing status."""
-    s = get_settings()
     async with get_db_ctx() as db:
         vhost = await _require_vhost_with_default_pool(vhost_id, db)
         default_member = await _first_enabled_member(vhost["default_pool_id"], db)
@@ -94,6 +93,10 @@ async def list_vhost_buckets(vhost_id: int, fetch_counts: bool = False):
             (vhost_id,),
         )
 
+    count_ak = count_sk = None
+    if fetch_counts:
+        count_ak, count_sk, _ = await get_pool_s3_params(vhost["default_pool_id"])
+
     last_synced = None
     buckets = []
     for r in rows:
@@ -104,8 +107,8 @@ async def list_vhost_buckets(vhost_id: int, fetch_counts: bool = False):
                 obj_count = await count_objects(
                     default_member,
                     rd["bucket"],
-                    access_key=s.s3_access_key,
-                    secret_key=s.s3_secret_key,
+                    access_key=count_ak,
+                    secret_key=count_sk,
                 )
             except Exception:
                 pass

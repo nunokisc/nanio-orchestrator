@@ -95,9 +95,9 @@ class TestNodeConfigSecrets:
 
         assert resp.status_code == 200
         assert "super-secret" in resp.text  # returned to the caller once...
-        async with get_db_ctx() as db:
-            rows = await db.execute_fetchall("SELECT 1 FROM node_configs")
-        assert rows == []  # ...and kept nowhere
+        async with get_db_ctx() as db:  # ...and kept nowhere: the table that held them is gone
+            tables = await db.execute_fetchall("SELECT name FROM sqlite_master WHERE name = 'node_configs'")
+        assert tables == []
 
     async def test_secret_cannot_be_sent_in_the_url(self, client, mock_nginx):
         pool = await create_pool(client, "node-get")
@@ -109,20 +109,16 @@ class TestNodeConfigSecrets:
 
         assert resp.status_code == 405
 
-    async def test_configs_stored_by_older_versions_are_purged_on_startup(self, client, mock_nginx):
+    async def test_table_left_by_older_versions_is_dropped_on_startup(self, client, mock_nginx):
         from nanio_orchestrator.db import get_db_ctx, init_db
 
-        pool = await create_pool(client, "node-old")
-        member = await create_member(client, pool["id"], "10.0.0.1:9000")
         async with get_db_ctx() as db:
-            await db.execute(
-                "INSERT INTO node_configs (member_id, node_type, config_json) VALUES (?, 'nanio-only', ?)",
-                (member["id"], '[{"content": "secret_key = \\"super-secret\\""}]'),
-            )
+            await db.execute("CREATE TABLE node_configs (id INTEGER PRIMARY KEY, member_id INTEGER, config_json TEXT)")
+            await db.execute("INSERT INTO node_configs (member_id, config_json) VALUES (1, 'secret_key = \"super-secret\"')")
             await db.commit()
 
         await init_db()
 
         async with get_db_ctx() as db:
-            rows = await db.execute_fetchall("SELECT 1 FROM node_configs")
-        assert rows == []
+            tables = await db.execute_fetchall("SELECT name FROM sqlite_master WHERE name = 'node_configs'")
+        assert tables == []

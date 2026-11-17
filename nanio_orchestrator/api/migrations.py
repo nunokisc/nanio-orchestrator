@@ -225,7 +225,6 @@ async def create_migration(body: RcloneMigrationCreate):
             body.bucket,
             body.src_pool_id,
             body.dst_pool_id,
-            body.mode,
             route_id=resolved_route_id,
         )
     except RuntimeError as e:
@@ -243,7 +242,6 @@ async def create_migration(body: RcloneMigrationCreate):
                 "bucket": body.bucket,
                 "src_pool_id": body.src_pool_id,
                 "dst_pool_id": body.dst_pool_id,
-                "mode": body.mode,
                 "vhost_id": vhost_id,
                 "route_id": resolved_route_id,
             },
@@ -495,7 +493,6 @@ def _to_out(m: dict) -> RcloneMigrationOut:
         bucket=m["bucket"],
         src_pool_id=m["src_pool_id"],
         dst_pool_id=m["dst_pool_id"],
-        mode=m.get("mode", "copy"),
         phase=m["phase"],
         objects_total=m["objects_total"],
         objects_done=m["objects_done"],
