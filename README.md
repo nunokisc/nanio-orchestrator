@@ -48,22 +48,13 @@ NGINX (gateway machine) ─────────────── config wri
 Requirements: Linux with systemd, Python 3.9+, nginx. rclone only if you will migrate buckets.
 
 ```bash
-# 1. Install
-pipx install nanio-orchestrator          # or: uv tool install nanio-orchestrator
-sudo nanio-orchestrator install
-
-# 2. Let nginx load the managed config: add inside the http {} block of nginx.conf
-#      include /etc/nginx/nanio/pools/*.conf;
-#      include /etc/nginx/nanio/vhosts/*.conf;
-sudo nginx -t && sudo systemctl reload nginx
-
-# 3. Start
-sudo nanio-orchestrator config generate-secret --set    # key that encrypts pool credentials
-sudo systemctl enable --now nanio-orchestrator
-
-# 4. Log in at http://<host>:8080 with the API key
-sudo grep API_KEY /etc/nanio-orchestrator/config.env
+curl -fsSL https://raw.githubusercontent.com/nunokisc/nanio-orchestrator/main/install.sh | sudo bash
 ```
+
+That installs the program, creates the settings (API key and encryption secret), hooks the
+managed config into nginx, starts the service and prints the Web UI address and the API key.
+Run it again to upgrade. `sudo nanio-orchestrator doctor` checks an installation and prints the
+fix for anything that is wrong.
 
 Then, in the Web UI:
 
@@ -82,7 +73,7 @@ credentials of every pool and can change what nginx serves.
 
 | | |
 |---|---|
-| [Installation](docs/installation.md) | Install, upgrade, uninstall, air-gapped install |
+| [Installation](docs/installation.md) | Install, upgrade, check (`doctor`), uninstall |
 | [Configuration](docs/configuration.md) | Every setting, file layout, securing the panel |
 | [Operations manual](docs/operations.md) | Pools, vhosts, sharding, replicas, drift, CLI |
 | [Migrations](docs/migrations.md) | How a bucket is moved without losing writes, and how to finish an interrupted move |

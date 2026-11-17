@@ -138,7 +138,7 @@ is saved, so after losing the directory open and save each pool and vhost once (
 ### 4. `config.env` is lost
 
 Recreate it by running the installer again; it does not overwrite existing files and generates a
-new API key:
+new API key and a new encryption secret. Replace that secret with the one you saved:
 
 ```bash
 sudo nanio-orchestrator install
@@ -155,13 +155,14 @@ credentials.
 
 On the replacement machine:
 
-1. Install nginx, rclone and nanio-orchestrator ([installation.md](installation.md)).
-2. Restore `/etc/nanio-orchestrator/config.env` and `/etc/nginx/nanio/` from backup, and add the
-   two `include` lines to `nginx.conf`.
-3. `sudo nginx -t && sudo systemctl reload nginx` — the gateway is serving again at this point.
+1. Install nginx and rclone.
+2. Restore `/etc/nanio-orchestrator/config.env` and `/etc/nginx/nanio/` from backup.
+3. Run the installer ([installation.md](installation.md)). It keeps the restored files, adds the
+   nginx include and reloads nginx — the gateway is serving again at this point.
 4. Restore `/opt/nanio-orchestrator/data/` from backup, **or** rebuild the database:
-   `sudo nanio-orchestrator rebuild-db`, then `sudo chown -R nanio-orchestrator: /opt/nanio-orchestrator/data`.
-5. `sudo systemctl enable --now nanio-orchestrator`.
+   `sudo nanio-orchestrator rebuild-db --force`.
+5. `sudo chown -R nanio-orchestrator: /opt/nanio-orchestrator/data && sudo systemctl restart nanio-orchestrator`.
+6. `sudo nanio-orchestrator doctor`.
 
 With no backup of the nginx directory either, the configuration has to be entered again; the
 objects on the storage nodes are untouched.

@@ -1,6 +1,13 @@
 # Troubleshooting
 
-First checks, whatever the symptom:
+First check, whatever the symptom:
+
+```bash
+sudo nanio-orchestrator doctor
+```
+
+It verifies the settings, permissions, the nginx include, the sudoers rule and the service, and
+prints the fix for each problem. Then, if needed:
 
 ```bash
 sudo systemctl status nanio-orchestrator
@@ -24,6 +31,7 @@ storage nodes first.
 | `unable to open database file`, permission denied | The data directory or the DB is not owned by the service user (typically after running a CLI command as root) | `sudo chown -R nanio-orchestrator: /opt/nanio-orchestrator/data` |
 | `address already in use` | Port 8080 is taken | `nanio-orchestrator config set port 8081`, restart |
 | Starts, but every nginx action fails with a sudo error | The sudoers drop-in is missing or names a different nginx path | Re-run `sudo nanio-orchestrator install` (it does not overwrite your config) |
+| `status=203/EXEC` or `Permission denied` on the program | The package was installed per-user (pipx, uv tool) where the service user cannot reach it | Install with `install.sh` ([installation.md](installation.md)) |
 | Runs in dev mode on a production machine (API key `dev`, files under `./dev-data`) | `/etc/nanio-orchestrator/config.env` does not exist, or `DEV=true` is set | Restore the config file ([disaster-recovery.md](disaster-recovery.md#4-configenv-is-lost)) |
 
 ### API returns 401
