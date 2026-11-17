@@ -492,7 +492,7 @@ class TestMigrationStale:
     async def test_stale_detects_src_no_members(self, client, mock_nginx, mock_rclone, mock_s3):
         """Migration whose source pool loses all members appears in /stale."""
         src = await create_pool(client, "stale-src1")
-        m1 = await create_member(client, src["id"], "10.0.0.1:9000")
+        await create_member(client, src["id"], "10.0.0.1:9000")
         dst = await create_pool(client, "stale-dst1")
         await create_member(client, dst["id"], "10.0.0.2:9000")
         vh = await create_vhost(client, "stale1.example.com", default_pool_id=src["id"])

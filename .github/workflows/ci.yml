@@ -15,6 +15,19 @@ jobs:
       matrix:
         python-version: ["3.9", "3.11", "3.12"]
 
+    # A real nanio server for the S3 client tests (tests/test_s3client_integration.py)
+    services:
+      nanio:
+        image: ghcr.io/apocas/nanio:latest
+        env:
+          NANIO_ACCESS_KEY: AKTEST
+          NANIO_SECRET_KEY: secretsecret
+        ports:
+          - 9000:9000
+
+    env:
+      NANIO_TEST_ENDPOINT: 127.0.0.1:9000
+
     steps:
       - uses: actions/checkout@v4
 
@@ -28,13 +41,57 @@ jobs:
         run: uv sync --extra dev --python ${{ matrix.python-version }}
 
       - name: Lint (ruff check)
-        run: uv run ruff check nanio_orchestrator/
+        run: uv run ruff check nanio_orchestrator/ tests/
 
       - name: Format check (ruff format)
         run: uv run ruff format --check nanio_orchestrator/
 
       - name: Run tests
         run: uv run pytest -v --tb=short
+
+  install:
+    name: Installer on a real host
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nginx and python venv support
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nginx python3-venv
+          sudo systemctl start nginx
+
+      - name: Install from this checkout
+        run: sudo bash install.sh --source "$PWD"
+
+      - name: Service is running and healthy
+        run: |
+          systemctl is-active nanio-orchestrator
+          curl -fsS http://127.0.0.1:8080/api/health
+          sudo nanio-orchestrator doctor
+
+      - name: A pool and a vhost reach nginx
+        run: |
+          KEY=$(sudo grep API_KEY /etc/nanio-orchestrator/config.env | cut -d= -f2)
+          api() { curl -fsS -H "X-Orchestrator-Key: $KEY" -H 'Content-Type: application/json' "$@"; }
+          api -X POST http://127.0.0.1:8080/api/pools -d '{"name":"ci","type":"nanio"}'
+          api -X POST http://127.0.0.1:8080/api/pools/1/members -d '{"address":"127.0.0.1:9000"}'
+          api -X POST http://127.0.0.1:8080/api/vhosts -d '{"server_name":"s3.ci.test","listen_port":8081,"ssl":false,"default_pool_id":1}'
+          api -X POST http://127.0.0.1:8080/api/config/reload
+          sudo nginx -T 2>/dev/null | grep -q 'server_name s3.ci.test'
+
+      - name: Running it again keeps everything
+        run: |
+          sudo bash install.sh --source "$PWD"
+          KEY=$(sudo grep API_KEY /etc/nanio-orchestrator/config.env | cut -d= -f2)
+          curl -fsS -H "X-Orchestrator-Key: $KEY" http://127.0.0.1:8080/api/pools | grep -q '"name":"ci"'
+
+      - name: Remove keeps nginx serving
+        run: |
+          sudo nanio-orchestrator remove -y
+          test -f /etc/nginx/nanio/vhosts/s3.ci.test.conf
+          sudo nginx -t
 
   build:
     name: Build wheel

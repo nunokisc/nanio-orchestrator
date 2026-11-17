@@ -14,7 +14,7 @@ class TestAudit:
         assert len(entries) >= 1
 
     async def test_audit_log_records_pool_create(self, client, mock_nginx):
-        pool = await create_pool(client, "audit-create-pool")
+        await create_pool(client, "audit-create-pool")
 
         resp = await client.get("/api/audit")
         assert resp.status_code == 200

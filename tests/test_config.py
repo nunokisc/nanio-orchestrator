@@ -50,7 +50,7 @@ class TestConfigGeneration:
         assert "photos-2025/" in content
 
     async def test_empty_pool_no_file(self, client, mock_nginx, tmp_dirs):
-        pool = await create_pool(client, "empty-pool")
+        await create_pool(client, "empty-pool")
         # No members added, so no file should exist
         from pathlib import Path
         pool_file = Path(tmp_dirs["nginx_dir"]) / "pools" / "empty-pool.conf"

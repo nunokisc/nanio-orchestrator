@@ -12,13 +12,11 @@ and verify the POST /api/migrations cascade_warnings field.
 from __future__ import annotations
 
 import os
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
 
 from tests.conftest import create_member, create_pool, create_route, create_vhost
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

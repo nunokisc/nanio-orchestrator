@@ -140,7 +140,6 @@ def mock_nginx():
 @pytest.fixture
 def mock_s3():
     """Mock S3 client operations at all consumption sites."""
-    patches = {}
     mocks = {}
 
     # Functions and the modules that import them

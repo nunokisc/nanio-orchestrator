@@ -80,7 +80,7 @@ class TestSidecarFiles:
     @pytest.mark.asyncio
     async def test_pool_sidecar_written_on_create(self, client, app, mock_nginx, tmp_dirs):
         """Pool creation writes a .meta.json sidecar."""
-        pool = await create_pool(client, name="my-pool")
+        await create_pool(client, name="my-pool")
         sidecar_path = os.path.join(tmp_dirs["nginx_dir"], "pools", "my-pool.meta.json")
         assert os.path.exists(sidecar_path)
         data = json.loads(Path(sidecar_path).read_text())
@@ -352,7 +352,7 @@ server {
 
         with patch("nanio_orchestrator.s3client.list_buckets", new_callable=AsyncMock, return_value=[]):
             from nanio_orchestrator.rebuild import rebuild_from_disk
-            result = await rebuild_from_disk()
+            await rebuild_from_disk()
 
         from nanio_orchestrator.db import get_db_ctx
         async with get_db_ctx() as db:
@@ -381,7 +381,7 @@ server {
 
         with patch("nanio_orchestrator.s3client.list_buckets", new_callable=AsyncMock, return_value=[]):
             from nanio_orchestrator.rebuild import rebuild_from_disk
-            result = await rebuild_from_disk()
+            await rebuild_from_disk()
 
         from nanio_orchestrator.db import get_db_ctx
         async with get_db_ctx() as db:

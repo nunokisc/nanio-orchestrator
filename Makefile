@@ -29,7 +29,7 @@ test-cov:
 	.venv/bin/python -m pytest -v --cov=nanio_orchestrator --cov-report=term-missing --cov-report=html
 
 lint:
-	.venv/bin/ruff check nanio_orchestrator/
+	.venv/bin/ruff check nanio_orchestrator/ tests/
 
 fmt:
 	.venv/bin/ruff format nanio_orchestrator/

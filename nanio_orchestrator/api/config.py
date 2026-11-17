@@ -345,7 +345,7 @@ async def get_settings_endpoint():
     s = get_settings()
 
     result = {}
-    for field in s.model_fields:
+    for field in type(s).model_fields:
         value = getattr(s, field)
         result[field] = _mask(value, field in _SECRET_FIELDS)
 
