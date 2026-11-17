@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 
-from nanio_orchestrator.api.common import reject_if_refused
+from nanio_orchestrator.api.common import refuse_to_leave_objects_behind, reject_if_refused
 from nanio_orchestrator.audit_log import log_audit
 from nanio_orchestrator.bucket_sync import sync_vhost_buckets_once
 from nanio_orchestrator.config import get_settings
@@ -36,7 +36,7 @@ async def _start_or_429(*args, **kwargs) -> int:
     try:
         return await engine_start_migration(*args, **kwargs)
     except RuntimeError as exc:
-        raise HTTPException(429, str(exc)) from None
+        raise HTTPException(getattr(exc, "status", 429), str(exc)) from None
 
 
 logger = logging.getLogger(__name__)
@@ -165,7 +165,7 @@ async def promote_bucket(vhost_id: int, bucket: str, body: BucketPromoteRequest)
     """Promote a bucket to a dedicated pool by creating an nginx route.
 
     Creates a route /{bucket}/ → target pool in DB and writes the nginx config
-    (validated with nginx -t). The operator applies changes via the Config tab.
+    (validated with nginx -t). The operator applies changes with *Reload nginx*.
     Bucket creation on the target pool is the responsibility of the S3 service
     user; the migration engine will create the bucket if needed during migration.
     Optionally kicks off a migration when migrate=true.
@@ -507,24 +507,36 @@ async def purge_orphan(vhost_id: int, bucket: str):
 
 
 @router.delete("/{vhost_id}/buckets/{bucket}/route", status_code=200)
-async def remove_bucket_route(vhost_id: int, bucket: str):
+async def remove_bucket_route(vhost_id: int, bucket: str, allow_orphan: bool = False):
     """Remove the nginx route for a bucket and revert bucket_sync to unrouted/deleted.
 
-    Used to clean up orphaned routes when a bucket has been deleted from S3.
+    The bucket's requests go back to the default pool. Refused (409) while the bucket has
+    objects on the route's pool, and (502) when that pool cannot be asked; ``allow_orphan``
+    overrides both. A bucket that no longer exists on its pool has no objects, so cleaning up
+    the route of a deleted bucket needs no override.
     """
     async with get_db_ctx() as db:
-        rows = await db.execute_fetchall("SELECT id FROM vhosts WHERE id = ?", (vhost_id,))
+        rows = await db.execute_fetchall("SELECT id, default_pool_id FROM vhosts WHERE id = ?", (vhost_id,))
         if not rows:
             raise HTTPException(404, "Vhost not found")
 
         route_rows = await db.execute_fetchall(
-            "SELECT id FROM routes WHERE vhost_id = ? AND path_prefix = ?",
+            "SELECT id, pool_id, enabled FROM routes WHERE vhost_id = ? AND path_prefix = ?",
             (vhost_id, f"/{bucket}/"),
         )
         if not route_rows:
             raise HTTPException(404, f"No route found for /{bucket}/ on vhost {vhost_id}")
 
         route_id = route_rows[0]["id"]
+        if route_rows[0]["enabled"]:
+            await refuse_to_leave_objects_behind(
+                db,
+                bucket,
+                route_rows[0]["pool_id"],
+                rows[0]["default_pool_id"],
+                allow_orphan=allow_orphan,
+                change="Removing its route",
+            )
         # Finished migrations keep a reference to the route they moved (no ON DELETE SET NULL)
         await db.execute("UPDATE migrations SET route_id = NULL WHERE route_id = ?", (route_id,))
         await db.execute("DELETE FROM routes WHERE id = ?", (route_id,))

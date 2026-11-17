@@ -54,6 +54,35 @@ def render_upstream(pool: dict[str, Any], members: list[dict[str, Any]]) -> str:
 SUBFOLDER_MARKER = ".nanio-shard"
 
 
+# nginx includes `vhosts/*.conf` only. A disabled vhost keeps its whole server block on disk
+# under this extra suffix: not loaded by nginx, still there to rebuild the database from.
+DISABLED_SUFFIX = ".disabled"
+
+
+def vhost_config_path(server_name: str, enabled: bool = True) -> str:
+    """The file of a vhost: ``<server_name>.conf``, or ``<server_name>.conf.disabled`` when it
+    is disabled. The one place that knows; a vhost has exactly one of the two."""
+    name = f"{server_name}.conf" if enabled else f"{server_name}.conf{DISABLED_SUFFIX}"
+    return str(get_settings().vhosts_dir / name)
+
+
+def vhost_config_paths(server_name: str) -> list[str]:
+    """Both files a vhost of this name could have (to remove on rename or delete)."""
+    return [vhost_config_path(server_name, True), vhost_config_path(server_name, False)]
+
+
+def other_vhost_variant(filepath: str) -> str:
+    """The file the same vhost would have in the other state (enabled ↔ disabled)."""
+    if filepath.endswith(DISABLED_SUFFIX):
+        return filepath[: -len(DISABLED_SUFFIX)]
+    return filepath + DISABLED_SUFFIX
+
+
+def is_vhost_config_path(filepath: str) -> bool:
+    """True for a path in the managed vhosts directory (either variant)."""
+    return Path(filepath).parent == get_settings().vhosts_dir
+
+
 def path_segments(path_prefix: str) -> list[str]:
     return [seg for seg in path_prefix.strip("/").split("/") if seg]
 
@@ -245,8 +274,11 @@ async def generate_pool_config(pool_id: int, db=None) -> tuple:
 
 
 async def generate_vhost_config(vhost_id: int, db=None) -> tuple:
-    """Generate server block config for a vhost. Returns (filepath, content)."""
-    s = get_settings()
+    """Generate server block config for a vhost. Returns (filepath, content).
+
+    The content is the same whether the vhost is enabled or not; only the file name differs
+    (see ``vhost_config_path``).
+    """
     async with _reading(db) as db:
         row = await db.execute_fetchall("SELECT * FROM vhosts WHERE id = ?", (vhost_id,))
         if not row:
@@ -308,8 +340,7 @@ async def generate_vhost_config(vhost_id: int, db=None) -> tuple:
                 route["migration_dst_pool_name"] = linked.get((route["path_prefix"], route["pool_id"]))
 
     content = render_vhost(vhost, routes)
-    filepath = str(s.vhosts_dir / f"{vhost['server_name']}.conf")
-    return filepath, content
+    return vhost_config_path(vhost["server_name"], bool(vhost["enabled"])), content
 
 
 async def generate_all_configs() -> list[tuple]:

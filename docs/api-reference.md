@@ -185,6 +185,7 @@ credentials). See [operations.md](operations.md#set-up-a-storage-node).
 | `extra_blocks` | Raw nginx directives. `zone`: `top` (after `server_name` and IP rules), `ssl` (after the certificate lines), `proxy` (after the proxy buffering lines), `end` (before the closing brace) |
 | `ip_rule_mode` | `allow`: only the listed addresses, then `deny all`. `deny`: the listed addresses are blocked. `null`: no restriction. |
 | `ip_rule_ips` | IPv4, IPv6, or CIDR; validated on write |
+| `enabled` | Default `true`. `false`: the server block is written as `vhosts/<server_name>.conf.disabled`, which nginx does not load, so the hostname is not served after the next reload. Switching it is one validated change (one file written, the other removed). Disabling answers `409` while a migration is moving one of the vhost's buckets or has left split routing active on it. |
 
 ### Routes
 
@@ -205,6 +206,19 @@ credentials). See [operations.md](operations.md#set-up-a-storage-node).
 - A path is one or more segments of letters, digits and `. _ @ -`; empty segments (`//`) are
   refused.
 - A bucket route does not create the bucket on the target pool and does not move any object.
+- A change that takes a whole bucket away from the pool that holds it is refused: `409` when
+  the bucket has objects on the pool it would leave, `502` when that pool cannot be asked
+  (unreachable, no enabled member, credentials refused). `"allow_orphan": true` (`?allow_orphan=true`
+  on `DELETE`) overrides both. It applies to:
+  - `POST` of a bucket route on a `nanio` vhost that points away from the default pool (the
+    bucket leaves the default pool);
+  - `PUT` with `"enabled": false` on a bucket route (it leaves the route's pool) and with
+    `"enabled": true` (it leaves the default pool);
+  - `DELETE` of an enabled bucket route (it leaves the route's pool).
+
+  A bucket that does not exist on that pool has no objects. A route that changes nothing (same
+  pool as the default pool, or created disabled) is not checked, and `http` pools are never
+  asked.
 - A folder route is refused with 409 if the folder already has objects on the bucket's own pool
   (`"allow_orphan": true` overrides). It creates the bucket on the folder's pool. The response
   carries `warnings` (a list) for anything that needs attention.
@@ -229,7 +243,7 @@ Only for vhosts whose default pool is of type `nanio`.
 | POST | `/api/vhosts/{id}/buckets/{bucket}/promote` | Route the bucket to a pool, optionally migrating it |
 | POST | `/api/vhosts/{id}/buckets/{bucket}/migrate` | Start or restart the migration of a routed bucket |
 | POST | `/api/vhosts/{id}/buckets/{bucket}/ignore` | Hide the bucket from the unrouted list |
-| DELETE | `/api/vhosts/{id}/buckets/{bucket}/route` | Remove the bucket's route (back to the default pool) |
+| DELETE | `/api/vhosts/{id}/buckets/{bucket}/route` | Remove the bucket's route (back to the default pool). `409` while the bucket has objects on the route's pool, `502` when that pool cannot be asked; `?allow_orphan=true` overrides both. A bucket that no longer exists on its pool is not refused. |
 | GET | `/api/vhosts/{id}/buckets/orphans` | Routed buckets that still have objects on the default pool |
 | POST | `/api/vhosts/{id}/buckets/{bucket}/purge-orphan` | **Delete** that leftover copy on the default pool. Irreversible. |
 
@@ -311,7 +325,7 @@ migration points at a different pool.
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/config/status` | Every managed file with its hash on disk, the hash the orchestrator wrote, and whether it drifted; what is waiting for a reload (below) |
-| GET | `/api/config/file?path=` | One managed file: `content` (on disk, `null` if missing), `recorded` (what the orchestrator wrote, `null` if it never wrote it) and `drifted`. Only `.conf` files in the managed `pools/` and `vhosts/` directories. |
+| GET | `/api/config/file?path=` | One managed file: `content` (on disk, `null` if missing), `recorded` (what the orchestrator wrote, `null` if it never wrote it) and `drifted`. Only `.conf` files in the managed `pools/` and `vhosts/` directories, and the `.conf.disabled` file of a disabled vhost. |
 | POST | `/api/config/validate` | `nginx -t` |
 | POST | `/api/config/reload` | `nginx -s reload`: applies pending changes |
 | GET | `/api/config/preview/pool/{id}` | The upstream block that would be generated |
@@ -319,11 +333,11 @@ migration points at a different pool.
 | POST | `/api/config/rebuild` | **Database → files.** Regenerate every file, validate, reload. Previous files are restored if validation fails. |
 | POST | `/api/config/sync` | **Files → database, additive.** Imports pools, members, vhosts and routes found on disk. Never deletes. |
 | POST | `/api/config/rebuild-from-disk` | **Files → database, from scratch.** `?dry_run=true` previews; `?force=true` replaces existing data (otherwise `409` if the database is not empty). |
-| POST | `/api/config/absorb-file` | Body `{"path": "..."}`. Accept a drifted file as it is on disk. Only `.conf` files in the managed `pools/` and `vhosts/` directories. |
-| POST | `/api/config/rewrite-file` | Body `{"path": "..."}`. Overwrite a drifted file from the database, validate, reload. |
+| POST | `/api/config/absorb-file` | Body `{"path": "..."}`. Accept a drifted file as it is on disk. Only `.conf` files in the managed `pools/` and `vhosts/` directories, and the `.conf.disabled` file of a disabled vhost. |
+| POST | `/api/config/rewrite-file` | Body `{"path": "..."}`. Overwrite a drifted file from the database, validate, reload. For a vhost, the file it should have (enabled or disabled) is written and the other one removed. |
 | POST | `/api/config/backup` | Back up the database now |
 | GET | `/api/config/settings` | All settings, secrets masked |
-| PUT | `/api/config/settings/{key}` | Body `{"value": "..."}`. Writes the setting to the config file; takes effect after a restart. `rclone_path`, `db_path`, `db_backup_path` and `nginx_config_dir` return `403`: change them on the host with `nanio-orchestrator config set`. |
+| PUT | `/api/config/settings/{key}` | Body `{"value": "..."}`. Writes the setting to the config file; takes effect after a restart. `rclone_path`, `db_path`, `db_backup_path`, `nginx_config_dir` and `log_file` return `403`: change them on the host with `nanio-orchestrator config set`. |
 | POST | `/api/config/settings/restart` | Restart the service. Returns at once; the restart happens 1.5 s later. Not available in dev mode. |
 
 Fields of `GET /api/config/status` about applying changes:
@@ -352,7 +366,7 @@ of the pool with the pool's stored credentials. Nothing here writes to a pool. S
 | GET | `/api/explorer/pools/{id}/buckets/{bucket}/objects` | One page of one level of the bucket (delimiter `/`) |
 | GET | `/api/explorer/pools/{id}/buckets/{bucket}/object?key=` | Metadata of one object (HEAD): `size`, `last_modified`, `etag`, `content_type` |
 | GET | `/api/explorer/pools/{id}/buckets/{bucket}/download?key=` | The bytes of one object, as an attachment (`application/octet-stream`). `413` above 64 MiB. Recorded in the audit log (`download_object`). |
-| GET | `/api/explorer/vhosts/{id}/locate?bucket=&prefix=` | Which pool serves that bucket, or that prefix inside it, according to the vhost's routes: the most specific enabled route wins, the default pool otherwise. `{"vhost", "bucket", "prefix", "route", "pool": {"id", "name", "type"}}` |
+| GET | `/api/explorer/vhosts/{id}/locate?bucket=&prefix=` | Which pool serves that bucket, or that prefix inside it, according to the vhost's routes: the most specific enabled route wins, the default pool otherwise. `{"vhost", "bucket", "prefix", "route", "pool": {"id", "name", "type"}, "split"}`. While a migration has split routing active on that route, `pool` is the destination (clients read it first and fall back to the source) and `split` is `{"migration_id", "source": {"id", "name"}, "destination": {"id", "name"}}`; otherwise `split` is `null`. |
 
 Query parameters of `objects`:
 
@@ -374,7 +388,8 @@ Query parameters of `objects`:
 
 `routed_pool` is set when `vhost_id` is given and an enabled folder route of that vhost sends
 that folder to a pool other than the one being listed: what clients see under it is on that
-pool. Such a folder is listed even when this pool holds nothing under it. A server may repeat a
+pool. While the folder is being moved (split routing active) that pool is the destination of
+the migration. Such a folder is listed even when this pool holds nothing under it. A server may repeat a
 folder on the page after the one that first listed it; merge folders by `prefix`.
 
 Errors:

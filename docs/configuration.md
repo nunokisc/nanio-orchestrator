@@ -55,9 +55,11 @@ Settings screen of the web panel shows the same values, grouped, with secrets ma
 edit them (`PUT /api/config/settings/{key}`), followed by *Restart the service*. A saved setting
 is marked *restart required* until then.
 
-Four settings can only be changed on the host with `config set`, never through the panel or the
-API (the panel shows them read-only, with the reason): `RCLONE_PATH`, `DB_PATH`, `DB_BACKUP_PATH` and `NGINX_CONFIG_DIR`. They decide which program
-the service runs and where it writes, so the panel key alone must not be enough to change them.
+Five settings can only be changed on the host with `config set`, never through the panel or the
+API (the panel shows them read-only, with the reason): `RCLONE_PATH`, `DB_PATH`,
+`DB_BACKUP_PATH`, `NGINX_CONFIG_DIR` and `LOG_FILE`. They decide which program the service runs
+and which files it writes, so the panel key alone must not be enough to change them. Every other
+setting, `S3_REQUEST_TIMEOUT` and `MIGRATION_MAX_COPY_PASSES` included, can be set either way.
 
 ## What each group is for
 
@@ -128,6 +130,8 @@ orchestrator will still function — you will need to re-enter credentials for e
 │   └── pool-cdn.meta.json
 └── vhosts/
     ├── s3.example.pt.conf      # server block for vhost "s3.example.pt"
+    │                           #   (s3.example.pt.conf.disabled while the vhost is disabled:
+    │                           #    same content, not loaded by nginx)
     └── s3.example.pt.meta.json # sidecar: default_pool_id, extra_blocks, ip_rules
 ```
 

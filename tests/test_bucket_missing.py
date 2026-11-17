@@ -7,6 +7,9 @@ from pathlib import Path
 import pytest
 from nanio_orchestrator import bucket_sync
 
+# The pools here are only addresses: asked whether a bucket has objects, they say it is empty.
+pytestmark = pytest.mark.usefixtures("empty_buckets")
+
 
 @pytest.fixture
 def s3(monkeypatch):

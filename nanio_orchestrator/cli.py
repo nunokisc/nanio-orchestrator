@@ -17,12 +17,14 @@ _SETTINGS_META = {
     "api_key": ("Core", "API authentication key", True),
     "log_level": ("Core", "Log level (debug/info/warning/error)", False),
     "session_ttl": ("Core", "Web UI session duration (seconds)", False),
+    "log_file": ("Core", "Rotating log file (empty: stdout only)", False),
     "db_path": ("Database", "SQLite database file path", False),
     "db_backup_path": ("Database", "Backup path (default: db_path + .bak)", False),
     "db_backup_interval": ("Database", "Seconds between timed backups", False),
     "db_backup_rotate": ("Database", "Number of backup copies to keep", False),
     "secret": ("Security", "Fernet key for credential encryption", True),
     "bucket_sync_interval": ("S3", "Seconds between bucket syncs", False),
+    "s3_request_timeout": ("S3", "Socket timeout of S3 requests (seconds)", False),
     "nginx_config_dir": ("Nginx", "Root directory for generated configs", False),
     "drift_interval": ("Nginx", "Seconds between drift checks", False),
     "rclone_path": ("Migrations", "Path to rclone binary", False),
@@ -30,6 +32,7 @@ _SETTINGS_META = {
     "migration_bandwidth_limit": ("Migrations", "rclone --bwlimit value (e.g. 50M)", False),
     "migration_checkers": ("Migrations", "rclone --checkers value", False),
     "migration_transfers": ("Migrations", "rclone --transfers value", False),
+    "migration_max_copy_passes": ("Migrations", "Max passes while copying, and again while verifying", False),
 }
 
 _CATEGORY_ORDER = ["Core", "Database", "Security", "S3", "Nginx", "Migrations"]

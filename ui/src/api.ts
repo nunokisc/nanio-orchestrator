@@ -259,6 +259,8 @@ export interface VhostInput {
   default_pool_id: number | null;
   ip_rule_mode: IpRuleMode | null;
   ip_rule_ips: string[] | null;
+  /** false: the server block is kept on disk but nginx does not load it. */
+  enabled?: boolean;
 }
 
 export interface Route {
@@ -535,7 +537,10 @@ export interface Located {
   bucket: string;
   prefix: string;
   route: string;
+  /** The pool that answers. During a split it is the destination of the migration. */
   pool: PoolRef & { type: PoolType };
+  /** Set while a migration has split routing active on that route. */
+  split: { migration_id: number; source: PoolRef; destination: PoolRef } | null;
 }
 
 // ── Endpoints ───────────────────────────────────────────────────────────────
@@ -595,8 +600,11 @@ export const api = {
       post<PromoteResult>(`/api/vhosts/${vhostId}/buckets/${enc(bucket)}/promote`, body),
     ignore: (vhostId: number, bucket: string) =>
       post<{ ok: boolean }>(`/api/vhosts/${vhostId}/buckets/${enc(bucket)}/ignore`),
-    removeRoute: (vhostId: number, bucket: string) =>
-      del<{ ok: boolean }>(`/api/vhosts/${vhostId}/buckets/${enc(bucket)}/route`),
+    removeRoute: (vhostId: number, bucket: string, allowOrphan = false) =>
+      del<{ ok: boolean }>(
+        `/api/vhosts/${vhostId}/buckets/${enc(bucket)}/route`,
+        allowOrphan ? { allow_orphan: true } : undefined,
+      ),
     orphans: (vhostId: number) => get<OrphanList>(`/api/vhosts/${vhostId}/buckets/orphans`),
     purgeOrphan: (vhostId: number, bucket: string) =>
       post<PurgeResult>(`/api/vhosts/${vhostId}/buckets/${enc(bucket)}/purge-orphan`),

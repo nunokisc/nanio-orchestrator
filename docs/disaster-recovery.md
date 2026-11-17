@@ -110,6 +110,7 @@ What a rebuild recovers:
 | Pool type, description, linked nanio pool | `pools/*.meta.json` | Yes |
 | Pool credentials | `pools/*.meta.json` | Yes, if `SECRET` is unchanged |
 | Vhosts, TLS settings, routes | `vhosts/*.conf` | Yes |
+| Disabled vhosts, with their routes | `vhosts/*.conf.disabled` (the file name is what says "disabled") | Yes |
 | Vhost default pool, extra blocks, IP rules | `vhosts/*.meta.json` | Yes |
 | Migrations in progress, split routing | `migrations/*.state.json` | Yes |
 | Completed migrations, orphaned source data | `migrations/*.done.json` | Yes |

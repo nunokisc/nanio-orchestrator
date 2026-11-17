@@ -49,7 +49,7 @@ class TestAbsorbFile:
 
 
 class TestSettingsApi:
-    @pytest.mark.parametrize("key", ["rclone_path", "db_path", "db_backup_path", "nginx_config_dir"])
+    @pytest.mark.parametrize("key", ["rclone_path", "db_path", "db_backup_path", "nginx_config_dir", "log_file"])
     async def test_host_only_settings_cannot_be_changed_through_the_api(self, client, key):
         resp = await client.put(f"/api/config/settings/{key}", json={"value": "/tmp/evil"})
 
@@ -76,9 +76,35 @@ class TestSettingsApi:
         assert resp.status_code == 200
         assert cfg.read_text() == "NANIO_ORCHESTRATOR_BUCKET_SYNC_INTERVAL=120\n"
 
+    @pytest.mark.parametrize("key, value", [("s3_request_timeout", "120"), ("migration_max_copy_passes", "20")])
+    async def test_settings_the_api_used_to_only_report_can_now_be_written(
+        self, client, tmp_path, monkeypatch, key, value
+    ):
+        cfg = tmp_path / "config.env"
+        monkeypatch.setattr("nanio_orchestrator.cli._get_config_path", lambda: str(cfg))
+        assert key in (await client.get("/api/config/settings")).json()
+
+        resp = await client.put(f"/api/config/settings/{key}", json={"value": value})
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "key": key, "value": value, "restart_required": True}
+        assert cfg.read_text() == f"NANIO_ORCHESTRATOR_{key.upper()}={value}\n"
+
+    async def test_log_file_names_a_path_the_service_writes_to_so_only_the_host_sets_it(
+        self, client, tmp_path, monkeypatch
+    ):
+        cfg = tmp_path / "config.env"
+        monkeypatch.setattr("nanio_orchestrator.cli._get_config_path", lambda: str(cfg))
+
+        resp = await client.put("/api/config/settings/log_file", json={"value": "/etc/cron.d/evil"})
+
+        assert resp.status_code == 403
+        assert "nanio-orchestrator config set log_file <value>" in resp.json()["detail"]
+        assert not cfg.exists()
+
     async def test_settings_listing_names_the_host_only_keys(self, client):
         data = (await client.get("/api/config/settings")).json()
-        assert data["host_only"] == ["db_backup_path", "db_path", "nginx_config_dir", "rclone_path"]
+        assert data["host_only"] == ["db_backup_path", "db_path", "log_file", "nginx_config_dir", "rclone_path"]
 
 
 class TestNodeConfigSecrets:

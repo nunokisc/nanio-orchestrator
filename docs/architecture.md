@@ -22,6 +22,7 @@ ORCHESTRATOR (:8080, internal network only)
 ├─► /etc/nginx/nanio/pools/*.conf          upstream blocks
 ├─► /etc/nginx/nanio/pools/*.meta.json     sidecar: type, credentials (encrypted)
 ├─► /etc/nginx/nanio/vhosts/*.conf         server blocks
+├─► /etc/nginx/nanio/vhosts/*.conf.disabled  server blocks of disabled vhosts (not loaded by nginx)
 ├─► /etc/nginx/nanio/vhosts/*.meta.json    sidecar: default pool, extra_blocks, ip_rules
 ├─► SQLite: /opt/nanio-orchestrator/data/orchestrator.db
 ├─► SQLite backup:        orchestrator.db.bak  (rotated copies)
@@ -116,7 +117,8 @@ SQLite with WAL mode and foreign keys enabled. Schema:
 Reconstructs the entire database from:
 1. `pools/*.conf` → pool names, members, lb_method
 2. `pools/*.meta.json` → pool type, description, credentials
-3. `vhosts/*.conf` → server_name, SSL, routes
+3. `vhosts/*.conf` and `vhosts/*.conf.disabled` → server_name, SSL, routes; the file name says
+   whether the vhost is enabled (it wins over the sidecar, with a warning when they disagree)
 4. `vhosts/*.meta.json` → default_pool, extra_blocks, ip_rules
 5. `migrations/*.state.json` → in-progress migration state
 6. Live `ListBuckets` calls → bucket_sync state

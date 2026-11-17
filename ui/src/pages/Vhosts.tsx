@@ -1,4 +1,4 @@
-import { ArrowRightLeft, CornerDownRight, FileCode, FolderSearch, Lock, Pencil, Plus, Trash2 } from "lucide-react";
+import { ArrowRightLeft, CornerDownRight, FileCode, FolderSearch, Lock, Pencil, Plus, Power, Trash2 } from "lucide-react";
 import { Fragment, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, type ExtraBlock, type IpRuleMode, type Migration, type Pool, type Route, type Vhost, type Zone } from "../api";
@@ -36,7 +36,8 @@ type Dialog =
   | { kind: "add-route"; vhost: Vhost }
   | { kind: "promote"; vhost: Vhost; bucket: string }
   | { kind: "change-pool"; vhost: Vhost; route: Route }
-  | { kind: "disable-route"; vhost: Vhost; route: Route }
+  | { kind: "toggle-vhost"; vhost: Vhost }
+  | { kind: "toggle-route"; vhost: Vhost; route: Route }
   | { kind: "delete-route"; vhost: Vhost; route: Route };
 
 export function VhostsPage() {
@@ -113,7 +114,8 @@ export function VhostsPage() {
       {dialog?.kind === "change-pool" && (
         <ChangePoolDialog vhost={dialog.vhost} route={dialog.route} pools={poolList} onClose={close} />
       )}
-      {dialog?.kind === "disable-route" && <DisableRouteDialog vhost={dialog.vhost} route={dialog.route} onClose={close} />}
+      {dialog?.kind === "toggle-vhost" && <ToggleVhostDialog vhost={dialog.vhost} onClose={close} />}
+      {dialog?.kind === "toggle-route" && <ToggleRouteDialog vhost={dialog.vhost} route={dialog.route} onClose={close} />}
       {dialog?.kind === "delete-route" && <DeleteRouteDialog vhost={dialog.vhost} route={dialog.route} onClose={close} />}
     </>
   );
@@ -136,6 +138,11 @@ function VhostPanel({ vhost, pools, open }: { vhost: Vhost; pools: Pool[]; open:
       title={<Mono>{vhost.server_name}</Mono>}
       meta={
         <>
+          {!vhost.enabled && (
+            <Badge tone="warn" title="Its server block is kept on disk as .conf.disabled; nginx does not load it">
+              disabled — not served
+            </Badge>
+          )}
           <span>
             port <Mono>{vhost.listen_port}</Mono>
           </span>
@@ -170,6 +177,9 @@ function VhostPanel({ vhost, pools, open }: { vhost: Vhost; pools: Pool[]; open:
           </Button>
           <Button size="sm" icon={<Pencil className="icon" aria-hidden />} onClick={() => open({ kind: "edit", vhost })}>
             Edit
+          </Button>
+          <Button size="sm" icon={<Power className="icon" aria-hidden />} onClick={() => open({ kind: "toggle-vhost", vhost })}>
+            {vhost.enabled ? "Disable" : "Enable"}
           </Button>
           <Button size="sm" variant="danger" icon={<Trash2 className="icon" aria-hidden />} onClick={() => open({ kind: "delete", vhost })}>
             Delete
@@ -219,9 +229,7 @@ function RouteTable({
   isS3: boolean;
   open: (dialog: Dialog) => void;
 }) {
-  const toast = useToast();
   const tree = buildRouteTree(routes);
-  const enable = useAction((route: Route) => api.vhosts.updateRoute(vhost.id, route.id, { enabled: true }));
 
   const browse = (bucket: string, prefix: string) =>
     isS3 && (
@@ -239,12 +247,7 @@ function RouteTable({
     <Switch
       label={`${route.enabled ? "Disable" : "Enable"} route ${route.path_prefix}`}
       checked={route.enabled}
-      disabled={enable.isPending}
-      onChange={(enabled) =>
-        enabled
-          ? enable.mutate(route, { onError: (error) => toast.error(`Could not enable ${route.path_prefix}`, error) })
-          : open({ kind: "disable-route", vhost, route })
-      }
+      onChange={() => open({ kind: "toggle-route", vhost, route })}
     />
   );
 
@@ -780,23 +783,93 @@ function ChangePoolDialog({ vhost, route, pools, onClose }: { vhost: Vhost; rout
   );
 }
 
-function DisableRouteDialog({ vhost, route, onClose }: { vhost: Vhost; route: Route; onClose: () => void }) {
-  const disable = useAction(() => api.vhosts.updateRoute(vhost.id, route.id, { enabled: false }), { onSuccess: onClose });
+function ToggleRouteDialog({ vhost, route, onClose }: { vhost: Vhost; route: Route; onClose: () => void }) {
+  const enable = !route.enabled;
+  const toggle = useAction(
+    (allowOrphan: boolean) => api.vhosts.updateRoute(vhost.id, route.id, { enabled: enable, allow_orphan: allowOrphan || undefined }),
+    { onSuccess: onClose },
+  );
+  const verb = enable ? "Enable" : "Disable";
   return (
     <ConfirmDialog
-      title={`Disable route ${route.path_prefix}`}
-      confirmLabel="Disable route"
-      busy={disable.isPending}
-      error={disable.error}
-      onConfirm={() => disable.mutate(undefined)}
+      title={`${verb} route ${route.path_prefix}`}
+      confirmLabel={`${verb} route`}
+      danger={!enable}
+      busy={toggle.isPending && !toggle.variables}
+      error={toggle.error}
+      onConfirm={() => toggle.mutate(false)}
+      onClose={onClose}
+      extra={
+        <OrphanOverride
+          key={toggle.error?.detail}
+          error={toggle.error}
+          consequence={
+            enable
+              ? `What ${route.path_prefix} holds on the pool that serves it now stays there and will not be reachable through ${vhost.server_name} once nginx is reloaded.`
+              : `What ${route.path_prefix} holds on ${route.pool_name} stays there and will not be reachable through ${vhost.server_name} once nginx is reloaded.`
+          }
+          actionLabel={`${verb} the route anyway`}
+          busy={toggle.isPending && toggle.variables === true}
+          onOverride={() => toggle.mutate(true)}
+        />
+      }
+    >
+      {enable ? (
+        <p>
+          The route goes back into nginx. After the next reload, requests for <Mono>{route.path_prefix}</Mono> go to{" "}
+          <Mono>{route.pool_name}</Mono> instead of the pool that serves them now. It is refused if a bucket would
+          leave objects behind on that pool.
+        </p>
+      ) : (
+        <p>
+          A disabled route is left out of nginx. After the next reload, requests for <Mono>{route.path_prefix}</Mono> go
+          to the next matching route or to the default pool, and what is stored on <Mono>{route.pool_name}</Mono> is not
+          reachable through <Mono>{vhost.server_name}</Mono> until the route is enabled again. It is refused while the
+          bucket has objects there.
+        </p>
+      )}
+      <p>Nothing is deleted.</p>
+    </ConfirmDialog>
+  );
+}
+
+function ToggleVhostDialog({ vhost, onClose }: { vhost: Vhost; onClose: () => void }) {
+  const enable = !vhost.enabled;
+  const toggle = useAction(() => api.vhosts.update(vhost.id, { enabled: enable }), { onSuccess: onClose });
+  return (
+    <ConfirmDialog
+      title={`${enable ? "Enable" : "Disable"} vhost ${vhost.server_name}`}
+      confirmLabel={enable ? `Enable ${vhost.server_name}` : `Stop serving ${vhost.server_name}`}
+      danger={!enable}
+      busy={toggle.isPending}
+      error={toggle.error}
+      onConfirm={() => toggle.mutate(undefined)}
       onClose={onClose}
     >
-      <p>
-        A disabled route is left out of nginx. After the next reload, requests for <Mono>{route.path_prefix}</Mono> go to
-        the next matching route or to the default pool, and what is stored on <Mono>{route.pool_name}</Mono> is not
-        reachable through <Mono>{vhost.server_name}</Mono> until the route is enabled again.
-      </p>
-      <p>Nothing is deleted.</p>
+      {enable ? (
+        <>
+          <p>
+            The server block of <Mono>{vhost.server_name}</Mono> is written back as <Mono>{vhost.server_name}.conf</Mono>{" "}
+            and checked by nginx. After the next reload nginx answers for this hostname again, with the routes it had.
+          </p>
+          <p>If nginx rejects the configuration, nothing changes.</p>
+        </>
+      ) : (
+        <>
+          <p>
+            After the next reload{" "}
+            <strong>
+              nginx stops answering for <Mono>{vhost.server_name}</Mono>
+            </strong>{" "}
+            on port <Mono>{vhost.listen_port}</Mono>: its clients get errors until the vhost is enabled again.
+          </p>
+          <p>
+            Nothing is deleted: the server block is kept on disk as <Mono>{vhost.server_name}.conf.disabled</Mono>, which
+            nginx does not load, and the vhost keeps its routes and its bucket list. It is refused while a migration
+            is moving one of its buckets.
+          </p>
+        </>
+      )}
     </ConfirmDialog>
   );
 }

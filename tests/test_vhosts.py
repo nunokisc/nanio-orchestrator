@@ -1,6 +1,11 @@
 """Tests for vhost and route CRUD API."""
 
+import pytest
+
 from tests.conftest import create_member, create_pool, create_vhost
+
+# The pools here are only addresses: asked whether a bucket has objects, they say it is empty.
+pytestmark = pytest.mark.usefixtures("empty_buckets")
 
 
 class TestVhostCRUD:

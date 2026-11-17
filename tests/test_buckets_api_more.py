@@ -11,6 +11,9 @@ import pytest
 from tests.api_state import audit, conf, managed_files, routes, sql
 from tests.conftest import create_member, create_pool, create_route, create_vhost
 
+# The pools here are only addresses: asked whether a bucket has objects, they say it is empty.
+pytestmark = pytest.mark.usefixtures("empty_buckets")
+
 
 async def _cluster(client, default=True):
     pa = await create_pool(client, "pa")

@@ -321,6 +321,22 @@ T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
 @pytest.fixture
+def empty_buckets(monkeypatch):
+    """Every pool answers that the bucket holds no objects.
+
+    A route change that takes a bucket away from a pool first asks that pool whether the bucket
+    has objects (and is refused when it cannot ask). Tests about something else, whose pools
+    are only addresses, use this so that the answer is "empty".
+    """
+    from nanio_orchestrator import s3client
+
+    async def no_objects(address, bucket, **kwargs):
+        return False
+
+    monkeypatch.setattr(s3client, "bucket_has_objects", no_objects)
+
+
+@pytest.fixture
 def set_secret():
     from cryptography.fernet import Fernet
 

@@ -3,6 +3,7 @@ import { ArrowRightLeft, EyeOff, FolderSearch, Plus, RefreshCw, Search, Trash2 }
 import { Fragment, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, type Bucket, type BucketStatus, type Pool, type Vhost } from "../api";
+import { OrphanOverride } from "../components/OrphanOverride";
 import { RouteBucketDialog } from "../components/RouteBucketDialog";
 import { useToast } from "../components/toast";
 import {
@@ -290,15 +291,27 @@ function RemoveBucketRouteDialog({
   defaultPool: Pool;
   onClose: () => void;
 }) {
-  const remove = useAction(() => api.buckets.removeRoute(vhost.id, bucket.name), { onSuccess: onClose });
+  const remove = useAction((allowOrphan: boolean) => api.buckets.removeRoute(vhost.id, bucket.name, allowOrphan), {
+    onSuccess: onClose,
+  });
   return (
     <ConfirmDialog
       title={`Remove the route of ${bucket.name}`}
       confirmLabel="Remove route"
-      busy={remove.isPending}
+      busy={remove.isPending && !remove.variables}
       error={remove.error}
-      onConfirm={() => remove.mutate(undefined)}
+      onConfirm={() => remove.mutate(false)}
       onClose={onClose}
+      extra={
+        <OrphanOverride
+          key={remove.error?.detail}
+          error={remove.error}
+          consequence={`The objects of ${bucket.name} stay on ${bucket.pool_name ?? "its pool"} and will not be reachable through ${vhost.server_name} once nginx is reloaded.`}
+          actionLabel="Remove the route anyway"
+          busy={remove.isPending && remove.variables === true}
+          onOverride={() => remove.mutate(true)}
+        />
+      }
     >
       <p>
         After the next reload, requests for <Mono>/{bucket.name}/</Mono> go back to the default pool{" "}
@@ -308,9 +321,9 @@ function RemoveBucketRouteDialog({
         <p>The bucket no longer exists, so this only cleans up its route.</p>
       ) : (
         <p>
-          The objects stored on <Mono>{bucket.pool_name}</Mono> stay there and are no longer reachable through{" "}
-          <Mono>{vhost.server_name}</Mono>. Nothing is deleted. To bring the data back as well, move the bucket with a
-          migration instead.
+          It is refused while the bucket has objects on <Mono>{bucket.pool_name}</Mono>: they would stay there, no
+          longer reachable through <Mono>{vhost.server_name}</Mono>. To bring the data back as well, move the bucket
+          with a migration instead. Nothing is deleted.
         </p>
       )}
     </ConfirmDialog>

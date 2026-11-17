@@ -319,6 +319,11 @@ function FileTable({ status, open }: { status: ConfigStatus; open: (dialog: Dial
                 ) : (
                   <Badge tone="ok">in sync</Badge>
                 )}{" "}
+                {file.path.endsWith(".conf.disabled") && (
+                  <Badge tone="neutral" title="The file of a disabled vhost: kept on disk, not loaded by nginx">
+                    disabled vhost
+                  </Badge>
+                )}{" "}
                 {change && <Badge tone="warn">not applied · {CHANGE_LABEL[change]}</Badge>}
               </td>
               <td title={formatDateTime(file.last_synced_at)}>{timeAgo(file.last_synced_at)}</td>

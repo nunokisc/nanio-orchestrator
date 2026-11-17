@@ -76,22 +76,55 @@ def _download_name(key: str) -> str:
     return name[:200] or "download"
 
 
+async def _splits(db, vhost_id: int) -> dict:
+    """Live-migration splits active on this vhost, by route path (``/bucket/`` or
+    ``/bucket/folder/``): {path: {"migration_id", "source", "destination"}}.
+
+    While a split is active nginx sends the path to the destination pool first and falls back
+    to the source for objects not copied yet, whatever pool the route still names.
+    """
+    rows = await db.execute_fetchall(
+        """SELECT m.id, m.bucket, m.folder, sp.id AS src_id, sp.name AS src_name,
+                  dp.id AS dst_id, dp.name AS dst_name
+           FROM migrations m
+           JOIN pools sp ON sp.id = m.src_pool_id
+           JOIN pools dp ON dp.id = m.dst_pool_id
+           WHERE m.vhost_id = ? AND m.split_routing = 1
+           ORDER BY m.id""",
+        (vhost_id,),
+    )
+    return {
+        f"/{r['bucket']}/{r['folder']}": {
+            "migration_id": r["id"],
+            "source": {"id": r["src_id"], "name": r["src_name"]},
+            "destination": {"id": r["dst_id"], "name": r["dst_name"]},
+        }
+        for r in rows
+    }
+
+
 async def _routed_folders(vhost_id: int, bucket: str, pool_id: int) -> dict:
-    """Folders of ``bucket`` that a route of this vhost sends to a pool other than ``pool_id``:
-    {folder key: {"id", "name"}}."""
+    """Folders of ``bucket`` that this vhost serves from a pool other than ``pool_id``:
+    {folder key: {"id", "name"}}. The pool is the one the folder's route names, or the
+    destination of the split while the folder is being moved."""
     async with get_db_ctx() as db:
         if not await db.execute_fetchall("SELECT id FROM vhosts WHERE id = ?", (vhost_id,)):
             raise HTTPException(404, "Vhost not found")
         rows = await db.execute_fetchall(
             """SELECT r.path_prefix, p.id, p.name FROM routes r JOIN pools p ON p.id = r.pool_id
-               WHERE r.vhost_id = ? AND r.enabled = 1 AND p.type = 'nanio' AND r.pool_id != ?""",
-            (vhost_id, pool_id),
+               WHERE r.vhost_id = ? AND r.enabled = 1 AND p.type = 'nanio'""",
+            (vhost_id,),
         )
-    return {
-        folder_key(r["path_prefix"]): {"id": r["id"], "name": r["name"]}
-        for r in rows
-        if is_subfolder_prefix(r["path_prefix"]) and path_segments(r["path_prefix"])[0] == bucket
-    }
+        splits = await _splits(db, vhost_id)
+    folders = {}
+    for r in rows:
+        if not is_subfolder_prefix(r["path_prefix"]) or path_segments(r["path_prefix"])[0] != bucket:
+            continue
+        split = splits.get(r["path_prefix"].rstrip("/") + "/")
+        serving = split["destination"] if split else {"id": r["id"], "name": r["name"]}
+        if serving["id"] != pool_id:
+            folders[folder_key(r["path_prefix"])] = serving
+    return folders
 
 
 @router.get("/pools/{pool_id}/buckets")
@@ -216,7 +249,10 @@ async def locate(
     prefix: str = Query("", max_length=1024),
 ):
     """Which pool serves ``bucket`` (or ``prefix`` inside it) on this vhost, according to its
-    routes: the most specific route wins, the default pool otherwise."""
+    routes: the most specific route wins, the default pool otherwise.
+
+    While a migration has split routing active on that route, ``pool`` is the destination (it
+    is authoritative) and ``split`` names both sides; otherwise ``split`` is null."""
     async with get_db_ctx() as db:
         vhosts = await db.execute_fetchall("SELECT id, server_name FROM vhosts WHERE id = ?", (vhost_id,))
         if not vhosts:
@@ -226,6 +262,7 @@ async def locate(
                WHERE r.vhost_id = ? AND r.enabled = 1""",
             (vhost_id,),
         )
+        splits = await _splits(db, vhost_id)
     target = f"/{bucket}/{prefix}"
     # "/" (the default pool) matches everything; "/photos/2025/" only what is under that folder
     matches = [r for r in rows if target.startswith(r["path_prefix"].rstrip("/") + "/")]
@@ -234,10 +271,15 @@ async def locate(
             400, f"Vhost '{vhosts[0]['server_name']}' does not serve bucket '{bucket}': it has no route for it."
         )
     best = max(matches, key=lambda r: len(r["path_prefix"]))
+    split = splits.get(best["path_prefix"].rstrip("/") + "/")
+    pool = {"id": best["id"], "name": best["name"], "type": best["type"]}
+    if split:
+        pool = {**split["destination"], "type": best["type"]}
     return {
         "vhost": {"id": vhost_id, "server_name": vhosts[0]["server_name"]},
         "bucket": bucket,
         "prefix": prefix,
         "route": best["path_prefix"],
-        "pool": {"id": best["id"], "name": best["name"], "type": best["type"]},
+        "pool": pool,
+        "split": split,
     }

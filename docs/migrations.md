@@ -81,7 +81,7 @@ pending → copying → write_routing → verifying → switching → done
 
 Refusals before anything is copied: source and destination are the same pool, the source bucket
 (or folder) is empty, the bucket is marked deleted, another move of the same bucket is in
-progress.
+progress, the vhost is disabled (nginx does not load it, so its traffic could not be switched).
 
 ### Split routing
 
@@ -149,7 +149,9 @@ split have *Start again* in the history.
 While a split is active for a bucket:
 
 - a migration to any other pool is refused (HTTP 409),
+- disabling the vhost is refused (HTTP 409),
 - editing the vhost or regenerating its config keeps the split,
+- the Explorer shows the bucket (or folder) as being moved, served by the destination first,
 - a database rebuild from disk restores it.
 
 ### Restart of the orchestrator during a migration
