@@ -725,8 +725,9 @@ class TestVhostTemplateSplitRouting:
         assert "location = /photos {" in content
         exact = content.split("location = /photos {")[1].split("}")[0]
         assert "proxy_pass         http://pool-b;" in exact
-        # Only plain single-segment bucket routes get one
-        assert content.count("location = ") == 1
+        assert "location = /photos/ {" in content
+        # Only plain single-segment bucket routes get the two exact-match locations
+        assert content.count("location = ") == 2
 
     def test_bucket_exact_location_follows_split_routing(self):
         routes = [{"id": 5, "path_prefix": "/moving/", "pool_name": "src-pool", "enabled": True,
@@ -736,6 +737,31 @@ class TestVhostTemplateSplitRouting:
         assert "proxy_pass         http://dst-pool;" in exact
         assert "error_page 404 = @nanio_mig_5;" in exact
         assert "mirror /__nanio_mig_5_delete;" in exact
+
+    def test_multi_delete_is_mirrored_to_source_with_its_body(self):
+        """`POST /bucket?delete` carries the keys in its body. Without mirroring it, objects
+        deleted that way during the split came back through the 404 fallback."""
+        routes = [{"id": 5, "path_prefix": "/moving/", "pool_name": "src-pool", "enabled": True,
+                   "key_prefix": None, "migration_dst_pool_name": "dst-pool"}]
+        content = self._render(routes)
+
+        for exact_location in ("location = /moving {", "location = /moving/ {"):
+            block = content.split(exact_location)[1].split("}")[0]
+            assert "mirror /__nanio_mig_5_multidelete;" in block
+            assert "mirror_request_body on;" in block
+
+        # Object requests are never buffered: uploads must keep streaming
+        objects = content.split("location /moving/ {")[1].split("}")[0]
+        assert "mirror_request_body off;" in objects
+        assert "multidelete" not in objects
+
+        mirror = content.split("location = /__nanio_mig_5_multidelete {")[1]
+        mirror = mirror.split("proxy_set_header")[0]
+        assert "internal;" in mirror
+        assert "if ($request_method != POST) { return 204; }" in mirror
+        assert 'if ($args !~ "(^|&)delete(=|&|$)") { return 204; }' in mirror
+        assert "proxy_pass         http://src-pool$request_uri;" in mirror
+        assert "proxy_pass_request_body off" not in mirror
 
     def test_multiple_routes_each_get_named_location(self):
         routes = [

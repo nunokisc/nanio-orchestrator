@@ -200,6 +200,48 @@ class TestSplitOutlivesFailure:
         log = [e["message"] for e in (await client.get(f"/api/migrations/{mig['id']}/log")).json()]
         assert any("Split routing stays active" in m for m in log)
 
+    async def test_linked_http_vhost_keeps_the_split_when_regenerated(
+        self, client, mock_nginx, mock_s3, rclone, mtimes
+    ):
+        """An http vhost serving the source pool's files follows the split on every
+        regeneration, not only when the engine applies it — otherwise an edit of that vhost
+        hid every object written to the destination until the migration finished."""
+        from nanio_orchestrator.config import get_settings
+        from nanio_orchestrator.nginx.generator import generate_vhost_config
+
+        src, dst, _ = await _setup(client, mock_s3)
+        web_src = (
+            await client.post("/api/pools", json={"name": "web-src", "type": "http", "source_nanio_pool_id": src["id"]})
+        ).json()
+        await client.post(f"/api/pools/{web_src['id']}/members", json={"address": "10.0.1.1:80", "role": "primary"})
+        web_dst = (
+            await client.post("/api/pools", json={"name": "web-dst", "type": "http", "source_nanio_pool_id": dst["id"]})
+        ).json()
+        await client.post(f"/api/pools/{web_dst['id']}/members", json={"address": "10.0.1.2:80", "role": "primary"})
+        web = await create_vhost(client, "cdn.example.com", default_pool_id=web_src["id"])
+        resp = await client.post(f"/api/vhosts/{web['id']}/http-bucket-routes/safe-bk")
+        assert resp.status_code == 201, resp.text
+
+        rclone.missing = ["never-arrived"]
+        mig = await _migrate(client, "safe-bk", src, dst)
+        assert mig["phase"] == "error" and mig["split_routing"] is True
+
+        on_disk = (get_settings().vhosts_dir / "cdn.example.com.conf").read_text()
+        assert "migration_src:web-src migration_dst:web-dst" in on_disk
+
+        # Any later regeneration (vhost edit, Rebuild All) derives the same split
+        _, regenerated = await generate_vhost_config(web["id"])
+        assert "migration_src:web-src migration_dst:web-dst" in regenerated
+        assert "proxy_pass         http://web-dst;" in regenerated
+
+        # Finishing the move points the http route at the destination's http pool, split gone
+        rclone.missing = []
+        done = await _migrate(client, "safe-bk", src, dst)
+        assert done["phase"] == "done"
+        _, final = await generate_vhost_config(web["id"])
+        assert "LIVE MIGRATION" not in final
+        assert "proxy_pass         http://web-dst;" in final
+
     async def test_same_move_takes_over_the_split_and_finishes(self, client, mock_nginx, mock_s3, rclone, mtimes):
         src, dst, _, failed = await self._fail_after_split(client, mock_s3, rclone)
 

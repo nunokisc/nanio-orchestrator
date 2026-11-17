@@ -197,6 +197,25 @@ async def generate_vhost_config(vhost_id: int) -> tuple:
                 prefix_stripped = route["path_prefix"].strip("/")
                 route["migration_dst_pool_name"] = migration_by_bucket.get(prefix_stripped)
 
+        # An http vhost serving the files of a nanio pool follows that pool's migrations: while
+        # bucket X is split between nanio pools A → B, a route /X/ on the http pool backed by A
+        # is split towards the http pool backed by B. Derived here so that it holds for every
+        # regeneration (vhost edit, rebuild, restart), not only when the engine applies it.
+        linked_rows = await db.execute_fetchall(
+            """SELECT m.bucket, sp.id AS http_src_pool_id, dp.name AS http_dst_pool_name
+               FROM migrations m
+               JOIN pools sp ON sp.source_nanio_pool_id = m.src_pool_id AND sp.type = 'http'
+               JOIN pools dp ON dp.source_nanio_pool_id = m.dst_pool_id AND dp.type = 'http'
+               WHERE m.split_routing = 1
+               ORDER BY dp.id"""
+        )
+        linked = {}
+        for row in linked_rows:
+            linked.setdefault((f"/{row['bucket']}/", row["http_src_pool_id"]), row["http_dst_pool_name"])
+        for route in routes:
+            if not route["migration_dst_pool_name"]:
+                route["migration_dst_pool_name"] = linked.get((route["path_prefix"], route["pool_id"]))
+
     content = render_vhost(vhost, routes)
     filepath = str(s.vhosts_dir / f"{vhost['server_name']}.conf")
     return filepath, content
