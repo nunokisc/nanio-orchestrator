@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -210,13 +211,24 @@ async def record_file_state(db, filepath: str, content: str) -> None:
 # ── Full generation from DB ──────────────────────────────────────────────────
 
 
-async def generate_pool_config(pool_id: int) -> tuple:
+@asynccontextmanager
+async def _reading(db):
+    """Read through the caller's connection when given, so that changes it has not committed
+    yet are part of what is generated — that is how a change is validated before it is saved."""
+    if db is not None:
+        yield db
+    else:
+        async with get_db_ctx() as own:
+            yield own
+
+
+async def generate_pool_config(pool_id: int, db=None) -> tuple:
     """Generate upstream config for a pool.
     Returns (filepath, content) where content is None when the pool has no members
     (caller must remove the file rather than write an empty upstream block).
     """
     s = get_settings()
-    async with get_db_ctx() as db:
+    async with _reading(db) as db:
         row = await db.execute_fetchall("SELECT * FROM pools WHERE id = ?", (pool_id,))
         if not row:
             raise ValueError(f"Pool {pool_id} not found")
@@ -232,10 +244,10 @@ async def generate_pool_config(pool_id: int) -> tuple:
     return filepath, content
 
 
-async def generate_vhost_config(vhost_id: int) -> tuple:
+async def generate_vhost_config(vhost_id: int, db=None) -> tuple:
     """Generate server block config for a vhost. Returns (filepath, content)."""
     s = get_settings()
-    async with get_db_ctx() as db:
+    async with _reading(db) as db:
         row = await db.execute_fetchall("SELECT * FROM vhosts WHERE id = ?", (vhost_id,))
         if not row:
             raise ValueError(f"Vhost {vhost_id} not found")

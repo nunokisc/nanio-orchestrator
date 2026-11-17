@@ -100,6 +100,20 @@ async def main() -> None:
     reload = api("POST", "/api/config/reload", expect=200)
     check(reload["ok"], "nginx accepted and reloaded the generated config")
 
+    step("A change nginx refuses is not saved")
+    empty = api("POST", "/api/pools", {"name": "no-members", "type": "nanio"}, expect=201)
+    status, body = api(
+        "POST",
+        "/api/vhosts",
+        {"server_name": "broken.dev", "listen_port": 8082, "ssl": False, "default_pool_id": empty["id"]},
+    )
+    check(status == 422, f"a vhost proxying to a pool without members is refused (got {status})")
+    check("nothing was saved" in (body or {}).get("detail", ""), "the answer says nothing was saved")
+    names = [v["server_name"] for v in api("GET", "/api/vhosts", expect=200)]
+    check(names == ["s3.dev"], f"the vhost was not created: {names}")
+    check(api("POST", "/api/config/validate", expect=200)["ok"], "the configuration on disk is still valid")
+    api("DELETE", f"/api/pools/{empty['id']}", expect=204)
+
     step("A bucket on the default pool, through the gateway")
     ok, message = await s3client.create_bucket(GATEWAY, "photos", **AUTH)
     check(ok, f"CreateBucket photos through the gateway ({message})")

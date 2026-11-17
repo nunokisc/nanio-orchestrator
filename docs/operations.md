@@ -76,7 +76,10 @@ Creating or editing a pool, member, vhost or route does three things:
 
 1. writes the new config file,
 2. runs `nginx -t`,
-3. restores the previous file if nginx rejects it.
+3. if nginx rejects it: restores the previous file, undoes the change in the database and
+   answers HTTP 422 with what nginx said. Nothing is saved.
+
+So the database, the files and nginx always describe the same state.
 
 It does **not** reload nginx. You apply the pending changes when you are ready:
 

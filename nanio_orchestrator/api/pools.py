@@ -7,6 +7,7 @@ from typing import List
 
 from fastapi import APIRouter, HTTPException
 
+from nanio_orchestrator.api.common import reject_if_refused
 from nanio_orchestrator.audit_log import log_audit
 from nanio_orchestrator.credentials import get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
@@ -20,11 +21,10 @@ from nanio_orchestrator.models import (
     PoolOut,
     PoolUpdate,
 )
-from nanio_orchestrator.nginx.apply import apply_config_file
+from nanio_orchestrator.nginx.apply import apply_config_file, remove_config_file_checked
 from nanio_orchestrator.nginx.generator import (
     generate_pool_config,
     record_file_state,
-    remove_config_file,
     render_node_config,
 )
 from nanio_orchestrator.s3client import delete_object, list_objects
@@ -49,12 +49,16 @@ async def _write_pool_config(pool_id: int, db) -> tuple:
     Does NOT reload nginx — the operator applies changes via the Config tab.
     If the pool has no members the config file is removed instead of written.
     """
-    filepath, content = await generate_pool_config(pool_id)
+    filepath, content = await generate_pool_config(pool_id, db)
 
-    # Empty pool — remove file so nginx doesn't see an invalid upstream block
+    # Empty pool — no upstream block can be written for it, so its file goes away. Refused if
+    # a vhost still proxies to this pool: nginx would then reject the whole configuration.
     if content is None:
-        await remove_config_file(filepath)
+        removal = await remove_config_file_checked(filepath)
+        if not removal.ok:
+            return False, f"this pool is still used by a vhost and would be left without members. {removal.output}"
         await db.execute("DELETE FROM config_files WHERE path = ?", (filepath,))
+        await db.commit()
         return True, "Pool has no members — config file removed (apply nginx changes via Config tab)"
 
     result = await apply_config_file(filepath, content)
@@ -206,13 +210,13 @@ async def update_pool(pool_id: int, body: PoolUpdate):
             f"UPDATE pools SET {set_clause}, updated_at = datetime('now') WHERE id = ?",
             values,
         )
-        await db.commit()
 
         rows = await db.execute_fetchall("SELECT * FROM pools WHERE id = ?", (pool_id,))
         after = dict(rows[0])
 
         # Regenerate config
         ok, output = await _write_pool_config(pool_id, db)
+        await reject_if_refused(db, ok, output)
         await log_audit(db, "update", "pool", pool_id, before=before, after=after, reload_ok=ok, reload_output=output)
         await db.commit()
 
@@ -345,13 +349,13 @@ async def create_member(pool_id: int, body: MemberCreate):
                 1 if body.enabled else 0,
             ),
         )
-        await db.commit()
 
         mrows = await db.execute_fetchall("SELECT * FROM pool_members WHERE id = ?", (cursor.lastrowid,))
         member = dict(mrows[0])
 
         # Regenerate pool config
         ok, output = await _write_pool_config(pool_id, db)
+        await reject_if_refused(db, ok, output)
         await log_audit(db, "create", "pool_member", member["id"], after=member, reload_ok=ok, reload_output=output)
         await db.commit()
         return member
@@ -389,12 +393,12 @@ async def update_member(pool_id: int, member_id: int, body: MemberUpdate):
             f"UPDATE pool_members SET {set_clause}, updated_at = datetime('now') WHERE id = ?",
             values,
         )
-        await db.commit()
 
         mrows = await db.execute_fetchall("SELECT * FROM pool_members WHERE id = ?", (member_id,))
         after = dict(mrows[0])
 
         ok, output = await _write_pool_config(pool_id, db)
+        await reject_if_refused(db, ok, output)
         await log_audit(
             db, "update", "pool_member", member_id, before=before, after=after, reload_ok=ok, reload_output=output
         )
@@ -413,9 +417,9 @@ async def delete_member(pool_id: int, member_id: int):
         before = dict(mrows[0])
 
         await db.execute("DELETE FROM pool_members WHERE id = ?", (member_id,))
-        await db.commit()
 
         ok, output = await _write_pool_config(pool_id, db)
+        await reject_if_refused(db, ok, output)
         await log_audit(db, "delete", "pool_member", member_id, before=before, reload_ok=ok, reload_output=output)
         await db.commit()
 
