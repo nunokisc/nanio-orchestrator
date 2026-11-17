@@ -10,6 +10,7 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 
 from nanio_orchestrator import s3client, subfolders
+from nanio_orchestrator.api.common import reject_if_refused
 from nanio_orchestrator.audit_log import log_audit
 from nanio_orchestrator.credentials import get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
@@ -117,7 +118,6 @@ async def _sync_default_route(vhost_id: int, pool_id: int | None, db) -> None:
     else:
         if existing:
             await db.execute("DELETE FROM routes WHERE id = ?", (existing[0]["id"],))
-    await db.commit()
 
 
 async def _get_pool_name(db, pool_id: int | None) -> str | None:
@@ -198,7 +198,6 @@ async def create_vhost(body: VhostCreate):
                     ip_rule_ips_json,
                 ),
             )
-            await db.commit()
         except Exception as e:
             if "UNIQUE" in str(e):
                 raise HTTPException(409, f"Vhost '{body.server_name}' already exists")
@@ -206,9 +205,20 @@ async def create_vhost(body: VhostCreate):
 
         rows = await db.execute_fetchall("SELECT * FROM vhosts WHERE id = ?", (cursor.lastrowid,))
         vhost = dict(rows[0])
-        await log_audit(db, "create", "vhost", vhost["id"], after=vhost)
-
         default_pool_name = await _get_pool_name(db, vhost.get("default_pool_id"))
+
+        # Auto-create the immutable '/' catch-all route pointing to the default pool
+        if body.default_pool_id:
+            await db.execute(
+                "INSERT INTO routes (vhost_id, path_prefix, pool_id, enabled) VALUES (?, '/', ?, 1)",
+                (vhost["id"], body.default_pool_id),
+            )
+            # Nothing is committed yet: nginx validates the vhost before it is saved
+            ok, output = await _write_vhost_config(vhost["id"], db)
+            await reject_if_refused(db, ok, output)
+
+        await log_audit(db, "create", "vhost", vhost["id"], after=vhost)
+        await db.commit()
         await write_vhost_sidecar(
             vhost["id"],
             vhost["server_name"],
@@ -219,16 +229,7 @@ async def create_vhost(body: VhostCreate):
             ip_rule_ips_json=vhost.get("ip_rule_ips_json"),
         )
 
-        # Auto-create the immutable '/' catch-all route pointing to the default pool
         if body.default_pool_id:
-            await db.execute(
-                "INSERT INTO routes (vhost_id, path_prefix, pool_id, enabled) VALUES (?, '/', ?, 1)",
-                (vhost["id"], body.default_pool_id),
-            )
-        await db.commit()
-
-        if body.default_pool_id:
-            ok, output = await _write_vhost_config(vhost["id"], db)
             await log_audit(
                 db,
                 "create",
@@ -316,7 +317,6 @@ async def update_vhost(vhost_id: int, body: VhostUpdate):
             f"UPDATE vhosts SET {set_clause}, updated_at = datetime('now') WHERE id = ?",
             values,
         )
-        await db.commit()
 
         # Keep the auto-managed '/' route in sync when default_pool_id changes
         if "default_pool_id" in updates:
@@ -326,6 +326,7 @@ async def update_vhost(vhost_id: int, body: VhostUpdate):
         after = dict(rows[0])
 
         ok, output = await _write_vhost_config(vhost_id, db)
+        await reject_if_refused(db, ok, output)
         await log_audit(db, "update", "vhost", vhost_id, before=before, after=after, reload_ok=ok, reload_output=output)
         await db.commit()
 
@@ -447,7 +448,6 @@ async def create_route(vhost_id: int, body: RouteCreate):
                     1 if body.enabled else 0,
                 ),
             )
-            await db.commit()
         except Exception as e:
             if "UNIQUE" in str(e):
                 raise HTTPException(409, f"Route with prefix '{body.path_prefix}' already exists for this vhost")
@@ -463,6 +463,7 @@ async def create_route(vhost_id: int, body: RouteCreate):
         route = dict(rrows[0])
 
         ok, output = await _write_vhost_config(vhost_id, db)
+        await reject_if_refused(db, ok, output)
         await log_audit(db, "create", "route", route_id, after=route, reload_ok=ok, reload_output=output)
         await db.commit()
 
@@ -620,7 +621,6 @@ async def update_route(vhost_id: int, route_id: int, body: RouteUpdate):
                 f"UPDATE routes SET {set_clause}, updated_at = datetime('now') WHERE id = ?",
                 values,
             )
-            await db.commit()
 
         rrows2 = await db.execute_fetchall(
             """SELECT r.*, p.name as pool_name
@@ -631,6 +631,7 @@ async def update_route(vhost_id: int, route_id: int, body: RouteUpdate):
         after = dict(rrows2[0])
 
         ok, output = await _write_vhost_config(vhost_id, db)
+        await reject_if_refused(db, ok, output)
         await log_audit(db, "update", "route", route_id, before=before, after=after, reload_ok=ok, reload_output=output)
         await db.commit()
 
@@ -689,9 +690,9 @@ async def delete_route(vhost_id: int, route_id: int, allow_orphan: bool = False)
         # to avoid FK constraint failures (route_id has no ON DELETE SET NULL)
         await db.execute("UPDATE migrations SET route_id = NULL WHERE route_id = ?", (route_id,))
         await db.execute("DELETE FROM routes WHERE id = ?", (route_id,))
-        await db.commit()
 
         ok, output = await _write_vhost_config(vhost_id, db)
+        await reject_if_refused(db, ok, output)
         await log_audit(db, "delete", "route", route_id, before=before, reload_ok=ok, reload_output=output)
         for http_vhost_id in http_changed:
             await _write_vhost_config(http_vhost_id, db)

@@ -138,6 +138,11 @@ Schema upgrades live only in `db._run_migrations_async()`; `init_db_sync()` just
    tasks never change routing: bucket sync only *flags* a routed bucket missing on its pool
    (`bucket_sync.missing_since`) — a node with unmounted storage answers "no such bucket" too.
 
+   An endpoint that changes what nginx serves makes its changes on `db` **without committing**,
+   calls the write helper (which generates from that uncommitted state and commits on success),
+   then `await reject_if_refused(db, ok, output)` (`api/common.py`): on refusal it rolls back and
+   answers 422. Never commit before the write, and never answer 2xx for a refused change.
+
 4. **HTTP pools are second-class.** They have no S3 credentials, no bucket sync, no migration.
    Filter them out in bucket-related endpoints — see `bucket_sync.py` and `api/pools.py`.
 

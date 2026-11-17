@@ -121,6 +121,27 @@ async def apply_config_files(files: Sequence[Tuple[str, str]], *, reload: bool =
             raise
 
 
+async def remove_config_file_checked(filepath: str) -> ApplyResult:
+    """Remove a managed file, keeping the removal only if nginx still accepts the tree.
+
+    An upstream file that a vhost still proxies to must not disappear: nginx would refuse
+    its whole configuration at the next reload.
+    """
+    async with nginx_lock():
+        previous = {filepath: _read_bytes(filepath)}
+        if previous[filepath] is None:
+            return ApplyResult(ok=True, stage="test", output="nothing to remove")
+        try:
+            os.unlink(filepath)
+            test_result = await executor.test_config()
+            if not test_result.ok:
+                _restore(previous)
+            return ApplyResult(ok=test_result.ok, stage="test", output=test_result.output)
+        except BaseException:
+            _restore(previous)
+            raise
+
+
 async def apply_config_file(filepath: str, content: str, *, reload: bool = False) -> ApplyResult:
     """Single-file convenience wrapper around :func:`apply_config_files`."""
     return await apply_config_files([(filepath, content)], reload=reload)
@@ -137,7 +158,7 @@ async def write_vhost_config(vhost_id: int, db) -> tuple:
 
     Does NOT reload nginx — the operator applies changes via the Config tab.
     """
-    filepath, content = await generate_vhost_config(vhost_id)
+    filepath, content = await generate_vhost_config(vhost_id, db)
     result = await apply_config_file(filepath, content)
     if not result.ok:
         return False, result.output
@@ -189,5 +210,6 @@ __all__: List[str] = [
     "nginx_lock",
     "rebuild_all_configs",
     "reload_nginx_locked",
+    "remove_config_file_checked",
     "write_vhost_config",
 ]

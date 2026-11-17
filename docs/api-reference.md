@@ -20,8 +20,9 @@ curl -H "X-Orchestrator-Key: $KEY" http://localhost:8080/api/pools
 ```
 
 Changes to pools, members, vhosts and routes are written and validated with `nginx -t` but
-**not applied** until `POST /api/config/reload`. If nginx rejects a change, the previous file is
-restored and the response carries the nginx output.
+**not applied** until `POST /api/config/reload`. A change that `nginx -t` rejects answers **422**
+and is not saved anywhere: the previous file is restored, the database change is undone, and
+the response carries the nginx output.
 
 ---
 

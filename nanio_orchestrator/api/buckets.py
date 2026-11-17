@@ -11,6 +11,7 @@ from typing import List
 
 from fastapi import APIRouter, HTTPException
 
+from nanio_orchestrator.api.common import reject_if_refused
 from nanio_orchestrator.audit_log import log_audit
 from nanio_orchestrator.bucket_sync import sync_vhost_buckets_once
 from nanio_orchestrator.config import get_settings
@@ -246,9 +247,9 @@ async def promote_bucket(vhost_id: int, bucket: str, body: BucketPromoteRequest)
             (vhost_id, f"/{bucket}/", initial_route_pool_id),
         )
         route_id = cursor.lastrowid
-        await db.commit()
 
         ok, output = await _write_vhost_config(vhost_id, db)
+        await reject_if_refused(db, ok, output)
         await log_audit(
             db,
             "promote_bucket",
@@ -540,7 +541,8 @@ async def remove_bucket_route(vhost_id: int, bucket: str):
                 (vhost_id, bucket),
             )
 
-        await db.commit()
+        ok, output = await _write_vhost_config(vhost_id, db)
+        await reject_if_refused(db, ok, output)
 
         await log_audit(
             db,
@@ -674,7 +676,8 @@ async def add_http_bucket_route(vhost_id: int, bucket: str):
             (vhost_id, f"/{bucket}/", vhost["default_pool_id"]),
         )
         route_id = cursor.lastrowid
-        await db.commit()
+        ok, output = await _write_vhost_config(vhost_id, db)
+        await reject_if_refused(db, ok, output)
 
         await log_audit(
             db,
@@ -720,7 +723,8 @@ async def remove_http_bucket_route(vhost_id: int, bucket: str):
 
         route_id = route_rows[0]["id"]
         await db.execute("DELETE FROM routes WHERE id = ?", (route_id,))
-        await db.commit()
+        ok, output = await _write_vhost_config(vhost_id, db)
+        await reject_if_refused(db, ok, output)
 
         await log_audit(
             db,
