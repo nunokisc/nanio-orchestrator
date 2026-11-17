@@ -31,7 +31,7 @@ from nanio_orchestrator.models import (
     RcloneMigrationOut,
     StaleMigrationOut,
 )
-from nanio_orchestrator.nginx.apply import write_vhost_config
+from nanio_orchestrator.nginx.apply import write_configs
 from nanio_orchestrator.s3client import bucket_exists, bucket_has_objects
 
 router = APIRouter(prefix="/api/migrations", tags=["migrations"])
@@ -348,24 +348,22 @@ async def _create_folder_migration(body: RcloneMigrationCreate) -> RcloneMigrati
             "For an empty folder, just add the route.",
         )
 
-    async with get_db_ctx() as db:
-        if route_rows:
-            route_id = route_rows[0]["id"]
-        else:
+    if route_rows:
+        route_id = route_rows[0]["id"]
+    else:
+        async with get_db_ctx() as db:
             cursor = await db.execute(
                 "INSERT INTO routes (vhost_id, path_prefix, pool_id, enabled) VALUES (?, ?, ?, 1)",
                 (vhost_id, route_path, src_pool_id),
             )
             route_id = cursor.lastrowid
-            # http vhosts serving this bucket get the folder route too, so they follow the move
+            # http vhosts serving this bucket get the folder route too, so they follow the move.
+            # One change for nginx; refused, nothing of it is saved (the connection closes
+            # without a commit).
             http_changed, _ = await subfolders.sync_http_routes(db, bucket, route_path, parent["id"], src_pool_id)
-            await db.commit()
-            for changed_vhost_id in [vhost_id, *http_changed]:
-                ok, output = await write_vhost_config(changed_vhost_id, db)
-                if not ok:
-                    await db.execute("DELETE FROM routes WHERE id = ?", (route_id,))
-                    await db.commit()
-                    raise HTTPException(400, f"nginx rejected the folder route: {output}")
+            ok, output = await write_configs(db, vhost_ids=[vhost_id, *http_changed])
+        if not ok:
+            raise HTTPException(400, f"nginx rejected the folder route: {output}")
 
     try:
         migration_id = await start_migration(

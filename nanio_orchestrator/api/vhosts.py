@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio as _asyncio
 import json
 import logging
+import sqlite3
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -12,6 +13,7 @@ from fastapi import APIRouter, HTTPException
 from nanio_orchestrator import s3client, subfolders
 from nanio_orchestrator.api.common import reject_if_refused
 from nanio_orchestrator.audit_log import log_audit
+from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.credentials import get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator.models import (
@@ -22,6 +24,7 @@ from nanio_orchestrator.models import (
     VhostOut,
     VhostUpdate,
 )
+from nanio_orchestrator.nginx.apply import write_configs
 from nanio_orchestrator.nginx.apply import write_vhost_config as _write_vhost_config
 from nanio_orchestrator.nginx.generator import (
     SUBFOLDER_MARKER,
@@ -311,10 +314,13 @@ async def update_vhost(vhost_id: int, body: VhostUpdate):
 
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         values = [*list(updates.values()), vhost_id]
-        await db.execute(
-            f"UPDATE vhosts SET {set_clause}, updated_at = datetime('now') WHERE id = ?",
-            values,
-        )
+        try:
+            await db.execute(
+                f"UPDATE vhosts SET {set_clause}, updated_at = datetime('now') WHERE id = ?",
+                values,
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(409, f"Vhost '{updates.get('server_name')}' already exists") from None
 
         # Keep the auto-managed '/' route in sync when default_pool_id changes
         if "default_pool_id" in updates:
@@ -323,10 +329,15 @@ async def update_vhost(vhost_id: int, body: VhostUpdate):
         rows = await db.execute_fetchall("SELECT * FROM vhosts WHERE id = ?", (vhost_id,))
         after = dict(rows[0])
 
-        ok, output = await _write_vhost_config(vhost_id, db)
+        # A renamed vhost is one change for nginx: the new file written, the old one gone
+        renamed_from = before["server_name"] if after["server_name"] != before["server_name"] else None
+        old_file = [str(get_settings().vhosts_dir / f"{renamed_from}.conf")] if renamed_from else []
+        ok, output = await write_configs(db, vhost_ids=[vhost_id], remove=old_file)
         await reject_if_refused(db, ok, output)
         await log_audit(db, "update", "vhost", vhost_id, before=before, after=after, reload_ok=ok, reload_output=output)
         await db.commit()
+        if renamed_from:
+            await delete_vhost_sidecar(renamed_from)
 
         default_pool_name = await _get_pool_name(db, after.get("default_pool_id"))
         await write_vhost_sidecar(
@@ -349,6 +360,18 @@ async def delete_vhost(vhost_id: int):
         if not rows:
             raise HTTPException(404, "Vhost not found")
         vhost = dict(rows[0])
+
+        busy = await db.execute_fetchall(
+            """SELECT id, bucket FROM migrations WHERE vhost_id = ? AND (split_routing = 1
+               OR phase IN ('pending','copying','write_routing','verifying','switching'))""",
+            (vhost_id,),
+        )
+        if busy:
+            raise HTTPException(
+                409,
+                f"Migration {busy[0]['id']} is still moving bucket '{busy[0]['bucket']}' of this vhost. "
+                "Finish or cancel it first.",
+            )
 
         # Cascade: migrations (they reference the routes), routes and bucket_sync are children of the vhost
         await db.execute("DELETE FROM migrations WHERE vhost_id = ?", (vhost_id,))
@@ -454,25 +477,22 @@ async def create_route(vhost_id: int, body: RouteCreate):
         )
         route = dict(rrows[0])
 
-        ok, output = await _write_vhost_config(vhost_id, db)
+        # http vhosts serving this bucket from the parent pool's files follow the folder. Their
+        # routes are part of the same change: nginx validates all the vhosts together.
+        http_changed: list = []
+        http_warnings: list = []
+        if subfolder:
+            http_changed, http_warnings = await subfolders.sync_http_routes(
+                db, subfolder["bucket"], body.path_prefix, subfolder["parent"]["id"], body.pool_id
+            )
+        ok, output = await write_configs(db, vhost_ids=[vhost_id, *http_changed])
         await reject_if_refused(db, ok, output)
         await log_audit(db, "create", "route", route_id, after=route, reload_ok=ok, reload_output=output)
         await db.commit()
 
-    warnings: list[str] = []
-    if subfolder and ok:
+    warnings: list[str] = list(http_warnings)
+    if subfolder:
         warnings += await subfolders.ensure_markers(vhost_id)
-        # http vhosts serving this bucket from the parent pool's files follow the folder
-        async with get_db_ctx() as db:
-            changed, http_warnings = await subfolders.sync_http_routes(
-                db, subfolder["bucket"], body.path_prefix, subfolder["parent"]["id"], body.pool_id
-            )
-            await db.commit()
-            warnings += http_warnings
-            for http_vhost_id in changed:
-                http_ok, http_output = await _write_vhost_config(http_vhost_id, db)
-                if not http_ok:
-                    warnings.append(f"http vhost {http_vhost_id}: nginx rejected the new route: {http_output}")
 
     return {
         **route,
@@ -521,12 +541,17 @@ async def update_route(vhost_id: int, route_id: int, body: RouteUpdate):
             )
             return dict(rrows2[0])
 
-        pool_missing = "pool_id" in updates and not await db.execute_fetchall(
-            "SELECT id FROM pools WHERE id = ?", (updates["pool_id"],)
-        )
+        current_type = await _get_pool_type(db, before["pool_id"])
+        new_type = await _get_pool_type(db, updates["pool_id"]) if "pool_id" in updates else current_type
 
-    if pool_missing:
+    if new_type is None:
         raise HTTPException(400, f"Pool {updates['pool_id']} not found")
+    if new_type != current_type:
+        raise HTTPException(
+            400,
+            f"Pool {updates['pool_id']} is of type '{new_type}', but this route uses '{current_type}' pools. "
+            "You cannot mix pool types within a vhost.",
+        )
     if "enabled" in updates:
         updates["enabled"] = 1 if updates["enabled"] else 0
 
@@ -538,65 +563,64 @@ async def update_route(vhost_id: int, route_id: int, body: RouteUpdate):
 
     if "pool_id" in updates and updates["pool_id"] != before["pool_id"]:
         bucket_segment = before["path_prefix"].strip("/").split("/")[0]
-        if bucket_segment:
-            # Check if this is a sub-path (a parent bucket route already exists)
-            async with get_db_ctx() as db:
-                parent_rows = await db.execute_fetchall(
-                    """SELECT id FROM routes
-                       WHERE vhost_id = ? AND id != ? AND path_prefix IN (?, ?)""",
-                    (vhost_id, route_id, f"/{bucket_segment}/", f"/{bucket_segment}"),
+        # Check if this is a sub-path (a parent bucket route already exists)
+        async with get_db_ctx() as db:
+            parent_rows = await db.execute_fetchall(
+                """SELECT id FROM routes
+                   WHERE vhost_id = ? AND id != ? AND path_prefix IN (?, ?)""",
+                (vhost_id, route_id, f"/{bucket_segment}/", f"/{bucket_segment}"),
+            )
+
+        if not parent_rows:
+            # Not a sub-path: check if source bucket has objects
+            src_pool_id_cur = before["pool_id"]
+            dst_pool_id_requested = updates["pool_id"]
+            src_count = 0
+            try:
+                async with get_db_ctx() as db:
+                    src_member_rows = await db.execute_fetchall(
+                        "SELECT address FROM pool_members WHERE pool_id = ? AND enabled = 1 ORDER BY id LIMIT 1",
+                        (src_pool_id_cur,),
+                    )
+                if src_member_rows:
+                    src_ak, src_sk, _ = await get_pool_s3_params(src_pool_id_cur)
+                    src_count = await count_objects(
+                        src_member_rows[0]["address"],
+                        bucket_segment,
+                        access_key=src_ak,
+                        secret_key=src_sk,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "update_route: source object count failed for '%s': %s",
+                    bucket_segment,
+                    exc,
                 )
 
-            if not parent_rows:
-                # Not a sub-path: check if source bucket has objects
-                src_pool_id_cur = before["pool_id"]
-                dst_pool_id_requested = updates["pool_id"]
-                src_count = 0
+            if src_count > 0:
+                # Scenario 2: keep route on current pool, start migration
+                updates.pop("pool_id")
                 try:
-                    async with get_db_ctx() as db:
-                        src_member_rows = await db.execute_fetchall(
-                            "SELECT address FROM pool_members WHERE pool_id = ? AND enabled = 1 ORDER BY id LIMIT 1",
-                            (src_pool_id_cur,),
-                        )
-                    if src_member_rows:
-                        src_ak, src_sk, _ = await get_pool_s3_params(src_pool_id_cur)
-                        src_count = await count_objects(
-                            src_member_rows[0]["address"],
-                            bucket_segment,
-                            access_key=src_ak,
-                            secret_key=src_sk,
-                        )
-                except Exception as exc:
-                    logger.warning(
-                        "update_route: source object count failed for '%s': %s",
-                        bucket_segment,
-                        exc,
+                    from nanio_orchestrator.migration_engine import start_migration
+
+                    migration_id = await start_migration(
+                        vhost_id=vhost_id,
+                        bucket=bucket_segment,
+                        src_pool_id=src_pool_id_cur,
+                        dst_pool_id=dst_pool_id_requested,
+                        route_id=route_id,
                     )
-
-                if src_count > 0:
-                    # Scenario 2: keep route on current pool, start migration
-                    updates.pop("pool_id")
-                    try:
-                        from nanio_orchestrator.migration_engine import start_migration
-
-                        migration_id = await start_migration(
-                            vhost_id=vhost_id,
-                            bucket=bucket_segment,
-                            src_pool_id=src_pool_id_cur,
-                            dst_pool_id=dst_pool_id_requested,
-                            route_id=route_id,
-                        )
-                        logger.info(
-                            "update_route: started migration %d for '%s' route_id=%d src=%d dst=%d",
-                            migration_id,
-                            bucket_segment,
-                            route_id,
-                            src_pool_id_cur,
-                            dst_pool_id_requested,
-                        )
-                    except RuntimeError as exc:
-                        # Repointing the route now would hide the objects that could not be moved
-                        raise HTTPException(429, str(exc)) from exc
+                    logger.info(
+                        "update_route: started migration %d for '%s' route_id=%d src=%d dst=%d",
+                        migration_id,
+                        bucket_segment,
+                        route_id,
+                        src_pool_id_cur,
+                        dst_pool_id_requested,
+                    )
+                except RuntimeError as exc:
+                    # Repointing the route now would hide the objects that could not be moved
+                    raise HTTPException(429, str(exc)) from exc
 
     async with get_db_ctx() as db:
         if updates:
@@ -680,11 +704,9 @@ async def delete_route(vhost_id: int, route_id: int, allow_orphan: bool = False)
         await db.execute("UPDATE migrations SET route_id = NULL WHERE route_id = ?", (route_id,))
         await db.execute("DELETE FROM routes WHERE id = ?", (route_id,))
 
-        ok, output = await _write_vhost_config(vhost_id, db)
+        ok, output = await write_configs(db, vhost_ids=[vhost_id, *http_changed])
         await reject_if_refused(db, ok, output)
         await log_audit(db, "delete", "route", route_id, before=before, reload_ok=ok, reload_output=output)
-        for http_vhost_id in http_changed:
-            await _write_vhost_config(http_vhost_id, db)
         await db.commit()
 
     if marker and ok:

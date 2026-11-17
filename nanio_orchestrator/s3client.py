@@ -352,8 +352,15 @@ async def count_objects(
             elif t == "NextContinuationToken":
                 next_token = elem.text
 
-        if not is_truncated or not next_token:
+        if not is_truncated:
             break
+        if not next_token:
+            # Reporting what was read so far as the whole bucket would let a migration believe
+            # it has converged, or a purge believe it is done.
+            raise RuntimeError(
+                f"ListObjects for bucket '{bucket}' at {address} says there are more keys but gives no "
+                "continuation token"
+            )
         continuation_token = next_token
 
     return total
@@ -397,8 +404,15 @@ async def list_objects(
             elif t == "NextContinuationToken":
                 next_token = elem.text
 
-        if not is_truncated or not next_token:
+        if not is_truncated:
             break
+        if not next_token:
+            # Reporting what was read so far as the whole bucket would let a migration believe
+            # it has converged, or a purge believe it is done.
+            raise RuntimeError(
+                f"ListObjects for bucket '{bucket}' at {address} says there are more keys but gives no "
+                "continuation token"
+            )
         continuation_token = next_token
 
     return keys
@@ -412,11 +426,20 @@ async def get_object(
     secret_key: Optional[str] = None,
     region: str = "us-east-1",
 ) -> Optional[bytes]:
-    """Download an object. Returns bytes or None on error."""
+    """Download an object. Returns its bytes, or None if it does not exist (404).
+
+    Any other answer raises: "refused" or "failed" must not look like "not there".
+    """
     status, body = await asyncio.to_thread(
         _do_request, "GET", address, f"/{bucket}/{key}", "", b"", access_key, secret_key, region
     )
-    return body if status == 200 else None
+    if status == 200:
+        return body
+    if status == 404:
+        return None
+    if status == 403:
+        raise PermissionError(f"GetObject returned 403 Forbidden for '{bucket}/{key}' at {address}")
+    raise RuntimeError(f"GetObject HTTP {status} for '{bucket}/{key}' at {address}")
 
 
 def _head_last_modified(

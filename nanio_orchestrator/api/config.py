@@ -160,7 +160,7 @@ async def rebuild_all():
 # ── Per-file drift resolution ────────────────────────────────────────────────
 
 
-def _require_managed_config_path(path: str) -> None:
+def _require_managed_config_path(path: str) -> str:
     """Resolve `path` and require it to be a .conf file directly inside the managed pools/ or
     vhosts/ directory. The endpoint reads the file and stores its content in the database, so
     anything else would let a caller copy arbitrary files readable by the service."""
@@ -172,12 +172,13 @@ def _require_managed_config_path(path: str) -> None:
     allowed = {s.pools_dir.resolve(), s.vhosts_dir.resolve()}
     if resolved.suffix != ".conf" or resolved.parent not in allowed:
         raise HTTPException(400, "Not a managed nginx config file")
+    return str(resolved)
 
 
 @router.post("/absorb-file")
 async def absorb_file(path: str = Body(..., embed=True)):
     """Accept a drifted file: read current disk state into the DB (sha256_db = sha256_disk)."""
-    _require_managed_config_path(path)
+    path = _require_managed_config_path(path)  # recorded under its real path, as the generator does
     try:
         async with aiofiles.open(path) as f:
             content = await f.read()

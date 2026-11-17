@@ -27,6 +27,7 @@ from typing import Optional
 from nanio_orchestrator.nginx import executor
 from nanio_orchestrator.nginx.generator import (
     generate_all_configs,
+    generate_pool_config,
     generate_vhost_config,
     record_file_state,
     remove_config_file,
@@ -92,8 +93,11 @@ def _restore(previous: dict[str, Optional[bytes]]) -> None:
             logger.error("Could not restore %s after failed apply: %s", filepath, exc)
 
 
-async def apply_config_files(files: Sequence[tuple[str, str]], *, reload: bool = False) -> ApplyResult:
-    """Write ``(filepath, content)`` pairs, validate with ``nginx -t`` and optionally reload.
+async def apply_config_files(
+    files: Sequence[tuple[str, str]], *, remove: Sequence[str] = (), reload: bool = False
+) -> ApplyResult:
+    """Write ``(filepath, content)`` pairs and delete ``remove``, validate with ``nginx -t`` and
+    optionally reload. All of it is one change: nginx judges the tree with every file in place.
 
     On any failure every file is restored to its previous content (or removed if it
     did not exist), so the tree on disk is never left in an unvalidated state.
@@ -104,6 +108,10 @@ async def apply_config_files(files: Sequence[tuple[str, str]], *, reload: bool =
             for filepath, content in files:
                 previous[filepath] = _read_bytes(filepath)
                 _write_bytes_atomic(filepath, content.encode("utf-8"))
+            for filepath in remove:
+                previous[filepath] = _read_bytes(filepath)
+                if previous[filepath] is not None:
+                    os.unlink(filepath)
 
             test_result = await executor.test_config()
             if not test_result.ok:
@@ -159,12 +167,42 @@ async def write_vhost_config(vhost_id: int, db) -> tuple:
 
     Does NOT reload nginx — the operator applies changes via the Config tab.
     """
-    filepath, content = await generate_vhost_config(vhost_id, db)
-    result = await apply_config_file(filepath, content)
-    if not result.ok:
-        return False, result.output
+    return await write_configs(db, vhost_ids=[vhost_id])
 
-    await record_file_state(db, filepath, content)
+
+async def write_configs(
+    db, *, pool_ids: Sequence[int] = (), vhost_ids: Sequence[int] = (), remove: Sequence[str] = ()
+) -> tuple:
+    """Generate the configs of these pools and vhosts from ``db`` — including what it has not
+    committed yet — and apply them as ONE change. Returns (ok, output).
+
+    Accepted by nginx: the files are recorded and ``db`` is committed. Refused: every file is
+    back as it was and nothing is committed; the caller rolls back (``reject_if_refused``).
+    A pool without members has no upstream block, so its file is removed instead of written.
+    Does NOT reload nginx — the operator applies changes via the Config tab.
+    """
+    files: list[tuple[str, str]] = []
+    gone = list(remove)
+    emptied = False
+    for pool_id in pool_ids:
+        filepath, content = await generate_pool_config(pool_id, db)
+        if content is None:
+            gone.append(filepath)
+            emptied = True
+        else:
+            files.append((filepath, content))
+    for vhost_id in vhost_ids:
+        files.append(await generate_vhost_config(vhost_id, db))
+
+    result = await apply_config_files(files, remove=gone)
+    if not result.ok:
+        hint = "this pool is still used by a vhost and would be left without members. " if emptied else ""
+        return False, hint + result.output
+
+    for filepath, content in files:
+        await record_file_state(db, filepath, content)
+    for filepath in gone:
+        await db.execute("DELETE FROM config_files WHERE path = ?", (filepath,))
     await db.commit()
     return True, f"nginx -t: {result.output} (config written — apply via Config tab)"
 
@@ -212,5 +250,6 @@ __all__: list[str] = [
     "rebuild_all_configs",
     "reload_nginx_locked",
     "remove_config_file_checked",
+    "write_configs",
     "write_vhost_config",
 ]

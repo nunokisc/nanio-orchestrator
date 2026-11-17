@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio as _asyncio
+import sqlite3
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 
 from nanio_orchestrator.api.common import reject_if_refused
 from nanio_orchestrator.audit_log import log_audit
+from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.credentials import get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator.models import (
@@ -20,15 +23,14 @@ from nanio_orchestrator.models import (
     PoolOut,
     PoolUpdate,
 )
-from nanio_orchestrator.nginx.apply import apply_config_file, remove_config_file_checked
+from nanio_orchestrator.nginx.apply import write_configs
 from nanio_orchestrator.nginx.generator import (
-    generate_pool_config,
-    record_file_state,
     render_node_config,
 )
 from nanio_orchestrator.s3client import delete_object, list_objects
 from nanio_orchestrator.s3client import list_buckets as s3_list_buckets
 from nanio_orchestrator.sidecar import delete_pool_sidecar as _delete_pool_sidecar_sync
+from nanio_orchestrator.sidecar import write_all_sidecars
 from nanio_orchestrator.sidecar import write_pool_sidecar as _write_pool_sidecar_sync
 
 
@@ -43,32 +45,19 @@ async def delete_pool_sidecar(*args, **kwargs):
 router = APIRouter(prefix="/api/pools", tags=["pools"])
 
 
-async def _write_pool_config(pool_id: int, db) -> tuple:
+async def _write_pool_config(pool_id: int, db, renamed_from: Optional[str] = None) -> tuple:
     """Generate, test, write config to disk, record in DB. Returns (ok, output).
     Does NOT reload nginx — the operator applies changes via the Config tab.
     If the pool has no members the config file is removed instead of written.
+
+    A renamed pool is one change for nginx: the upstream under its new name, every vhost that
+    proxies to it, and the old file gone.
     """
-    filepath, content = await generate_pool_config(pool_id, db)
-
-    # Empty pool — no upstream block can be written for it, so its file goes away. Refused if
-    # a vhost still proxies to this pool: nginx would then reject the whole configuration.
-    if content is None:
-        removal = await remove_config_file_checked(filepath)
-        if not removal.ok:
-            return False, f"this pool is still used by a vhost and would be left without members. {removal.output}"
-        await db.execute("DELETE FROM config_files WHERE path = ?", (filepath,))
-        await db.commit()
-        return True, "Pool has no members — config file removed (apply nginx changes via Config tab)"
-
-    result = await apply_config_file(filepath, content)
-    if not result.ok:
-        return False, result.output
-
-    # Record in DB (no reload — operator applies via Config tab)
-    await record_file_state(db, filepath, content)
-    await db.commit()
-
-    return True, f"nginx -t: {result.output} (config written — apply via Config tab)"
+    if renamed_from is None:
+        return await write_configs(db, pool_ids=[pool_id])
+    users = await db.execute_fetchall("SELECT DISTINCT vhost_id FROM routes WHERE pool_id = ?", (pool_id,))
+    old_file = str(get_settings().pools_dir / f"{renamed_from}.conf")
+    return await write_configs(db, pool_ids=[pool_id], vhost_ids=[r["vhost_id"] for r in users], remove=[old_file])
 
 
 def _validate_member_role(pool_type: str, role: str) -> None:
@@ -203,16 +192,20 @@ async def update_pool(pool_id: int, body: PoolUpdate):
 
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         values = [*list(updates.values()), pool_id]
-        await db.execute(
-            f"UPDATE pools SET {set_clause}, updated_at = datetime('now') WHERE id = ?",
-            values,
-        )
+        try:
+            await db.execute(
+                f"UPDATE pools SET {set_clause}, updated_at = datetime('now') WHERE id = ?",
+                values,
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(409, f"Pool '{updates.get('name')}' already exists") from None
 
         rows = await db.execute_fetchall("SELECT * FROM pools WHERE id = ?", (pool_id,))
         after = dict(rows[0])
+        renamed_from = before["name"] if after["name"] != before["name"] else None
 
         # Regenerate config
-        ok, output = await _write_pool_config(pool_id, db)
+        ok, output = await _write_pool_config(pool_id, db, renamed_from)
         await reject_if_refused(db, ok, output)
         await log_audit(db, "update", "pool", pool_id, before=before, after=after, reload_ok=ok, reload_output=output)
         await db.commit()
@@ -225,6 +218,10 @@ async def update_pool(pool_id: int, body: PoolUpdate):
             after.get("description"),
             source_nanio_pool_id=after.get("source_nanio_pool_id"),
         )
+        if renamed_from:
+            # everything the old sidecar held (credentials included) is rewritten from the database
+            await write_all_sidecars(db)
+            await delete_pool_sidecar(renamed_from)
 
         return after
 

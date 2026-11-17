@@ -413,10 +413,11 @@ class TestCountObjects:
         ]
         assert all(AUTH_RE.match(r.headers["authorization"]) for r in s3.requests)
 
-    async def test_truncated_page_without_a_token_ends_the_count(self, s3):
+    async def test_truncated_page_without_a_token_is_an_error_not_a_total(self, s3):
+        """A partial count taken for the whole bucket would let a migration believe it converged."""
         s3.reply(200, list_result(key_count="5", truncated="true"))
-        assert await s3client.count_objects(s3.address, "b") == 5
-        assert len(s3.requests) == 1
+        with pytest.raises(RuntimeError, match="more keys but gives no continuation token"):
+            await s3client.count_objects(s3.address, "b")
 
     async def test_empty_bucket_counts_zero(self, s3):
         s3.reply(200, list_result(key_count="0", truncated="false"))
@@ -464,10 +465,10 @@ class TestListObjects:
         s3.reply(200, list_result(key_count="0"))
         assert await s3client.list_objects(s3.address, "b") == []
 
-    async def test_truncated_page_without_a_token_ends_the_listing(self, s3):
+    async def test_truncated_page_without_a_token_is_an_error_not_a_listing(self, s3):
         s3.reply(200, list_result(keys=["a"], truncated="true"))
-        assert await s3client.list_objects(s3.address, "b") == ["a"]
-        assert len(s3.requests) == 1
+        with pytest.raises(RuntimeError, match="more keys but gives no continuation token"):
+            await s3client.list_objects(s3.address, "b")
 
     async def test_empty_key_element_is_kept_as_an_empty_key(self, s3):
         s3.reply(200, b"<ListBucketResult><Contents><Key/></Contents></ListBucketResult>")
@@ -495,10 +496,15 @@ class TestObjects:
         assert await s3client.get_object(s3.address, "b", "dir/k", "AK", "SK") == b"\x00binary\xff"
         assert (s3.last.method, s3.last.target) == ("GET", "/b/dir/k")
 
-    @pytest.mark.parametrize("status", [403, 404, 500])
-    async def test_get_object_returns_none_when_not_200(self, s3, status):
-        s3.reply(status, b"<Error/>")
+    async def test_get_object_returns_none_only_when_the_object_does_not_exist(self, s3):
+        s3.reply(404, b"<Error/>")
         assert await s3client.get_object(s3.address, "b", "k") is None
+
+    @pytest.mark.parametrize("status,error", [(403, PermissionError), (500, RuntimeError)])
+    async def test_get_object_refused_or_failed_is_not_reported_as_missing(self, s3, status, error):
+        s3.reply(status, b"<Error/>")
+        with pytest.raises(error, match=f"GetObject.*{status}"):
+            await s3client.get_object(s3.address, "b", "k")
 
     @pytest.mark.parametrize("status,ok", [(200, True), (204, True), (404, True), (403, False), (500, False)])
     async def test_delete_object_result_by_status(self, s3, status, ok):

@@ -171,7 +171,7 @@ class TestBucketSync:
             f"/api/vhosts/{vh['id']}/buckets/full-bucket/promote",
             json={"pool_id": dst["id"], "migrate": False},
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 409
         assert "migrate" in resp.json()["detail"].lower()
 
     async def test_promote_without_migrate_allowed_when_bucket_is_empty(self, client, mock_s3, mock_nginx):

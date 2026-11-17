@@ -138,7 +138,7 @@ credentials). See [operations.md](operations.md#set-up-a-storage-node).
 | POST | `/api/vhosts` | Create a vhost |
 | GET | `/api/vhosts/{id}` | Get a vhost |
 | PUT | `/api/vhosts/{id}` | Update a vhost |
-| DELETE | `/api/vhosts/{id}` | Delete a vhost together with its routes |
+| DELETE | `/api/vhosts/{id}` | Delete a vhost together with its routes. 409 while a migration is moving one of its buckets. |
 | GET | `/api/vhosts/{id}/preview` | The server block that would be generated |
 
 ```json
@@ -181,11 +181,14 @@ credentials). See [operations.md](operations.md#set-up-a-storage-node).
 `path_prefix` is `/bucket/` for a whole bucket or `/bucket/folder/` for one folder of it
 (see [operations.md](operations.md#send-one-folder-of-a-bucket-to-another-pool)).
 
+- A path is one or more segments of letters, digits and `. _ @ -`; empty segments (`//`) are
+  refused.
 - A bucket route does not create the bucket on the target pool and does not move any object.
 - A folder route is refused with 409 if the folder already has objects on the bucket's own pool
   (`"allow_orphan": true` overrides). It creates the bucket on the folder's pool. The response
   carries `warnings` (a list) for anything that needs attention.
-- `PUT` cannot change a route's path, nor the pool of a folder route. Changing the pool of a
+- `PUT` cannot change a route's path, nor the pool of a folder route, nor point a route at a
+  pool of another type. Changing the pool of a
   bucket route whose bucket has objects starts a migration; when no migration slot is free it
   answers 429 and changes nothing.
 - `DELETE` of a folder route is refused with 409 while the folder has objects on its pool, and
