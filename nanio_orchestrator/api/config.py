@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import aiofiles
@@ -11,6 +12,7 @@ from nanio_orchestrator.audit_log import log_audit
 from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator.models import ConfigFileStatus, ConfigStatus, NginxResult
+from nanio_orchestrator.nginx import applied
 from nanio_orchestrator.nginx.apply import (
     apply_config_file,
     rebuild_all_configs,
@@ -75,6 +77,8 @@ async def config_status():
         files=files,
         last_reload_ok=last_reload_ok,
         last_reload_at=last_reload_at,
+        # compared with what nginx loaded at the last reload done through the orchestrator
+        **await asyncio.to_thread(applied.pending_changes),
     )
 
 
@@ -173,6 +177,31 @@ def _require_managed_config_path(path: str) -> str:
     if resolved.suffix != ".conf" or resolved.parent not in allowed:
         raise HTTPException(400, "Not a managed nginx config file")
     return str(resolved)
+
+
+@router.get("/file")
+async def read_config_file(path: str):
+    """A managed file as it is on disk next to the version the orchestrator wrote, so the
+    two can be compared before a drifted file is absorbed or rewritten."""
+    resolved = _require_managed_config_path(path)
+    try:
+        async with aiofiles.open(resolved) as f:
+            content: str | None = await f.read()
+    except FileNotFoundError:
+        content = None
+    async with get_db_ctx() as db:
+        rows = await db.execute_fetchall(
+            "SELECT content_snapshot FROM config_files WHERE path IN (?, ?)", (path, resolved)
+        )
+    recorded = rows[0]["content_snapshot"] if rows else None
+    if content is None and recorded is None:
+        raise HTTPException(404, f"No such managed file: {path}")
+    return {
+        "path": resolved,
+        "content": content,
+        "recorded": recorded,
+        "drifted": content is not None and recorded is not None and content != recorded,
+    }
 
 
 @router.post("/absorb-file")
@@ -415,7 +444,6 @@ async def restart_service():
     Requires the sudoers drop-in installed by ``nanio-orchestrator install``
     to include the restart rule.  Not available in dev mode.
     """
-    import asyncio
     import shutil
     import subprocess
 

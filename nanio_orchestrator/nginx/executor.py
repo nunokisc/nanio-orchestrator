@@ -74,8 +74,17 @@ async def test_config() -> NginxExecResult:
 
 
 async def reload_nginx() -> NginxExecResult:
-    """Run nginx -s reload to apply configuration."""
-    return await _run_cmd(_nginx_cmd("-s", "reload"))
+    """Run nginx -s reload to apply configuration.
+
+    A successful reload records what nginx has just loaded (see ``applied.py``), which is
+    how the panel knows whether changes are still waiting to be applied.
+    """
+    result = await _run_cmd(_nginx_cmd("-s", "reload"))
+    if result.ok:
+        from nanio_orchestrator.nginx import applied
+
+        await asyncio.to_thread(applied.record_applied)
+    return result
 
 
 def detect_nginx() -> dict:

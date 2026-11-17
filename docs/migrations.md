@@ -11,20 +11,24 @@ Requirements:
 - credentials stored for both pools
 - both pools have at least one enabled member reachable from the orchestrator
 - the storage nodes have synchronised clocks (NTP)
-- the bucket has a route on the vhost (promote it first if it is still served by the default pool)
+- the bucket has a route on the vhost (if it is still served by the default pool, route it and
+  move it in one step: **Buckets** → *Route to a pool* → *Move them*)
 
 ---
 
 ## Starting one
 
-Web UI: **Migrations** → choose the source pool, the bucket and the destination pool.
+Web panel: **Migrations** → *Start migration* → *A whole bucket* → the source pool, the bucket
+and the destination pool. Or **Buckets** → *Move* on a routed bucket, which opens the same form
+filled in.
 
 ```bash
 curl -s -X POST $ORCH/api/migrations -H "X-Orchestrator-Key: $KEY" -H 'Content-Type: application/json' \
   -d '{"bucket": "photos", "src_pool_id": 1, "dst_pool_id": 2}'
 ```
 
-Follow it with `GET /api/migrations/{id}` and `GET /api/migrations/{id}/log`.
+Follow it on the **Migrations** screen (the phases, the progress, whether split routing is
+active, and *Log*), or with `GET /api/migrations/{id}` and `GET /api/migrations/{id}/log`.
 
 To route a bucket and move it in one step, use promote with `"migrate": true`
 (see [operations.md](operations.md)).
@@ -38,7 +42,8 @@ curl -s -X POST $ORCH/api/migrations -H "X-Orchestrator-Key: $KEY" -H 'Content-T
   -d '{"bucket": "photos", "folder": "2025/", "dst_pool_id": 2}'
 ```
 
-Web UI: **Migrations** → fill in *Folder*.
+Web panel: **Migrations** → *Start migration* → *One folder of a bucket*. A folder that already
+has its own route also has *Move* next to it on the **Vhosts** screen.
 
 | The folder is… | Result |
 |----------------|--------|
@@ -136,6 +141,11 @@ What matters is whether the split had already started. Check `split_routing` on 
 The split is kept on purpose. The destination already holds objects that exist nowhere else;
 routing the bucket back to the source alone would make them disappear.
 
+In the panel such a migration is listed first on the **Migrations** screen (*Interrupted, with
+split routing still active*), on the Overview and in the status bar, with the reason it stopped
+and *Start the same move again*, which starts that new migration. Finished migrations without a
+split have *Start again* in the history.
+
 While a split is active for a bucket:
 
 - a migration to any other pool is refused (HTTP 409),
@@ -151,7 +161,7 @@ While a split is active for a bucket:
 
 ### Cancelling
 
-`POST /api/migrations/{id}/cancel` stops rclone and marks the migration `cancelled`. The same
+*Cancel* on the Migrations screen, or `POST /api/migrations/{id}/cancel`, stops rclone and marks the migration `cancelled`. The same
 table applies: if the split had started it stays active until a new migration between the same
 pools completes.
 
@@ -167,7 +177,8 @@ nanio-orchestrator orphaned list
 ```
 
 Delete it yourself once you have verified the bucket on its new pool. The orchestrator never
-deletes source data on its own.
+deletes source data on its own. The Migrations screen lists these old copies with *Browse the
+old copy*, which opens the Explorer on the source pool.
 
 ---
 

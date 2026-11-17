@@ -8,6 +8,9 @@
 #   nanio-b    nanio-b:9000              same credentials
 #
 # The orchestrator runs the code in ./nanio_orchestrator and reloads when a file changes.
+# That includes the web panel: it is served from ./nanio_orchestrator/web/dist, which
+# `make ui` builds (`make stack` does it for you). Without it the API still works and the
+# panel says that it is not built.
 # nginx is real here (unlike `make run`, where it is a dry run), so routing, reloads and
 # migrations behave as in production.
 #

@@ -16,6 +16,10 @@ build/
 .coverage
 htmlcov/
 
+# Web panel: dependencies and build output (built by `make ui`, shipped in the wheel)
+ui/node_modules/
+nanio_orchestrator/web/dist/
+
 # Virtual environments
 .venv/
 venv/

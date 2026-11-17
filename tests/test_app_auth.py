@@ -8,7 +8,6 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from httpx import ASGITransport, AsyncClient
 from nanio_orchestrator import app as app_mod
 from nanio_orchestrator import auth
 from nanio_orchestrator.auth import COOKIE_NAME
@@ -103,60 +102,30 @@ class TestApiAuth:
         anonymous(client)
         client.cookies.set(COOKIE_NAME, auth.make_session_token("guessed-key"))
         assert (await client.get("/api/pools")).status_code == 401
-        assert (await client.get("/web/pools", follow_redirects=False)).status_code == 302
 
-    async def test_expired_session_cookie_is_rejected_everywhere(self, client, monkeypatch):
+    async def test_expired_session_cookie_is_rejected(self, client, monkeypatch):
         anonymous(client)
         ttl = get_settings().session_ttl
         client.cookies.set(COOKIE_NAME, auth.make_session_token(KEY))
         assert (await client.get("/api/pools")).status_code == 200
-        assert (await client.get("/web/pools")).status_code == 200
 
         real_time = auth.time.time
         monkeypatch.setattr(auth.time, "time", lambda: real_time() + ttl + 5)
         assert (await client.get("/api/pools")).status_code == 401
-        web = await client.get("/web/pools", follow_redirects=False)
-        assert (web.status_code, web.headers["location"]) == (302, "/login")
+        assert (await client.get("/api/auth/session")).json()["authenticated"] is False
 
 
 class TestUnprotectedPaths:
-    @pytest.mark.parametrize("path", ["/api/health", "/api/docs", "/api/redoc", "/login", "/static/app.js"])
+    @pytest.mark.parametrize("path", ["/api/health", "/api/docs", "/api/redoc", "/api/auth/session"])
     async def test_reachable_without_any_credentials(self, client, path):
         resp = await anonymous(client).get(path, follow_redirects=False)
         assert resp.status_code == 200
 
-    async def test_static_files_are_served_with_their_content(self, client):
-        static_dir = Path(app_mod.__file__).parent / "web" / "static"
-        resp = await anonymous(client).get("/static/style.css")
-        assert resp.status_code == 200
-        assert resp.headers["content-type"].startswith("text/css")
-        assert resp.text == (static_dir / "style.css").read_text()
-
-    async def test_missing_static_file_is_a_404_not_a_login_redirect(self, client):
-        resp = await anonymous(client).get("/static/nope.js", follow_redirects=False)
-        assert resp.status_code == 404
-
-    async def test_openapi_schema_itself_is_protected(self, client):
-        assert (await anonymous(client).get("/openapi.json", follow_redirects=False)).status_code == 302
-
     async def test_paths_that_only_look_unprotected_are_protected(self, client):
         anonymous(client)
-        assert (await client.get("/api/healthz")).status_code == 401
-        assert (await client.get("/static", follow_redirects=False)).status_code == 302
-        assert (await client.get("/login/extra", follow_redirects=False)).status_code == 302
-
-    async def test_app_without_a_static_directory_still_serves_the_api(self, tmp_dirs, app):
-        real_exists = Path.exists
-
-        def exists(self):
-            return False if self.name == "static" else real_exists(self)
-
-        with patch.object(Path, "exists", exists):
-            bare = app_mod.create_app()
-        transport = ASGITransport(app=bare, raise_app_exceptions=False)
-        async with AsyncClient(transport=transport, base_url="http://test") as c:
-            assert (await c.get("/api/health")).json()["status"] == "ok"
-            assert (await c.get("/static/app.js")).status_code == 404
+        for path in ("/api/healthz", "/api/health/", "/api/auth", "/api/auth/session/x", "/api/docs/x"):
+            assert (await client.get(path)).status_code == 401, path
+        assert (await client.post("/api/auth/login/x", json={"key": KEY})).status_code == 401
 
 
 # ── Startup / shutdown ────────────────────────────────────────────────────────

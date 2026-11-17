@@ -6,7 +6,10 @@
 !LICENSE
 !nanio_orchestrator
 !docker
+!ui
 
-# ...but never bytecode caches.
+# ...but never bytecode caches, nor a panel built or installed on the host: the image builds its own.
+ui/node_modules
+nanio_orchestrator/web/dist
 **/__pycache__
 **/*.py[cod]

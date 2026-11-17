@@ -21,8 +21,21 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      # The panel's build is package data: it must exist before the wheel and sdist are made
+      - name: Build the web panel
+        run: make ui
+
       - name: Build wheel + sdist
         run: uv build
+
+      - name: The wheel contains the web panel
+        run: unzip -l dist/*.whl | grep -q 'nanio_orchestrator/web/dist/index.html'
 
       - name: Upload dist artifact
         uses: actions/upload-artifact@v4

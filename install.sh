@@ -46,6 +46,12 @@ main() {
         python3 -m venv "$PREFIX/venv"
     fi
 
+    # A checkout carries the panel's source, not its build (a wheel has it built in).
+    if [[ -d "$spec" && ! -f "$spec/nanio_orchestrator/web/dist/index.html" ]]; then
+        echo "Note: this checkout has no built web panel. Build it first with 'make ui' (needs Node.js)," >&2
+        echo "      or install from a wheel. Continuing: the API works; the panel will say it is not built." >&2
+    fi
+
     echo "Installing $spec"
     "$PREFIX/venv/bin/python" -m pip install --quiet --disable-pip-version-check --upgrade "$spec"
 

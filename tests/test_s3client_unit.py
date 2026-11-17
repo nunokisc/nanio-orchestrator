@@ -552,3 +552,213 @@ class TestObjectLastModified:
         s3.reply(status)
         with pytest.raises(RuntimeError, match=f"Unexpected HTTP {status} on HEAD b/k"):
             await s3client.object_last_modified(s3.address, "b", "k", "AK", "SK")
+
+
+# ── Browsing: one page, one level ─────────────────────────────────────────────
+
+
+def page_result(objects=(), folders=(), truncated: Optional[str] = None, token: Optional[str] = None) -> bytes:
+    root = ET.Element("ListBucketResult", {"xmlns": NS})
+    ET.SubElement(root, "Name").text = "b"
+    if truncated is not None:
+        ET.SubElement(root, "IsTruncated").text = truncated
+    if token is not None:
+        ET.SubElement(root, "NextContinuationToken").text = token
+    for fields in objects:
+        contents = ET.SubElement(root, "Contents")
+        for name, value in fields.items():
+            ET.SubElement(contents, name).text = value
+    for prefix in folders:
+        ET.SubElement(ET.SubElement(root, "CommonPrefixes"), "Prefix").text = prefix
+    return ET.tostring(root)
+
+
+class TestListObjectsPage:
+    async def test_folders_and_objects_of_one_level(self, s3):
+        s3.reply(
+            200,
+            page_result(
+                objects=[
+                    {
+                        "Key": "2025/a b.txt",
+                        "Size": "12",
+                        "LastModified": "2026-01-02T03:04:05.000Z",
+                        "ETag": '"0123abcd"',
+                    },
+                    {"Key": "2025/empty"},
+                ],
+                folders=["2025/q1/", "2025/q2/"],
+                truncated="false",
+            ),
+        )
+        page = await s3client.list_objects_page(s3.address, "b", prefix="2025/", access_key="AK", secret_key="SK")
+        assert page == {
+            "folders": ["2025/q1/", "2025/q2/"],
+            "objects": [
+                {
+                    "key": "2025/a b.txt",
+                    "size": 12,
+                    "last_modified": "2026-01-02T03:04:05.000Z",
+                    "etag": "0123abcd",
+                },
+                {"key": "2025/empty", "size": 0, "last_modified": None, "etag": None},
+            ],
+            "next_token": None,
+        }
+        assert s3.last.method == "GET"
+        assert s3.last.target == "/b?list-type=2&max-keys=200&delimiter=%2F&prefix=2025%2F"
+        assert AUTH_RE.match(s3.last.headers["authorization"])
+
+    async def test_prefix_and_token_with_reserved_characters_are_percent_encoded_and_signed(self, s3):
+        """Spaces, unicode, '+' and '&' in a key must reach the server as themselves, and the
+        signature must cover exactly what was sent."""
+        import hashlib
+        import hmac
+
+        s3.reply(200, page_result(truncated="false"))
+        await s3client.list_objects_page(
+            s3.address,
+            "b",
+            prefix="relatórios 2025/a+b&c=d/",
+            continuation_token="tok+en/=&x",
+            max_keys=50,
+            access_key="AK",
+            secret_key="SK",
+        )
+        req = s3.last
+        encoded_prefix = "prefix=relat%C3%B3rios%202025%2Fa%2Bb%26c%3Dd%2F"
+        assert req.query == (
+            f"list-type=2&max-keys=50&delimiter=%2F&{encoded_prefix}&continuation-token=tok%2Ben%2F%3D%26x"
+        )
+        canonical_query = s3client._canonicalize_query_string(req.query)
+        assert encoded_prefix in canonical_query  # decoded and re-encoded: nothing was lost on the way
+
+        m = AUTH_RE.match(req.headers["authorization"])
+        canonical = "\n".join(
+            [
+                "GET",
+                "/b",
+                canonical_query,
+                f"host:{s3.address}\nx-amz-content-sha256:{req.headers['x-amz-content-sha256']}\n"
+                f"x-amz-date:{req.headers['x-amz-date']}\n",
+                "host;x-amz-content-sha256;x-amz-date",
+                req.headers["x-amz-content-sha256"],
+            ]
+        )
+        to_sign = "\n".join(
+            [
+                "AWS4-HMAC-SHA256",
+                req.headers["x-amz-date"],
+                f"{m.group('date')}/us-east-1/s3/aws4_request",
+                s3client._sha256_hex(canonical.encode()),
+            ]
+        )
+        key = s3client._signing_key("SK", m.group("date"), "us-east-1", "s3")
+        assert m.group("sig") == hmac.new(key, to_sign.encode(), hashlib.sha256).hexdigest()
+
+    async def test_recursive_listing_sends_no_delimiter(self, s3):
+        s3.reply(200, page_result())
+        await s3client.list_objects_page(s3.address, "b", delimiter="")
+        assert s3.last.target == "/b?list-type=2&max-keys=200"
+
+    async def test_truncated_page_returns_the_token_to_continue_with(self, s3):
+        s3.reply(200, page_result(objects=[{"Key": "k1"}], truncated="true", token="next-1"))
+        page = await s3client.list_objects_page(s3.address, "b")
+        assert page["next_token"] == "next-1"
+
+    async def test_token_of_a_page_that_is_not_truncated_is_ignored(self, s3):
+        s3.reply(200, page_result(truncated="false", token="stale"))
+        assert (await s3client.list_objects_page(s3.address, "b"))["next_token"] is None
+
+    async def test_truncated_page_without_a_token_is_an_error_not_the_end(self, s3):
+        s3.reply(200, page_result(objects=[{"Key": "k1"}], truncated="true"))
+        with pytest.raises(RuntimeError, match="no continuation token"):
+            await s3client.list_objects_page(s3.address, "b")
+
+    async def test_missing_bucket_is_none(self, s3):
+        s3.reply(404, ERROR_404)
+        assert await s3client.list_objects_page(s3.address, "b") is None
+
+    @pytest.mark.parametrize(
+        "status,error,match", [(403, PermissionError, "403 Forbidden"), (500, RuntimeError, "HTTP 500")]
+    )
+    async def test_refused_or_failed_is_never_an_empty_listing(self, s3, status, error, match):
+        s3.reply(status, ERROR_403)
+        with pytest.raises(error, match=match):
+            await s3client.list_objects_page(s3.address, "b")
+
+    async def test_unreachable_server_raises(self):
+        with pytest.raises(OSError):
+            await s3client.list_objects_page(_closed_port_address(), "b")
+
+
+class TestHeadObject:
+    async def test_metadata_of_an_object(self, s3):
+        s3.reply(
+            200,
+            b"x" * 42,
+            headers={
+                "Last-Modified": "Wed, 21 Oct 2026 07:28:00 GMT",
+                "ETag": '"abc123"',
+                "Content-Type": "image/png",
+            },
+        )
+        meta = await s3client.head_object(s3.address, "b", "dir/my key+ç&.png", "AK", "SK")
+        assert meta == {
+            "size": 42,
+            "last_modified": "2026-10-21T07:28:00Z",
+            "etag": "abc123",
+            "content_type": "image/png",
+        }
+        assert (s3.last.method, s3.last.target) == ("HEAD", "/b/dir/my%20key%2B%C3%A7%26.png")
+        assert AUTH_RE.match(s3.last.headers["authorization"])
+
+    async def test_headers_the_server_does_not_send_are_none(self, s3, monkeypatch):
+        monkeypatch.setattr(s3client, "_head", lambda *a: (200, {}))
+        assert await s3client.head_object(s3.address, "b", "k") == {
+            "size": None,
+            "last_modified": None,
+            "etag": None,
+            "content_type": None,
+        }
+
+    async def test_missing_object_is_none(self, s3):
+        s3.reply(404)
+        assert await s3client.head_object(s3.address, "b", "k") is None
+
+    @pytest.mark.parametrize("status,error", [(403, PermissionError), (500, RuntimeError)])
+    async def test_refused_or_failed_is_not_reported_as_missing(self, s3, status, error):
+        s3.reply(status)
+        with pytest.raises(error, match=f"HeadObject.*{status}"):
+            await s3client.head_object(s3.address, "b", "k")
+
+
+class TestGetObjectCapped:
+    async def test_object_within_the_limit_is_returned_whole(self, s3):
+        s3.reply(200, b"0123456789")
+        assert await s3client.get_object_capped(s3.address, "b", "a b/k", 10, "AK", "SK") == b"0123456789"
+        assert (s3.last.method, s3.last.target) == ("GET", "/b/a%20b/k")
+
+    async def test_larger_object_is_refused_after_one_byte_past_the_limit(self, s3, monkeypatch):
+        read_sizes = []
+        real_read = s3client.http.client.HTTPResponse.read
+
+        def read(self, amt=None):
+            read_sizes.append(amt)
+            return real_read(self, amt)
+
+        monkeypatch.setattr(s3client.http.client.HTTPResponse, "read", read)
+        s3.reply(200, b"x" * 1000)
+        with pytest.raises(s3client.ObjectTooLarge, match="larger than 10 bytes"):
+            await s3client.get_object_capped(s3.address, "b", "k", 10)
+        assert read_sizes == [11]
+
+    async def test_missing_object_is_none(self, s3):
+        s3.reply(404, b"<Error/>")
+        assert await s3client.get_object_capped(s3.address, "b", "k", 10) is None
+
+    @pytest.mark.parametrize("status,error", [(403, PermissionError), (500, RuntimeError)])
+    async def test_refused_or_failed_is_not_reported_as_missing(self, s3, status, error):
+        s3.reply(status, b"<Error/>")
+        with pytest.raises(error, match=f"GetObject.*{status}"):
+            await s3client.get_object_capped(s3.address, "b", "k", 10)

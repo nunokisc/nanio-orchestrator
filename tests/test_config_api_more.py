@@ -39,7 +39,14 @@ def _edit_by_hand(path):
 
 class TestStatus:
     async def test_nothing_managed_yet(self, client):
-        assert await _status(client) == {"files": [], "last_reload_ok": None, "last_reload_at": None}
+        assert await _status(client) == {
+            "files": [],
+            "last_reload_ok": None,
+            "last_reload_at": None,
+            "pending_reload": False,
+            "pending_files": [],
+            "last_applied_at": None,
+        }
 
     async def test_reports_edited_and_missing_files(self, client, mock_nginx, tmp_dirs):
         await _cluster(client)

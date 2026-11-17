@@ -56,6 +56,22 @@ def verify_session_token(token: str, api_key: str, ttl: int) -> bool:
     return not now - ts > ttl
 
 
+def key_matches(candidate: str, api_key: str) -> bool:
+    """Compare a presented key with the configured one in constant time.
+
+    On bytes: ``hmac.compare_digest`` refuses non-ASCII ``str``, and a key from a header or
+    a login form can be anything.
+    """
+    return bool(candidate) and hmac.compare_digest(candidate.encode(), api_key.encode())
+
+
+def is_authorized(request: Request, api_key: str, ttl: int) -> bool:
+    """True when the request carries the API key header or a valid session cookie."""
+    return key_matches(request.headers.get("X-Orchestrator-Key", ""), api_key) or is_authenticated(
+        request, api_key, ttl
+    )
+
+
 def get_session_token(request: Request) -> Optional[str]:
     """Extract the session token from the request cookie, or None."""
     return request.cookies.get(COOKIE_NAME)

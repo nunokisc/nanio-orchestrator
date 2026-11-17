@@ -9,6 +9,19 @@
 # orchestrator stops. See compose.yaml.
 
 # ---------------------------------------------------------------------------
+# Panel stage: build the web panel (ui/) into nanio_orchestrator/web/dist. Node is
+# needed only here; nothing of it reaches the runtime image.
+# ---------------------------------------------------------------------------
+FROM node:22-bookworm-slim AS ui
+
+WORKDIR /src/ui
+COPY ui/package.json ui/package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm npm ci --no-audit --no-fund
+COPY ui ./
+# vite writes to ../nanio_orchestrator/web/dist (see ui/vite.config.ts)
+RUN npm run build
+
+# ---------------------------------------------------------------------------
 # Build stage: install the package into a venv. Same base as the runtime stage
 # so the venv's interpreter path resolves identically there.
 # ---------------------------------------------------------------------------
@@ -24,6 +37,8 @@ WORKDIR /src
 # README.md and LICENSE are build inputs (`readme` / `license` in pyproject.toml).
 COPY pyproject.toml README.md LICENSE ./
 COPY nanio_orchestrator ./nanio_orchestrator
+# The built panel is package data: it has to be in place before the package is installed.
+COPY --from=ui /src/nanio_orchestrator/web/dist ./nanio_orchestrator/web/dist
 RUN --mount=type=cache,target=/root/.cache/pip \
     /app/.venv/bin/pip install --disable-pip-version-check .
 

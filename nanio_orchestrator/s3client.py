@@ -138,8 +138,13 @@ def _do_request(
     secret_key: Optional[str] = None,
     region: str = "us-east-1",
     extra_headers: Optional[dict[str, str]] = None,
+    max_body: Optional[int] = None,
 ) -> tuple[int, bytes]:
-    """Synchronous HTTP request — run via asyncio.to_thread()."""
+    """Synchronous HTTP request — run via asyncio.to_thread().
+
+    With ``max_body`` at most ``max_body + 1`` bytes of the answer are read: enough for the
+    caller to tell that the body is larger than it accepts, without holding all of it.
+    """
     host, port = _parse_address(address)
     full_host = f"{host}:{port}"
 
@@ -172,7 +177,7 @@ def _do_request(
     try:
         conn.request(method, url, body=body, headers=headers)
         resp = conn.getresponse()
-        return resp.status, resp.read()
+        return resp.status, resp.read() if max_body is None else resp.read(max_body + 1)
     finally:
         conn.close()
 
@@ -450,8 +455,18 @@ def _head_last_modified(
     region: str,
 ) -> tuple[int, Optional[datetime]]:
     """Synchronous HEAD — returns (status, Last-Modified as an aware datetime or None)."""
-    from email.utils import parsedate_to_datetime
+    status, headers = _head(address, path, access_key, secret_key, region)
+    return status, _parse_http_date(headers.get("last-modified"))
 
+
+def _head(
+    address: str,
+    path: str,
+    access_key: Optional[str],
+    secret_key: Optional[str],
+    region: str,
+) -> tuple[int, dict[str, str]]:
+    """Synchronous HEAD — returns (status, response headers with lower-cased names)."""
     host, port = _parse_address(address)
     full_host = f"{host}:{port}"
     headers: dict[str, str] = {"Host": full_host}
@@ -462,18 +477,22 @@ def _head_last_modified(
         conn.request("HEAD", urllib.parse.quote(path, safe="/-_.~"), headers=headers)
         resp = conn.getresponse()
         resp.read()
-        raw = resp.getheader("Last-Modified")
-        modified = None
-        if raw:
-            try:
-                modified = parsedate_to_datetime(raw)
-                if modified.tzinfo is None:
-                    modified = modified.replace(tzinfo=timezone.utc)
-            except (TypeError, ValueError):
-                modified = None
-        return resp.status, modified
+        return resp.status, {name.lower(): value for name, value in resp.getheaders()}
     finally:
         conn.close()
+
+
+def _parse_http_date(raw: Optional[str]) -> Optional[datetime]:
+    """An HTTP date header as an aware datetime, or None when absent or unreadable."""
+    from email.utils import parsedate_to_datetime
+
+    if not raw:
+        return None
+    try:
+        modified = parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        return None
+    return modified if modified.tzinfo else modified.replace(tzinfo=timezone.utc)
 
 
 async def object_last_modified(
@@ -538,3 +557,143 @@ async def put_object(
         extra_headers={"Content-Type": "application/octet-stream"},
     )
     return status in (200, 204)
+
+
+# ── Browsing (the panel's read-only explorer) ─────────────────────────────────
+
+
+class ObjectTooLarge(RuntimeError):
+    """The object is larger than the caller is willing to hold in memory."""
+
+
+def _child_text(element: ET.Element, name: str) -> str:
+    return next((child.text or "" for child in element if _strip_ns(child.tag) == name), "")
+
+
+async def list_objects_page(
+    address: str,
+    bucket: str,
+    *,
+    prefix: str = "",
+    delimiter: str = "/",
+    max_keys: int = 200,
+    continuation_token: str = "",
+    access_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+    region: str = "us-east-1",
+) -> Optional[dict]:
+    """One page of a bucket listing, one level deep.
+
+    Returns ``{"folders": [prefix, ...], "objects": [{"key", "size", "last_modified", "etag"}],
+    "next_token": str | None}``, or None when the bucket does not exist (404). Any other
+    answer raises: "refused" or "failed" must not look like "empty".
+    """
+    params = [("list-type", "2"), ("max-keys", str(max_keys))]
+    if delimiter:
+        params.append(("delimiter", delimiter))
+    if prefix:
+        params.append(("prefix", prefix))
+    if continuation_token:
+        params.append(("continuation-token", continuation_token))
+    # quote, not quote_plus: a "+" in the query would be read back as a space when it is signed
+    query = "&".join(f"{name}={urllib.parse.quote(value, safe='')}" for name, value in params)
+
+    status, body = await asyncio.to_thread(
+        _do_request, "GET", address, f"/{bucket}", query, b"", access_key, secret_key, region
+    )
+    if status == 404:
+        return None
+    if status == 403:
+        raise PermissionError(
+            f"ListObjects returned 403 Forbidden for bucket '{bucket}' at {address}. "
+            "Check S3 credentials for this pool."
+        )
+    if status != 200:
+        raise RuntimeError(
+            f"ListObjects HTTP {status} for bucket '{bucket}' at {address}: {body[:200].decode(errors='replace')}"
+        )
+
+    folders: list[str] = []
+    objects: list[dict] = []
+    truncated = False
+    next_token: Optional[str] = None
+    for element in ET.fromstring(body):
+        tag = _strip_ns(element.tag)
+        if tag == "CommonPrefixes":
+            folders.append(_child_text(element, "Prefix"))
+        elif tag == "Contents":
+            size = _child_text(element, "Size")
+            objects.append(
+                {
+                    "key": _child_text(element, "Key"),
+                    "size": int(size) if size.isdigit() else 0,
+                    "last_modified": _child_text(element, "LastModified") or None,
+                    "etag": _child_text(element, "ETag").strip('"') or None,
+                }
+            )
+        elif tag == "IsTruncated":
+            truncated = (element.text or "").lower() == "true"
+        elif tag == "NextContinuationToken":
+            next_token = element.text
+    if truncated and not next_token:
+        raise RuntimeError(
+            f"ListObjects for bucket '{bucket}' at {address} says there are more keys but gives no continuation token"
+        )
+    return {"folders": folders, "objects": objects, "next_token": next_token if truncated else None}
+
+
+async def head_object(
+    address: str,
+    bucket: str,
+    key: str,
+    access_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+    region: str = "us-east-1",
+) -> Optional[dict]:
+    """Metadata of an object: ``{"size", "last_modified", "etag", "content_type"}``.
+
+    None when it does not exist (404); any other answer raises.
+    """
+    status, headers = await asyncio.to_thread(_head, address, f"/{bucket}/{key}", access_key, secret_key, region)
+    if status == 404:
+        return None
+    if status == 403:
+        raise PermissionError(f"HeadObject returned 403 Forbidden for '{bucket}/{key}' at {address}")
+    if status != 200:
+        raise RuntimeError(f"HeadObject HTTP {status} for '{bucket}/{key}' at {address}")
+    length = headers.get("content-length", "")
+    modified = _parse_http_date(headers.get("last-modified"))
+    return {
+        "size": int(length) if length.isdigit() else None,
+        "last_modified": modified.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if modified else None,
+        "etag": headers.get("etag", "").strip('"') or None,
+        "content_type": headers.get("content-type") or None,
+    }
+
+
+async def get_object_capped(
+    address: str,
+    bucket: str,
+    key: str,
+    max_bytes: int,
+    access_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+    region: str = "us-east-1",
+) -> Optional[bytes]:
+    """Download an object of at most ``max_bytes``. None if it does not exist (404).
+
+    A larger object raises ObjectTooLarge after reading one byte past the limit, never the
+    whole body.
+    """
+    status, body = await asyncio.to_thread(
+        _do_request, "GET", address, f"/{bucket}/{key}", "", b"", access_key, secret_key, region, None, max_bytes
+    )
+    if status == 404:
+        return None
+    if status == 403:
+        raise PermissionError(f"GetObject returned 403 Forbidden for '{bucket}/{key}' at {address}")
+    if status != 200:
+        raise RuntimeError(f"GetObject HTTP {status} for '{bucket}/{key}' at {address}")
+    if len(body) > max_bytes:
+        raise ObjectTooLarge(f"'{bucket}/{key}' is larger than {max_bytes} bytes")
+    return body

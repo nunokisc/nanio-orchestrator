@@ -43,17 +43,28 @@ nanio_orchestrator/
 │   ├── migrations.py   # Migration CRUD + cancel
 │   ├── credentials.py  # Pool credential CRUD (encrypted)
 │   ├── audit.py        # Audit log read API
+│   ├── auth.py         # Panel session: login, logout, session
+│   ├── explorer.py     # Read-only S3 explorer: buckets, one level of a bucket, object, download, locate
+│   ├── overview.py     # Summary the panel polls (pool summaries, counts, missing buckets)
 │   └── health.py       # Health check
 ├── nginx/
 │   ├── generator.py    # Jinja2 → nginx config text
 │   ├── parser.py       # Parse managed nginx configs back to dicts
 │   ├── executor.py     # nginx -t, nginx -s reload (via subprocess/sudo)
 │   ├── apply.py        # The only write path: write → nginx -t → (reload) → rollback, under one lock
+│   ├── applied.py      # What nginx last loaded (.applied.json) → changes waiting for a reload
 │   └── templates/      # Jinja2 templates for upstreams + server blocks
 └── web/
-    ├── routes.py       # Server-rendered HTML routes (Starlette/Jinja2)
-    ├── static/         # app.js, style.css
-    └── templates/      # HTML templates (base.html, vhosts.html, …)
+    ├── spa.py          # Serves the built panel: files of web/dist, the shell for every other non-API path
+    └── dist/           # Build output of ui/ (git-ignored, shipped in the wheel; `make ui`)
+
+ui/                     # The web panel: React + TypeScript + Vite, hand-written CSS
+├── src/api.ts          # The only module that calls the API; its types
+├── src/queries.ts      # Server state (react-query): polling, invalidation after a change
+├── src/lib/            # validation (same rules as models.py), formatting, line diff
+├── src/components/     # ui.tsx (buttons, dialogs, fields…), Layout (sidebar, status, pending bar)
+├── src/pages/          # One file per screen
+└── src/test/           # vitest + Testing Library
 
 tests/                  # pytest suite (asyncio_mode=auto)
 docs/                   # Detailed documentation
@@ -133,7 +144,7 @@ Schema upgrades live only in `db._run_migrations_async()`; `init_db_sync()` just
    content on failure — nginx only includes `*.conf`, so testing while the candidate is still a `.tmp`
    validates nothing. Never write a managed `.conf` any other way. `_write_vhost_config()` /
    `_write_pool_config()` are thin wrappers over it and do **not**
-   reload nginx — the operator applies changes explicitly via the Config tab (`POST /api/config/reload`).
+   reload nginx — the operator applies changes explicitly with *Reload nginx* in the panel (`POST /api/config/reload`).
    Only the migration engine reloads on its own (it must apply its own routing steps). Background
    tasks never change routing: bucket sync only *flags* a routed bucket missing on its pool
    (`bucket_sync.missing_since`) — a node with unmounted storage answers "no such bucket" too.
@@ -167,6 +178,10 @@ Schema upgrades live only in `db._run_migrations_async()`; `init_db_sync()` just
    - Settings that choose a binary or a directory (`_HOST_ONLY_SETTINGS`) are not writable through
      the API — the panel key must not be equivalent to shell access
    - Never persist secrets in plain text (node-config output is returned, not stored)
+   - The panel's shell and assets are public and hold no data; everything under `/api/` except
+     health, the API docs pages and `/api/auth/*` requires the key or the session cookie
+   - The explorer (`api/explorer.py`) is read-only: no upload, delete, rename or bucket creation;
+     downloads are capped, sent as attachments and audited
 
 7. **No new background tasks.** The only background tasks are `drift`, `bucket_sync` and `backup`.
    They're started in `app.py` startup. New recurring work should follow the same pattern.
@@ -197,8 +212,13 @@ make test-cov              # with coverage
 make lint                  # ruff check
 make fmt                   # ruff format
 
+# Web panel (ui/ → nanio_orchestrator/web/dist; needs Node.js)
+make ui                    # npm ci + build: once in a checkout, and after changing ui/
+make ui-dev                # hot reload on :5173, /api proxied to `make run`
+cd ui && npm run lint && npm run typecheck && npm test
+
 # Build wheel
-make build                 # uv build or python -m build
+make build                 # make ui, then uv build or python -m build
 
 # Real cluster in Docker (nginx, two nanio servers, rclone) and the end-to-end test
 make stack                 # panel :8080 (API key dev-key), gateway :8081
@@ -261,6 +281,10 @@ Key settings:
 - Migration convergence loop in `migration_engine.py`
 - The test suite (`make test`, run before every commit) and its coverage: 100% of statements and
   branches, enforced by `make test-cov` and CI. Delete unreachable code instead of excluding it
+- The pending-reload indicator (`nginx/applied.py`): it must stay honest — recorded only by a
+  successful reload, "unknown" when nothing was recorded
+- The panel: API errors are shown with their `detail` verbatim; an `allow_orphan` override is a
+  separate, hand-ticked step; `cd ui && npm run lint && npm run typecheck && npm test`
 - The docs: `docs/*.md` describe behaviour operators rely on — update them in the same change.
   `docs/clients.md` lists every limit an S3 application meets; a change that adds or removes one
   must update it
