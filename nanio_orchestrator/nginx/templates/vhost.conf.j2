@@ -1,5 +1,17 @@
 # managed by nanio-orchestrator
 # vhost_id:{{ vhost.id }} name:{{ vhost.server_name }} updated:{{ updated }}
+{% for listing in listings %}
+
+# Bucket "{{ listing.bucket }}" has sub-folders on other pools. A listing names its folder in
+# ?prefix=, so the pool that answers is chosen from it.
+map $arg_prefix {{ listing.var }} {
+    default {{ listing.default_pool }};
+{% for entry in listing.entries %}
+    "~{{ entry.regex }}" {{ entry.pool_name }};
+{% endfor %}
+}
+{% endfor %}
+
 server {
 {% if vhost.ssl %}
     listen {{ vhost.listen_port }} ssl;
@@ -49,9 +61,26 @@ server {
     {{ block.content | indent(4) }}
 {% endfor %}
 {% endif %}
-{% macro route_location(route, location, bucket_level=False) %}
+{% macro proxy_headers() %}
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $http_host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   Connection        "";
+{% endmacro %}
+{% macro multidelete_mirror(location, pool_name) %}
+    location = {{ location }} {
+        internal;
+        if ($request_method != POST) { return 204; }
+        if ($args !~ "(^|&)delete(=|&|$)") { return 204; }
+        proxy_pass         http://{{ pool_name }}$request_uri;
+{{ proxy_headers() }}    }
+{% endmacro %}
+{% macro route_location(route, location, bucket_level=False, listing=None) %}
     location {{ location }} {
-{% if route.migration_dst_pool_name %}
+{% set split = route.migration_dst_pool_name %}
+{% set shard_mirrors = listing.mirrors if (listing and bucket_level) else [] %}
+{% if split %}
         # Live migration split routing — the destination pool ({{ route.migration_dst_pool_name }}) is authoritative:
         #   writes            → destination only (the source receives no new data)
         #   reads (GET/HEAD)  → destination, falling back to the source ({{ route.pool_name }}) on 404
@@ -61,25 +90,29 @@ server {
         #   multi-delete      → destination, mirrored (with its body) to the source for the same reason.
         #   Bodies are only buffered here, where requests are bucket-level and small.
         mirror /__nanio_mig_{{ route.id }}_multidelete;
+{% endif %}
+{% endif %}
+{% for m in shard_mirrors %}
+        # Multi-object delete: also sent to {{ m.pool_name }}, which holds a sub-folder of this bucket
+        mirror /__nanio_shard_{{ m.id }}_multidelete;
+{% endfor %}
+{% if bucket_level and (split or shard_mirrors) %}
         mirror_request_body on;
-{% else %}
+{% elif split %}
         mirror_request_body off;
 {% endif %}
+{% if split %}
         proxy_intercept_errors on;
         error_page 404 = @nanio_mig_{{ route.id }};
+{% endif %}
+{% if listing and bucket_level %}
+        proxy_pass         http://{{ listing.var }};
+{% elif split %}
         proxy_pass         http://{{ route.migration_dst_pool_name }};
 {% else %}
-{% if route.key_prefix %}
-        rewrite ^{{ route.path_prefix }}(.*)$ /{{ route.key_prefix }}$1 break;
-{% endif %}
         proxy_pass         http://{{ route.pool_name }};
 {% endif %}
-        proxy_http_version 1.1;
-        proxy_set_header   Host              $http_host;
-        proxy_set_header   X-Real-IP         $remote_addr;
-        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header   Connection        "";
-    }
+{{ proxy_headers() }}    }
 {% endmacro %}
 {% for route in routes %}
 {% if route.enabled %}
@@ -94,8 +127,8 @@ server {
 
     # Bucket-level requests (ListObjects, HeadBucket, multi-delete) address the bucket itself.
     # Without the first one, nginx answers `{{ route.bucket_location }}` with a 301 instead of proxying.
-{{ route_location(route, "= " ~ route.bucket_location, True) }}
-{{ route_location(route, "= " ~ route.path_prefix, True) }}
+{{ route_location(route, "= " ~ route.bucket_location, True, route.listing) }}
+{{ route_location(route, "= " ~ route.path_prefix, True, route.listing) }}
 {%- endif %}
 {% endif %}
 {% endfor %}
@@ -128,19 +161,22 @@ server {
 {% if route.bucket_location %}
 
     # Multi-object delete mirror to the source during live migration route_id:{{ route.id }}
-    location = /__nanio_mig_{{ route.id }}_multidelete {
-        internal;
-        if ($request_method != POST) { return 204; }
-        if ($args !~ "(^|&)delete(=|&|$)") { return 204; }
-        proxy_pass         http://{{ route.pool_name }}$request_uri;
-        proxy_http_version 1.1;
-        proxy_set_header   Host              $http_host;
-        proxy_set_header   X-Real-IP         $remote_addr;
-        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header   Connection        "";
-    }
+{{ multidelete_mirror("/__nanio_mig_" ~ route.id ~ "_multidelete", route.pool_name) }}
 {% endif %}
 {% endif %}
+{% endfor %}
+{% for listing in listings %}
+{% if not listing.has_bucket_route %}
+
+    # Bucket-level requests for "{{ listing.bucket }}", a default-pool bucket with sub-folders elsewhere
+{{ route_location(listing.owner, "= /" ~ listing.bucket, True, listing) }}
+{{ route_location(listing.owner, "= /" ~ listing.bucket ~ "/", True, listing) }}
+{%- endif %}
+{% for m in listing.mirrors %}
+
+    # Multi-object delete mirror to a sub-folder pool of "{{ listing.bucket }}"
+{{ multidelete_mirror("/__nanio_shard_" ~ m.id ~ "_multidelete", m.pool_name) }}
+{%- endfor %}
 {% endfor %}
 {% if extra_blocks_end %}
 {% for block in extra_blocks_end %}

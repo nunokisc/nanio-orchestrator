@@ -26,7 +26,7 @@ the orchestrator. If the orchestrator is stopped, nginx keeps serving exactly as
 | **Member** | `server` line in the upstream | One machine (`host:port`) of a pool |
 | **Vhost** | `server {}` | A hostname clients connect to |
 | **Default pool** | `location /` | Where a vhost sends everything that has no dedicated route |
-| **Route** | `location /bucket/` | Sends one bucket to a specific pool — this is how buckets are sharded |
+| **Route** | `location /bucket/` | Sends one bucket, or one folder of a bucket, to a specific pool — this is how data is sharded |
 
 A typical layout: one vhost `s3.example.com`, a default pool holding most buckets, and a few
 large buckets routed to pools of their own on other machines.
@@ -172,6 +172,51 @@ Send `"allow_orphan": true` only if that is what you want.
 
 A new, empty bucket can simply be routed (`"migrate": false`) and then created on the target
 pool by its owner.
+
+### Send one folder of a bucket to another pool
+
+When a single bucket outgrows its machines, a folder of it can live on another pool. Add a
+route whose path is the bucket followed by the folder:
+
+```bash
+curl -s -X POST $ORCH/api/vhosts/1/routes -H "X-Orchestrator-Key: $KEY" -H 'Content-Type: application/json' \
+  -d '{"path_prefix": "/photos/2025/", "pool_id": 2}'
+```
+
+Web UI: Vhosts → *Add Route* → path `/photos/2025/`.
+
+The rule is the same as for buckets: **the most specific route wins.**
+
+| Request | Answered by |
+|---------|-------------|
+| Any object under `photos/2025/` (read, write, delete, multipart) | The folder's pool |
+| Listing inside the folder (`prefix=2025/…`) | The folder's pool |
+| Everything else in `photos` | The bucket's own pool (its `/photos/` route, or the default pool) |
+| Multi-object delete | Every pool that holds part of the bucket; each deletes the keys it has |
+
+What the orchestrator does for you when the route is created:
+
+1. Checks that the folder is **empty** on the bucket's own pool. Objects already there would be
+   hidden by the new route, so the request is refused (HTTP 409).
+2. Creates the bucket on the folder's pool. Clients cannot do that through the gateway.
+3. Writes a small marker object `2025/.nanio-shard` on the bucket's own pool, so that the folder
+   appears when the bucket is browsed. nanio does not list `.nanio*` objects, so clients never
+   see it. Bucket sync rewrites it on every cycle.
+4. Adds the matching route to every `http` vhost that serves this bucket, pointing at the
+   `http` pool linked to the folder's pool. If there is none you get a warning.
+
+Removing the route is refused (HTTP 409) while the folder still has objects on its pool: without
+the route they would be unreachable. Changing the pool of a folder route is refused for the same
+reason; delete the route and create it again.
+
+Limits:
+
+| Situation | Effect |
+|-----------|--------|
+| Listing the **whole** bucket without a delimiter (recursive listing from the root) | Does not include the folder's objects. Browsing folder by folder works, and so does a recursive listing that starts inside the folder. |
+| Server-side copy (`CopyObject`) between the folder and the rest of the bucket | Fails with 404: the two sides are on different machines. Download and upload instead. |
+| A folder that already holds data | Cannot be routed yet; empty it first (or `"allow_orphan": true` to leave the objects behind, hidden). |
+| The bucket's own credentials | Both pools must accept the credentials the clients use. |
 
 ### Move a bucket that is already routed
 

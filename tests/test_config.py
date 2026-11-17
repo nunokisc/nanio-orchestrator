@@ -32,23 +32,6 @@ class TestConfigGeneration:
         assert "server_name cfg.example.com" in content
         assert "location /test/" in content
 
-    async def test_key_prefix_in_config(self, client, mock_nginx, tmp_dirs):
-        pool = await create_pool(client, "kp-cfg-pool")
-        await create_member(client, pool["id"], "10.0.0.1:9000")
-        vh = await create_vhost(client, "kp-cfg.example.com")
-        await client.post(f"/api/vhosts/{vh['id']}/routes", json={
-            "path_prefix": "/photos/",
-            "pool_id": pool["id"],
-            "key_prefix": "photos-2025/",
-        })
-
-        from pathlib import Path
-        vhost_file = Path(tmp_dirs["nginx_dir"]) / "vhosts" / "kp-cfg.example.com.conf"
-        assert vhost_file.exists()
-        content = vhost_file.read_text()
-        assert "rewrite" in content
-        assert "photos-2025/" in content
-
     async def test_empty_pool_no_file(self, client, mock_nginx, tmp_dirs):
         await create_pool(client, "empty-pool")
         # No members added, so no file should exist

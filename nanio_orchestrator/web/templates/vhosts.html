@@ -123,7 +123,12 @@
         <form id="add-route-form" onsubmit="addRoute(event)">
             <input type="hidden" name="vhost_id" id="route-vhost-id">
             <input type="hidden" id="route-vhost-pool-type" value="">
-            <label>Path Prefix <input type="text" name="path_prefix" required placeholder="/2025/"></label>
+            <label>Path <input type="text" name="path_prefix" required placeholder="/bucket/ or /bucket/folder/"></label>
+            <p class="meta" style="font-size:0.85em;color:var(--text-muted)">
+                <code>/bucket/</code> sends a whole bucket to the pool. <code>/bucket/folder/</code> sends only that
+                folder; the rest of the bucket stays where it is. The folder must be empty: the bucket is created
+                on the chosen pool for you.
+            </p>
             <label>Pool
                 <select name="pool_id" id="route-pool-select">
                     {% for p in pools %}

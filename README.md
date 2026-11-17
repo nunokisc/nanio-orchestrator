@@ -41,7 +41,7 @@ NGINX (gateway machine) ─────────────── config wri
 | Pool | `upstream` | Machines holding the same data. Type `nanio` (S3) or `http` (read-only file serving, with replicas). |
 | Member | `server` | One machine of a pool |
 | Vhost | `server {}` | A hostname, with TLS, IP rules and a default pool |
-| Route | `location /bucket/` | Sends one bucket to a specific pool |
+| Route | `location /bucket/` | Sends one bucket, or one folder of a bucket (`/bucket/folder/`), to a specific pool |
 
 ## Quick start
 

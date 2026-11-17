@@ -177,9 +177,16 @@ credentials). See [operations.md](operations.md#set-up-a-storage-node).
 {"path_prefix": "/photos/", "pool_id": 2, "enabled": true}
 ```
 
-`path_prefix` is `/bucket/`. Routing is per bucket; paths inside a bucket cannot be sent to
-different pools. Creating a route does not create the bucket on the target pool and does not
-move any object. Optional: `key_prefix`.
+`path_prefix` is `/bucket/` for a whole bucket or `/bucket/folder/` for one folder of it
+(see [operations.md](operations.md#send-one-folder-of-a-bucket-to-another-pool)).
+
+- A bucket route does not create the bucket on the target pool and does not move any object.
+- A folder route is refused with 409 if the folder already has objects on the bucket's own pool
+  (`"allow_orphan": true` overrides). It creates the bucket on the folder's pool. The response
+  carries `warnings` (a list) for anything that needs attention.
+- `PUT` cannot change a route's path, nor the pool of a folder route.
+- `DELETE` of a folder route is refused with 409 while the folder has objects on its pool
+  (`?allow_orphan=true` overrides).
 
 ---
 

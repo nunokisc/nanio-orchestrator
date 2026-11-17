@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -49,6 +50,74 @@ def render_upstream(pool: Dict[str, Any], members: List[Dict[str, Any]]) -> str:
 
 # ── Vhost block rendering ────────────────────────────────────────────────────
 
+SUBFOLDER_MARKER = ".nanio-shard"
+
+
+def path_segments(path_prefix: str) -> List[str]:
+    return [seg for seg in path_prefix.strip("/").split("/") if seg]
+
+
+def is_subfolder_prefix(path_prefix: str) -> bool:
+    """True for `/bucket/folder/…/`: a route for part of a bucket, not for a whole bucket."""
+    return len(path_segments(path_prefix)) >= 2
+
+
+def _prefix_query_regex(folder_segments: List[str]) -> str:
+    """Regex for the raw `prefix=` query value of a listing inside this folder.
+
+    Clients may send the value percent-encoded or not, so `/` and `@` match both forms.
+    """
+    slash = "(/|%2[Ff])"
+    parts = ["".join("(@|%40)" if ch == "@" else re.escape(ch) for ch in seg) for seg in folder_segments]
+    return "^" + slash.join(parts) + slash
+
+
+def _subfolder_listings(vhost: Dict[str, Any], routes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Per bucket that has sub-folder routes: how bucket-level requests must be handled.
+
+    `location /bucket/folder/` already sends object requests to the folder's pool. Requests that
+    address the bucket itself need help:
+      - a listing carries the folder in `?prefix=`, so a `map` picks the pool from it;
+      - a multi-object delete carries its keys in the body, so it is mirrored to every pool
+        that holds a folder of the bucket (each pool deletes the keys it has).
+    """
+    enabled = [r for r in routes if r.get("enabled", True)]
+    by_path = {r["path_prefix"]: r for r in enabled}
+    by_bucket: Dict[str, List[Dict[str, Any]]] = {}
+    for route in enabled:
+        if is_subfolder_prefix(route["path_prefix"]) and route.get("pool_type", "nanio") == "nanio":
+            by_bucket.setdefault(path_segments(route["path_prefix"])[0], []).append(route)
+
+    listings = []
+    for bucket in sorted(by_bucket):
+        bucket_route = by_path.get(f"/{bucket}/")
+        owner = bucket_route or by_path.get("/")
+        if owner is None:
+            continue
+        folders = sorted(by_bucket[bucket], key=lambda r: len(r["path_prefix"]), reverse=True)
+        owner_pool = owner.get("migration_dst_pool_name") or owner["pool_name"]
+        mirrors, seen = [], {owner["pool_name"], owner_pool}
+        for route in folders:
+            if route["pool_name"] not in seen:
+                seen.add(route["pool_name"])
+                mirrors.append({"id": route["id"], "pool_name": route["pool_name"]})
+        digest = hashlib.sha256(f"{vhost.get('server_name')}/{bucket}".encode()).hexdigest()[:12]
+        listings.append(
+            {
+                "bucket": bucket,
+                "var": f"$nanio_list_{digest}",
+                "default_pool": owner_pool,
+                "entries": [
+                    {"regex": _prefix_query_regex(path_segments(r["path_prefix"])[1:]), "pool_name": r["pool_name"]}
+                    for r in folders
+                ],
+                "mirrors": mirrors,
+                "owner": owner,
+                "has_bucket_route": bucket_route is not None,
+            }
+        )
+    return listings
+
 
 def render_vhost(vhost: Dict[str, Any], routes: List[Dict[str, Any]]) -> str:
     """Render a server block for a vhost with all its routes."""
@@ -64,7 +133,12 @@ def render_vhost(vhost: Dict[str, Any], routes: List[Dict[str, Any]]) -> str:
     for route in sorted_routes:
         prefix = route["path_prefix"]
         is_bucket = len(prefix) > 2 and prefix.startswith("/") and prefix.endswith("/") and "/" not in prefix[1:-1]
-        route["bucket_location"] = prefix[:-1] if is_bucket and not route.get("key_prefix") else None
+        route["bucket_location"] = prefix[:-1] if is_bucket else None
+
+    listings = _subfolder_listings(vhost, sorted_routes)
+    listing_by_bucket = {entry["bucket"]: entry for entry in listings}
+    for route in sorted_routes:
+        route["listing"] = listing_by_bucket.get(route["bucket_location"][1:]) if route["bucket_location"] else None
 
     # Parse extra_blocks and split by zone
     raw_blocks = vhost.get("extra_blocks_json") or vhost.get("extra_blocks") or []
@@ -87,6 +161,7 @@ def render_vhost(vhost: Dict[str, Any], routes: List[Dict[str, Any]]) -> str:
     return tpl.render(
         vhost=vhost,
         routes=sorted_routes,
+        listings=listings,
         updated=_now_iso(),
         extra_blocks_top=extra_blocks_top,
         extra_blocks_ssl=extra_blocks_ssl,
@@ -160,15 +235,12 @@ async def generate_vhost_config(vhost_id: int) -> tuple:
             raise ValueError(f"Vhost {vhost_id} not found")
         vhost = dict(row[0])
         routes_rows = await db.execute_fetchall(
-            """SELECT r.*, p.name as pool_name
+            """SELECT r.*, p.name as pool_name, p.type as pool_type
                FROM routes r JOIN pools p ON r.pool_id = p.id
                WHERE r.vhost_id = ? ORDER BY length(r.path_prefix) DESC""",
             (vhost_id,),
         )
         routes = [dict(r) for r in routes_rows]
-        # Ensure key_prefix is present (may be NULL in older rows)
-        for route in routes:
-            route.setdefault("key_prefix", None)
 
         # Attach live-migration split-routing info. The split is driven by the persisted
         # migrations.split_routing flag, NOT by the phase: once clients have written to the

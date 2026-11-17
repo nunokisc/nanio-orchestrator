@@ -26,6 +26,7 @@ nanio_orchestrator/
 ├── install.py          # install (idempotent), doctor (checks + fixes), remove
 ├── rebuild.py          # Reconstruct DB from nginx config + sidecar files
 ├── sidecar.py          # .meta.json sidecar read/write (pool + vhost sidecars)
+├── subfolders.py       # Sub-folder routes: parent pool, marker object, http vhosts follow
 ├── audit_log.py        # Structured audit log entries
 ├── auth.py             # API key + session cookie authentication
 ├── backup.py           # SQLite rotating backups
@@ -133,8 +134,13 @@ Schema upgrades live only in `db._run_migrations_async()`; `init_db_sync()` just
 4. **HTTP pools are second-class.** They have no S3 credentials, no bucket sync, no migration.
    Filter them out in bucket-related endpoints — see `bucket_sync.py` and `api/pools.py`.
 
-5. **Route granularity is bucket-level.** Nginx routes are `location /bucket-name/`. You cannot
-   route sub-paths within a bucket to different pools — `ListObjectsV2` always uses `?prefix=`, not URL path.
+5. **A route is a bucket or a folder of a bucket; the most specific one wins.** `location /bucket/`
+   sends a bucket to a pool; `location /bucket/folder/` sends that folder to another pool
+   (`subfolders.py`). Paths are never rewritten: nanio verifies the SigV4 signature over the path the
+   client signed, so any rewrite answers 403. Requests that address the bucket itself cannot be
+   routed by path: listings are routed by `?prefix=` (an nginx `map`), multi-object deletes are
+   mirrored to every pool holding part of the bucket. All of that is S3-only; `http` routes are
+   plain prefix locations serving files.
 
 6. **Security**:
    - Never echo credentials or Fernet keys in API responses
@@ -149,10 +155,14 @@ Schema upgrades live only in `db._run_migrations_async()`; `init_db_sync()` just
 7. **No new background tasks.** The only background tasks are `drift`, `bucket_sync` and `backup`.
    They're started in `app.py` startup. New recurring work should follow the same pattern.
 
-9. **Bucket creation is not the orchestrator's job.** Route creation and `promote_bucket` do not create
-   buckets on the target pool. Bucket provisioning is the responsibility of whoever uses the S3 service.
-   The only exception is the migration engine, which will create the destination bucket if it does not
-   exist before starting an rclone copy.
+9. **Bucket creation is not the orchestrator's job**, with two exceptions where clients cannot do
+   it through the gateway: the migration engine creates the destination bucket before copying, and
+   a sub-folder route creates the bucket on the folder's pool. Bucket routes and `promote_bucket`
+   never create buckets.
+
+10. **Refuse rather than hide data.** An operation that would leave existing objects unreachable
+    (routing over a non-empty folder, deleting the route of a non-empty folder, promoting without
+    migrating) is refused with 409 unless the caller passes `allow_orphan`.
 
 8. **Keep rebuild working.** Any new field stored in the DB must also be:
    - Written to the sidecar in `sidecar.py` (update `write_vhost_sidecar` or `write_pool_sidecar`)
