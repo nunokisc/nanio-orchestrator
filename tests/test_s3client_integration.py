@@ -14,7 +14,6 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
-
 from nanio_orchestrator import s3client
 
 ENDPOINT = os.environ.get("NANIO_TEST_ENDPOINT")
@@ -99,11 +98,11 @@ async def test_wrong_credentials_are_an_error_not_an_empty_answer(bucket):
     promote act on that answer."""
     bad = {"access_key": AUTH["access_key"], "secret_key": "wrong-secret"}
 
-    with pytest.raises(Exception):
+    with pytest.raises((PermissionError, RuntimeError)):
         await s3client.list_buckets(ENDPOINT, **bad)
-    with pytest.raises(Exception):
+    with pytest.raises((PermissionError, RuntimeError)):
         await s3client.bucket_exists(ENDPOINT, bucket, **bad)
-    with pytest.raises(Exception):
+    with pytest.raises((PermissionError, RuntimeError)):
         await s3client.bucket_has_objects(ENDPOINT, bucket, **bad)
 
 
@@ -125,7 +124,14 @@ async def test_subfolder_marker_keeps_the_folder_visible_but_is_not_listed(bucke
     assert await s3client.bucket_has_objects(ENDPOINT, bucket, prefix="2024/", **AUTH) is True
 
     status, body = s3client._do_request(
-        "GET", ENDPOINT, f"/{bucket}", "delimiter=%2F&list-type=2", b"", AUTH["access_key"], AUTH["secret_key"], "us-east-1"
+        "GET",
+        ENDPOINT,
+        f"/{bucket}",
+        "delimiter=%2F&list-type=2",
+        b"",
+        AUTH["access_key"],
+        AUTH["secret_key"],
+        "us-east-1",
     )
     assert status == 200
     folders = [el.text for el in ET.fromstring(body).iter() if el.tag.endswith("Prefix") and el.text]

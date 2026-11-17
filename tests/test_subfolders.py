@@ -51,8 +51,12 @@ class TestGeneratedConfig:
 
     def test_multi_delete_reaches_every_pool_holding_a_folder(self):
         content = _render(
-            [_route(1, "/", "pa"), _route(2, "/photos/2025/", "pb"), _route(3, "/photos/2026/", "pc"),
-             _route(4, "/photos/2027/", "pb")]
+            [
+                _route(1, "/", "pa"),
+                _route(2, "/photos/2025/", "pb"),
+                _route(3, "/photos/2026/", "pc"),
+                _route(4, "/photos/2027/", "pb"),
+            ]
         )
         exact = _block(content, "location = /photos {")
         assert exact.count("mirror /__nanio_shard_") == 2  # pb once, pc once
@@ -89,7 +93,9 @@ class TestGeneratedConfig:
         parsed = parse_vhost_block(content)
         assert parsed["server_name"] == "s3.example.com"
         assert sorted((r["path_prefix"], r["pool_name"]) for r in parsed["routes"]) == [
-            ("/", "pa"), ("/logs/", "pc"), ("/photos/2025/", "pb"),
+            ("/", "pa"),
+            ("/logs/", "pc"),
+            ("/photos/2025/", "pb"),
         ]
 
 
@@ -114,7 +120,7 @@ def _calls(mock):
 
 class TestCreate:
     async def test_creates_bucket_on_folder_pool_and_marker_on_parent(self, client, mock_nginx, mock_s3):
-        pa, pb, vhost = await _cluster(client)
+        _pa, pb, vhost = await _cluster(client)
 
         resp = await _add(client, vhost, pb)
 
@@ -126,7 +132,7 @@ class TestCreate:
         assert b"pool 'pb'" in body
 
     async def test_refused_when_the_folder_already_has_objects(self, client, mock_nginx, mock_s3):
-        pa, pb, vhost = await _cluster(client)
+        _pa, pb, vhost = await _cluster(client)
         mock_s3["folder_has_objects"].return_value = True
 
         resp = await _add(client, vhost, pb)

@@ -44,9 +44,8 @@ async def backup_database() -> str | None:
     await asyncio.to_thread(_rotate_backups, dst, s.db_backup_rotate)
 
     try:
-        async with aiosqlite.connect(src) as src_db:
-            async with aiosqlite.connect(dst) as dst_db:
-                await src_db.backup(dst_db)
+        async with aiosqlite.connect(src) as src_db, aiosqlite.connect(dst) as dst_db:
+            await src_db.backup(dst_db)
         logger.debug("Database backed up to %s", dst)
         return dst
     except Exception as e:

@@ -9,12 +9,13 @@ Three types:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from nanio_orchestrator.config import get_settings
 
@@ -54,10 +55,8 @@ def _read_json(filepath: str) -> Optional[dict]:
 
 def _delete_file(filepath: str) -> None:
     """Delete a file if it exists."""
-    try:
+    with contextlib.suppress(FileNotFoundError):
         os.unlink(filepath)
-    except FileNotFoundError:
-        pass
 
 
 # ── Pool sidecars ─────────────────────────────────────────────────────────────
@@ -74,12 +73,12 @@ def write_pool_sidecar(
     name: str,
     pool_type: str,
     description: Optional[str] = None,
-    credentials: Optional[Dict[str, Any]] = None,
+    credentials: Optional[dict[str, Any]] = None,
     source_nanio_pool_id: Optional[int] = None,
 ) -> None:
     """Write or update a pool sidecar file."""
     filepath = pool_sidecar_path(name)
-    data: Dict[str, Any] = {
+    data: dict[str, Any] = {
         "pool_id": pool_id,
         "name": name,
         "type": pool_type,
@@ -235,7 +234,7 @@ def migration_state_path(migration_id: int) -> str:
     return str(s.migrations_dir / f"migration-{migration_id}.state.json")
 
 
-def write_migration_state(state: Dict[str, Any]) -> None:
+def write_migration_state(state: dict[str, Any]) -> None:
     """Write or update a migration state file."""
     filepath = migration_state_path(state["migration_id"])
     state["updated_at"] = _now_iso()
@@ -256,7 +255,7 @@ def delete_migration_state(migration_id: int) -> None:
 # ── Scanning ──────────────────────────────────────────────────────────────────
 
 
-def _scan_dir(directory: Path, pattern: str) -> List[dict]:
+def _scan_dir(directory: Path, pattern: str) -> list[dict]:
     results = []
     for p in sorted(directory.glob(pattern)):
         data = _read_json(str(p))
@@ -265,15 +264,15 @@ def _scan_dir(directory: Path, pattern: str) -> List[dict]:
     return results
 
 
-def scan_pool_sidecars() -> List[dict]:
+def scan_pool_sidecars() -> list[dict]:
     return _scan_dir(get_settings().pools_dir, "*.meta.json")
 
 
-def scan_vhost_sidecars() -> List[dict]:
+def scan_vhost_sidecars() -> list[dict]:
     return _scan_dir(get_settings().vhosts_dir, "*.meta.json")
 
 
-def scan_migration_states() -> List[dict]:
+def scan_migration_states() -> list[dict]:
     return _scan_dir(get_settings().migrations_dir, "*.state.json")
 
 
@@ -286,7 +285,7 @@ def migration_completion_path(migration_id: int) -> str:
     return str(s.migrations_dir / f"migration-{migration_id}.done.json")
 
 
-def write_migration_completion(state: Dict[str, Any]) -> None:
+def write_migration_completion(state: dict[str, Any]) -> None:
     """Write a permanent completion record for a finished migration.
 
     Called when a migration reaches 'done'. Unlike state files, completion
@@ -300,5 +299,5 @@ def write_migration_completion(state: Dict[str, Any]) -> None:
     logger.debug("Wrote migration completion: %s", filepath)
 
 
-def scan_migration_completions() -> List[dict]:
+def scan_migration_completions() -> list[dict]:
     return _scan_dir(get_settings().migrations_dir, "*.done.json")

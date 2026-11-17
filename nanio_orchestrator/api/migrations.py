@@ -13,7 +13,6 @@ Endpoints:
 from __future__ import annotations
 
 import logging
-from typing import List
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -223,7 +222,7 @@ async def create_migration(body: RcloneMigrationCreate):
         raise HTTPException(
             503,
             f"Cannot reach source pool {body.src_pool_id} to validate bucket '{body.bucket}': {exc}",
-        )
+        ) from exc
 
     try:
         migration_id = await start_migration(
@@ -234,7 +233,7 @@ async def create_migration(body: RcloneMigrationCreate):
             route_id=resolved_route_id,
         )
     except RuntimeError as e:
-        raise HTTPException(429, str(e))
+        raise HTTPException(429, str(e)) from e
 
     # Return the created migration
     async with get_db_ctx() as db:
@@ -341,7 +340,7 @@ async def _create_folder_migration(body: RcloneMigrationCreate) -> RcloneMigrati
     try:
         has_data = await bucket_has_objects(src_member, bucket, access_key=src_ak, secret_key=src_sk, prefix=folder)
     except Exception as exc:
-        raise HTTPException(503, f"Cannot reach source pool {src_pool_id} to check '{route_path}': {exc}")
+        raise HTTPException(503, f"Cannot reach source pool {src_pool_id} to check '{route_path}': {exc}") from exc
     if not has_data:
         raise HTTPException(
             400,
@@ -361,7 +360,7 @@ async def _create_folder_migration(body: RcloneMigrationCreate) -> RcloneMigrati
             # http vhosts serving this bucket get the folder route too, so they follow the move
             http_changed, _ = await subfolders.sync_http_routes(db, bucket, route_path, parent["id"], src_pool_id)
             await db.commit()
-            for changed_vhost_id in [vhost_id] + http_changed:
+            for changed_vhost_id in [vhost_id, *http_changed]:
                 ok, output = await write_vhost_config(changed_vhost_id, db)
                 if not ok:
                     await db.execute("DELETE FROM routes WHERE id = ?", (route_id,))
@@ -373,7 +372,7 @@ async def _create_folder_migration(body: RcloneMigrationCreate) -> RcloneMigrati
             vhost_id, bucket, src_pool_id, body.dst_pool_id, route_id=route_id, folder=folder
         )
     except RuntimeError as e:
-        raise HTTPException(429, str(e))
+        raise HTTPException(429, str(e)) from e
 
     async with get_db_ctx() as db:
         rows = await db.execute_fetchall("SELECT * FROM migrations WHERE id = ?", (migration_id,))
@@ -407,7 +406,7 @@ async def list_source_buckets(pool_id: int):
     return {"pool_id": pool_id, "buckets": [r["bucket"] for r in rows]}
 
 
-@router.get("/orphaned", response_model=List[OrphanedMigrationOut])
+@router.get("/orphaned", response_model=list[OrphanedMigrationOut])
 async def list_orphaned_migrations():
     """List all migrations that have orphaned source data.
 
@@ -442,7 +441,7 @@ async def list_orphaned_migrations():
 _ACTIVE_PHASES = ("pending", "copying", "write_routing", "verifying", "switching")
 
 
-@router.get("/stale", response_model=List[StaleMigrationOut])
+@router.get("/stale", response_model=list[StaleMigrationOut])
 async def list_stale_migrations():
     """List active migrations that cannot proceed safely.
 
@@ -541,7 +540,7 @@ async def list_stale_migrations():
     return stale
 
 
-@router.get("", response_model=List[RcloneMigrationOut])
+@router.get("", response_model=list[RcloneMigrationOut])
 async def list_migrations(
     phase: str = Query(None, description="Filter by phase"),
     limit: int = Query(50, ge=1, le=500),
@@ -587,7 +586,7 @@ async def cancel(migration_id: int):
     return {"ok": True, "migration_id": migration_id}
 
 
-@router.get("/{migration_id}/log", response_model=List[MigrationLogEntry])
+@router.get("/{migration_id}/log", response_model=list[MigrationLogEntry])
 async def get_log(migration_id: int, limit: int = Query(100, ge=1, le=1000)):
     """Get log entries for a migration."""
     async with get_db_ctx() as db:

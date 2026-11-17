@@ -6,7 +6,6 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from nanio_orchestrator.nginx.apply import apply_config_file, apply_config_files, nginx_lock
 
 OK = MagicMock(ok=True, output="syntax ok")

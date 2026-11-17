@@ -11,11 +11,14 @@ class TestVhostCRUD:
 
     async def test_create_vhost_with_default_pool(self, client):
         pool = await create_pool(client, "vh-pool")
-        resp = await client.post("/api/vhosts", json={
-            "server_name": "pool.example.com",
-            "ssl": False,
-            "default_pool_id": pool["id"],
-        })
+        resp = await client.post(
+            "/api/vhosts",
+            json={
+                "server_name": "pool.example.com",
+                "ssl": False,
+                "default_pool_id": pool["id"],
+            },
+        )
         assert resp.status_code == 201
         assert resp.json()["default_pool_id"] == pool["id"]
 
@@ -54,32 +57,46 @@ class TestRouteCRUD:
         pool = await create_pool(client, "rt-pool")
         await create_member(client, pool["id"])
         vh = await create_vhost(client, "route.example.com")
-        resp = await client.post(f"/api/vhosts/{vh['id']}/routes", json={
-            "path_prefix": "/assets/",
-            "pool_id": pool["id"],
-        })
+        resp = await client.post(
+            f"/api/vhosts/{vh['id']}/routes",
+            json={
+                "path_prefix": "/assets/",
+                "pool_id": pool["id"],
+            },
+        )
         assert resp.status_code == 201
         assert resp.json()["path_prefix"] == "/assets/"
 
     async def test_create_route_invalid_prefix(self, client):
         pool = await create_pool(client, "rt-inv-pool")
         vh = await create_vhost(client, "inv.example.com")
-        resp = await client.post(f"/api/vhosts/{vh['id']}/routes", json={
-            "path_prefix": "no-slash",
-            "pool_id": pool["id"],
-        })
+        resp = await client.post(
+            f"/api/vhosts/{vh['id']}/routes",
+            json={
+                "path_prefix": "no-slash",
+                "pool_id": pool["id"],
+            },
+        )
         assert resp.status_code == 422
 
     async def test_list_routes(self, client, mock_nginx):
         pool = await create_pool(client, "rt-list-pool")
         await create_member(client, pool["id"])
         vh = await create_vhost(client, "rtlist.example.com")
-        await client.post(f"/api/vhosts/{vh['id']}/routes", json={
-            "path_prefix": "/a/", "pool_id": pool["id"],
-        })
-        await client.post(f"/api/vhosts/{vh['id']}/routes", json={
-            "path_prefix": "/b/", "pool_id": pool["id"],
-        })
+        await client.post(
+            f"/api/vhosts/{vh['id']}/routes",
+            json={
+                "path_prefix": "/a/",
+                "pool_id": pool["id"],
+            },
+        )
+        await client.post(
+            f"/api/vhosts/{vh['id']}/routes",
+            json={
+                "path_prefix": "/b/",
+                "pool_id": pool["id"],
+            },
+        )
         resp = await client.get(f"/api/vhosts/{vh['id']}/routes")
         assert resp.status_code == 200
         assert len(resp.json()) == 2
@@ -88,9 +105,13 @@ class TestRouteCRUD:
         pool = await create_pool(client, "rt-del-pool")
         await create_member(client, pool["id"])
         vh = await create_vhost(client, "rtdel.example.com")
-        route_resp = await client.post(f"/api/vhosts/{vh['id']}/routes", json={
-            "path_prefix": "/del/", "pool_id": pool["id"],
-        })
+        route_resp = await client.post(
+            f"/api/vhosts/{vh['id']}/routes",
+            json={
+                "path_prefix": "/del/",
+                "pool_id": pool["id"],
+            },
+        )
         route = route_resp.json()
         resp = await client.delete(f"/api/vhosts/{vh['id']}/routes/{route['id']}")
         assert resp.status_code == 204
@@ -110,10 +131,13 @@ class TestRouteScenarios:
         # Source bucket has many objects — but create_route must NOT start migration
         mock_s3["count_objects"].return_value = 500
 
-        resp = await client.post(f"/api/vhosts/{vh['id']}/routes", json={
-            "path_prefix": "/mybucket/",
-            "pool_id": dst["id"],
-        })
+        resp = await client.post(
+            f"/api/vhosts/{vh['id']}/routes",
+            json={
+                "path_prefix": "/mybucket/",
+                "pool_id": dst["id"],
+            },
+        )
         assert resp.status_code == 201
         data = resp.json()
         # Route points directly to dst (no migration redirect to src)
@@ -137,25 +161,29 @@ class TestRouteScenarios:
         mock_s3["count_objects"].return_value = 100
 
         # Create parent bucket route
-        await client.post(f"/api/vhosts/{vh['id']}/routes", json={
-            "path_prefix": "/bucket2/",
-            "pool_id": src["id"],
-        })
+        await client.post(
+            f"/api/vhosts/{vh['id']}/routes",
+            json={
+                "path_prefix": "/bucket2/",
+                "pool_id": src["id"],
+            },
+        )
 
         # Create sub-path route on a different pool — must not trigger migration
-        resp = await client.post(f"/api/vhosts/{vh['id']}/routes", json={
-            "path_prefix": "/bucket2/coisas/",
-            "pool_id": dst["id"],
-        })
+        resp = await client.post(
+            f"/api/vhosts/{vh['id']}/routes",
+            json={
+                "path_prefix": "/bucket2/coisas/",
+                "pool_id": dst["id"],
+            },
+        )
         assert resp.status_code == 201
         assert resp.json().get("migration_id") is None
 
         list_resp = await client.get("/api/migrations")
         assert len(list_resp.json()) == 0
 
-    async def test_update_route_pool_change_no_objects_is_direct_update(
-        self, client, mock_nginx, mock_s3
-    ):
+    async def test_update_route_pool_change_no_objects_is_direct_update(self, client, mock_nginx, mock_s3):
         """Scenario 1: updating route pool when source bucket is empty → direct update, no migration."""
         pool1 = await create_pool(client, "sc3-p1")
         await create_member(client, pool1["id"], "10.0.0.1:9000")
@@ -163,9 +191,13 @@ class TestRouteScenarios:
         await create_member(client, pool2["id"], "10.0.0.2:9000")
         vh = await create_vhost(client, "sc3.example.com")
 
-        route_resp = await client.post(f"/api/vhosts/{vh['id']}/routes", json={
-            "path_prefix": "/bucket3/", "pool_id": pool1["id"],
-        })
+        route_resp = await client.post(
+            f"/api/vhosts/{vh['id']}/routes",
+            json={
+                "path_prefix": "/bucket3/",
+                "pool_id": pool1["id"],
+            },
+        )
         route = route_resp.json()
 
         # Source bucket is empty → no migration
@@ -189,9 +221,13 @@ class TestRouteScenarios:
         await create_member(client, dst["id"], "10.0.0.2:9000")
         vh = await create_vhost(client, "sc4.example.com", default_pool_id=src["id"])
 
-        route_resp = await client.post(f"/api/vhosts/{vh['id']}/routes", json={
-            "path_prefix": "/bucket4/", "pool_id": src["id"],
-        })
+        route_resp = await client.post(
+            f"/api/vhosts/{vh['id']}/routes",
+            json={
+                "path_prefix": "/bucket4/",
+                "pool_id": src["id"],
+            },
+        )
         route = route_resp.json()
 
         # Source bucket has objects → migration
@@ -225,12 +261,20 @@ class TestRouteScenarios:
         await create_member(client, p3["id"], "10.0.0.3:9000")
         vh = await create_vhost(client, "sc5.example.com")
 
-        await client.post(f"/api/vhosts/{vh['id']}/routes", json={
-            "path_prefix": "/bucket5/", "pool_id": p1["id"],
-        })
-        sub_resp = await client.post(f"/api/vhosts/{vh['id']}/routes", json={
-            "path_prefix": "/bucket5/subpath/", "pool_id": p2["id"],
-        })
+        await client.post(
+            f"/api/vhosts/{vh['id']}/routes",
+            json={
+                "path_prefix": "/bucket5/",
+                "pool_id": p1["id"],
+            },
+        )
+        sub_resp = await client.post(
+            f"/api/vhosts/{vh['id']}/routes",
+            json={
+                "path_prefix": "/bucket5/subpath/",
+                "pool_id": p2["id"],
+            },
+        )
         assert sub_resp.status_code == 201, sub_resp.text
         sub_route = sub_resp.json()
 

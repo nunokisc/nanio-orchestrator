@@ -33,13 +33,17 @@ async def _cluster(client):
 
 
 def _files(tmp_dirs):
-    return {str(p.relative_to(tmp_dirs["nginx_dir"])): p.read_text() for p in Path(tmp_dirs["nginx_dir"]).rglob("*.conf")}
+    return {
+        str(p.relative_to(tmp_dirs["nginx_dir"])): p.read_text() for p in Path(tmp_dirs["nginx_dir"]).rglob("*.conf")
+    }
 
 
 async def _state(client, vhost):
     return {
         "pools": (await client.get("/api/pools")).json(),
-        "members": [(await client.get(f"/api/pools/{p['id']}/members")).json() for p in (await client.get("/api/pools")).json()],
+        "members": [
+            (await client.get(f"/api/pools/{p['id']}/members")).json() for p in (await client.get("/api/pools")).json()
+        ],
         "vhosts": (await client.get("/api/vhosts")).json(),
         "routes": (await client.get(f"/api/vhosts/{vhost['id']}/routes")).json(),
     }
@@ -56,7 +60,9 @@ REFUSED = [
     ),
     (
         "add a route",
-        lambda c, p, m, o, v: c.post(f"/api/vhosts/{v['id']}/routes", json={"path_prefix": "/new/", "pool_id": o["id"]}),
+        lambda c, p, m, o, v: c.post(
+            f"/api/vhosts/{v['id']}/routes", json={"path_prefix": "/new/", "pool_id": o["id"]}
+        ),
     ),
     (
         "promote a bucket",
@@ -90,7 +96,8 @@ async def test_refused_vhost_is_not_created(client, mock_nginx, tmp_dirs):
     _refuse(mock_nginx)
 
     resp = await client.post(
-        "/api/vhosts", json={"server_name": "s3.example.com", "listen_port": 80, "ssl": False, "default_pool_id": pool["id"]}
+        "/api/vhosts",
+        json={"server_name": "s3.example.com", "listen_port": 80, "ssl": False, "default_pool_id": pool["id"]},
     )
 
     assert resp.status_code == 422
@@ -99,7 +106,7 @@ async def test_refused_vhost_is_not_created(client, mock_nginx, tmp_dirs):
 
 
 async def test_refused_route_removal_keeps_the_route(client, mock_nginx, mock_s3, tmp_dirs):
-    pool, _, other, vhost = await _cluster(client)
+    _pool, _, other, vhost = await _cluster(client)
     route = (
         await client.post(f"/api/vhosts/{vhost['id']}/routes", json={"path_prefix": "/photos/", "pool_id": other["id"]})
     ).json()
@@ -116,7 +123,7 @@ async def test_refused_route_removal_keeps_the_route(client, mock_nginx, mock_s3
 async def test_last_member_of_a_pool_in_use_cannot_be_removed(client, mock_nginx, tmp_dirs):
     """Without members a pool has no upstream block; a vhost proxying to it would make nginx
     refuse its whole configuration at the next reload."""
-    pool, member, _, vhost = await _cluster(client)
+    pool, member, _, _vhost = await _cluster(client)
     pool_file = Path(tmp_dirs["nginx_dir"]) / "pools" / "pa.conf"
     _refuse(mock_nginx, 'host not found in upstream "pa"')
 

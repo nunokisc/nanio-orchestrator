@@ -10,6 +10,7 @@ class TestConfigGeneration:
 
         # Config should have been generated upon member addition
         from pathlib import Path
+
         pool_file = Path(tmp_dirs["nginx_dir"]) / "pools" / "cfg-pool.conf"
         assert pool_file.exists()
         content = pool_file.read_text()
@@ -20,12 +21,16 @@ class TestConfigGeneration:
         pool = await create_pool(client, "vh-cfg-pool")
         await create_member(client, pool["id"], "10.0.0.1:9000")
         vh = await create_vhost(client, "cfg.example.com")
-        await client.post(f"/api/vhosts/{vh['id']}/routes", json={
-            "path_prefix": "/test/",
-            "pool_id": pool["id"],
-        })
+        await client.post(
+            f"/api/vhosts/{vh['id']}/routes",
+            json={
+                "path_prefix": "/test/",
+                "pool_id": pool["id"],
+            },
+        )
 
         from pathlib import Path
+
         vhost_file = Path(tmp_dirs["nginx_dir"]) / "vhosts" / "cfg.example.com.conf"
         assert vhost_file.exists()
         content = vhost_file.read_text()
@@ -36,6 +41,7 @@ class TestConfigGeneration:
         await create_pool(client, "empty-pool")
         # No members added, so no file should exist
         from pathlib import Path
+
         pool_file = Path(tmp_dirs["nginx_dir"]) / "pools" / "empty-pool.conf"
         assert not pool_file.exists()
 

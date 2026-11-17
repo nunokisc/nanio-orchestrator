@@ -49,24 +49,30 @@ async def app(tmp_dirs):
 
     # Reset singletons
     import nanio_orchestrator.config as cfg_mod
+
     cfg_mod.settings = None
 
     import nanio_orchestrator.db as db_mod
+
     db_mod._db_path = None
 
     from nanio_orchestrator.db import init_db, set_db_path
+
     set_db_path(tmp_dirs["db_path"])
     await init_db()
 
     # Mock the background services so they don't actually run
-    with patch("nanio_orchestrator.app.drift_loop", new_callable=AsyncMock) as _dl, \
-         patch("nanio_orchestrator.app.stop_drift") as _sd, \
-         patch("nanio_orchestrator.app.bucket_sync_loop", new_callable=AsyncMock) as _bsl, \
-         patch("nanio_orchestrator.app.stop_bucket_sync") as _sbs, \
-         patch("nanio_orchestrator.app.recover_interrupted_migrations", new_callable=AsyncMock, return_value=0) as _rim, \
-         patch("nanio_orchestrator.app.backup_loop", new_callable=AsyncMock) as _bkl, \
-         patch("nanio_orchestrator.app.stop_backup") as _sbk:
+    with (
+        patch("nanio_orchestrator.app.drift_loop", new_callable=AsyncMock) as _dl,
+        patch("nanio_orchestrator.app.stop_drift") as _sd,
+        patch("nanio_orchestrator.app.bucket_sync_loop", new_callable=AsyncMock) as _bsl,
+        patch("nanio_orchestrator.app.stop_bucket_sync") as _sbs,
+        patch("nanio_orchestrator.app.recover_interrupted_migrations", new_callable=AsyncMock, return_value=0) as _rim,
+        patch("nanio_orchestrator.app.backup_loop", new_callable=AsyncMock) as _bkl,
+        patch("nanio_orchestrator.app.stop_backup") as _sbk,
+    ):
         from nanio_orchestrator.app import create_app
+
         application = create_app()
         yield application
 
@@ -88,9 +94,11 @@ async def client(app):
 async def db(tmp_dirs):
     """Direct DB connection for test assertions."""
     import nanio_orchestrator.db as db_mod
+
     db_mod._db_path = None
 
     from nanio_orchestrator.db import get_db_ctx, init_db, set_db_path
+
     set_db_path(tmp_dirs["db_path"])
     await init_db()
 
@@ -206,10 +214,10 @@ def mock_s3():
     defaults = {
         "list_buckets": [],
         "create_bucket": (True, "created"),
-        "bucket_exists": False,          # dst bucket doesn't exist → will be created
-        "bucket_has_objects": False,     # dst bucket is empty → migration proceeds
-        "promote_src_has_objects": False, # source bucket is empty → promote without migrate ok
-        "src_bucket_exists": True,       # source bucket exists by default
+        "bucket_exists": False,  # dst bucket doesn't exist → will be created
+        "bucket_has_objects": False,  # dst bucket is empty → migration proceeds
+        "promote_src_has_objects": False,  # source bucket is empty → promote without migrate ok
+        "src_bucket_exists": True,  # source bucket exists by default
         "src_bucket_has_objects": True,  # source bucket has data by default
         "list_objects": [],
         "count_objects": 1,
@@ -246,8 +254,7 @@ def mock_vhost_s3_calls():
     don't need mock_s3 don't block on network I/O.
     """
     patches = [
-        patch("nanio_orchestrator.api.vhosts.count_objects",
-              new=AsyncMock(return_value=0)),
+        patch("nanio_orchestrator.api.vhosts.count_objects", new=AsyncMock(return_value=0)),
     ]
     for p in patches:
         p.start()
@@ -297,10 +304,13 @@ async def create_vhost(client: AsyncClient, server_name: str = "test.example.com
 
 async def create_route(client: AsyncClient, vhost_id: int, bucket: str, pool_id: int) -> dict:
     """Helper: create a vhost route for a bucket (required before creating migrations)."""
-    resp = await client.post(f"/api/vhosts/{vhost_id}/routes", json={
-        "path_prefix": f"/{bucket}/",
-        "pool_id": pool_id,
-    })
+    resp = await client.post(
+        f"/api/vhosts/{vhost_id}/routes",
+        json={
+            "path_prefix": f"/{bucket}/",
+            "pool_id": pool_id,
+        },
+    )
     assert resp.status_code == 201, resp.text
     return resp.json()
 

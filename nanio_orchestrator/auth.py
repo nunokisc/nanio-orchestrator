@@ -53,10 +53,7 @@ def verify_session_token(token: str, api_key: str, ttl: int) -> bool:
 
     # Check TTL
     now = int(time.time())
-    if now - ts > ttl:
-        return False
-
-    return True
+    return not now - ts > ttl
 
 
 def get_session_token(request: Request) -> Optional[str]:
@@ -95,6 +92,4 @@ def is_https(request: Request) -> bool:
     """Detect HTTPS — handles direct TLS and proxied requests."""
     if request.url.scheme == "https":
         return True
-    if request.headers.get("X-Forwarded-Proto", "").lower() == "https":
-        return True
-    return False
+    return request.headers.get("X-Forwarded-Proto", "").lower() == "https"

@@ -1,7 +1,6 @@
 """Tests for authentication middleware."""
 
 
-
 class TestAuth:
     async def test_api_no_key_rejected(self, client):
         # Remove the auth header

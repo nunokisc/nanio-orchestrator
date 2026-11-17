@@ -32,7 +32,7 @@ lint:
 	.venv/bin/ruff check nanio_orchestrator/ tests/
 
 fmt:
-	.venv/bin/ruff format nanio_orchestrator/
+	.venv/bin/ruff format nanio_orchestrator/ tests/
 
 clean:
 	rm -rf .venv dev-data __pycache__ dist build *.egg-info

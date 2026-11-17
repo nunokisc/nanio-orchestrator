@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.nginx.generator import sha256_str
@@ -46,7 +46,7 @@ def _read_managed(conf_path) -> Optional[str]:
     return content if is_managed_file(content) else None
 
 
-async def import_configs(db, warnings: List[str]) -> Dict[str, Any]:
+async def import_configs(db, warnings: list[str]) -> dict[str, Any]:
     """Upsert the pools, members, credentials, vhosts and routes found on disk. Never deletes.
 
     The one disk → DB importer: a full import on an empty database (``rebuild_from_disk``),
@@ -74,10 +74,10 @@ async def import_configs(db, warnings: List[str]) -> Dict[str, Any]:
         "files": 0,
     }
 
-    pool_name_to_id: Dict[str, int] = {
+    pool_name_to_id: dict[str, int] = {
         r["name"]: r["id"] for r in await db.execute_fetchall("SELECT id, name FROM pools")
     }
-    new_http_pools: List[str] = []
+    new_http_pools: list[str] = []
 
     # ── Pools, members, credentials ──────────────────────────────────────────
     for conf_path in sorted(s.pools_dir.glob("*.conf")):
@@ -186,7 +186,7 @@ async def import_configs(db, warnings: List[str]) -> Dict[str, Any]:
                 """UPDATE vhosts SET listen_port=?, ssl=?, ssl_cert_path=?, ssl_key_path=?,
                    default_pool_id=COALESCE(?, default_pool_id), updated_at=datetime('now')
                    WHERE id=?""",
-                from_conf + (default_pool_id, vhost_id),
+                (*from_conf, default_pool_id, vhost_id),
             )
             counts["vhosts_updated"] += 1
         else:
@@ -195,9 +195,9 @@ async def import_configs(db, warnings: List[str]) -> Dict[str, Any]:
                    (server_name, listen_port, ssl, ssl_cert_path, ssl_key_path, enabled,
                     default_pool_id, extra_blocks_json, ip_rule_mode, ip_rule_ips_json)
                    VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)""",
-                (server_name,)
-                + from_conf
-                + (
+                (
+                    server_name,
+                    *from_conf,
                     default_pool_id,
                     sidecar.get("extra_blocks_json"),
                     sidecar.get("ip_rule_mode"),
@@ -241,7 +241,7 @@ async def _route_id_for(db, vhost_id: int, state: dict) -> Optional[int]:
     return rows[0]["id"] if rows else None
 
 
-async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
+async def rebuild_from_disk(dry_run: bool = False) -> dict[str, Any]:
     """Reconstruct the entire database from disk state.
 
     Args:
@@ -252,7 +252,7 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
     from nanio_orchestrator.db import get_db_ctx, init_db
 
     s = get_settings()
-    warnings: List[str] = []
+    warnings: list[str] = []
     migration_count = 0
 
     migration_states = scan_migration_states()
@@ -269,7 +269,7 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
     async with get_db_ctx() as db:
         # Steps 2, 3 and 5: pools, members, credentials, vhosts, routes, config_files
         imported = await import_configs(db, warnings)
-        pool_name_to_id: Dict[str, int] = imported["pool_name_to_id"]
+        pool_name_to_id: dict[str, int] = imported["pool_name_to_id"]
 
         # Step 4: import in-progress migrations from state files
         vhost_rows = await db.execute_fetchall("SELECT id, server_name FROM vhosts")
@@ -406,8 +406,8 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
 
 
 async def _rebuild_bucket_sync(
-    pool_name_to_id: Dict[str, int],
-    warnings: List[str],
+    pool_name_to_id: dict[str, int],
+    warnings: list[str],
 ) -> None:
     """Rebuild bucket_sync table from live ListBuckets calls (best-effort)."""
     from nanio_orchestrator.db import get_db_ctx
@@ -468,15 +468,15 @@ async def _rebuild_bucket_sync(
 
 async def _dry_run_report(
     s,
-    pool_sidecars: Dict[str, dict],
-    vhost_sidecars: Dict[str, dict],
-    migration_states: List[dict],
-    migration_completions: List[dict],
-) -> Dict[str, Any]:
+    pool_sidecars: dict[str, dict],
+    vhost_sidecars: dict[str, dict],
+    migration_states: list[dict],
+    migration_completions: list[dict],
+) -> dict[str, Any]:
     """Generate a dry-run report without writing anything."""
     pools = []
     vhosts = []
-    warnings: List[str] = []
+    warnings: list[str] = []
 
     for conf_path in sorted(s.pools_dir.glob("*.conf")):
         try:

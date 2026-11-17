@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import List
 
 from nanio_orchestrator import s3client
 from nanio_orchestrator.config import get_settings
@@ -103,10 +102,7 @@ async def sync_vhost_buckets_once(vhost_id: int) -> dict:
                 new_status = "routed"
                 pool_id = routed[bucket_name]
             else:
-                if existing_states.get(bucket_name) == "ignored":
-                    new_status = "ignored"
-                else:
-                    new_status = "unrouted"
+                new_status = "ignored" if existing_states.get(bucket_name) == "ignored" else "unrouted"
                 pool_id = None
 
             old_status = existing_states.get(bucket_name)
@@ -165,7 +161,7 @@ async def _list_routed_buckets_on_default_pool(
     listed: set,
     access_key,
     secret_key,
-) -> List[str]:
+) -> list[str]:
     """Make buckets that live on another pool show up in ListBuckets.
 
     ListBuckets is answered by the default pool, so a bucket routed elsewhere would be usable
@@ -173,7 +169,7 @@ async def _list_routed_buckets_on_default_pool(
     empty bucket of the same name is created on the default pool. It never receives objects:
     every request for that bucket follows the route. Returns the names created.
     """
-    created: List[str] = []
+    created: list[str] = []
     for bucket, pool_id in routed.items():
         if "/" in bucket or bucket in listed or pool_id == default_pool_id:
             continue  # a folder route, already listed, or routed to the default pool itself
@@ -202,14 +198,14 @@ async def _list_routed_buckets_on_default_pool(
     return created
 
 
-async def _flag_missing_routed_buckets(vhost_id: int, now: str) -> List[dict]:
+async def _flag_missing_routed_buckets(vhost_id: int, now: str) -> list[dict]:
     """Flag routed buckets that their target pool reports as not existing.
 
     Sets ``missing_since`` (kept from the first time it was seen) and clears it when the
     bucket is found again. Routing is not touched and nginx is not reloaded. An unreachable
     pool or an unexpected answer changes nothing.
     """
-    missing: List[dict] = []
+    missing: list[dict] = []
 
     async with get_db_ctx() as db:
         await db.execute(
@@ -271,7 +267,7 @@ async def _flag_missing_routed_buckets(vhost_id: int, now: str) -> List[dict]:
     return missing
 
 
-async def sync_all_vhosts() -> List[dict]:
+async def sync_all_vhosts() -> list[dict]:
     """Sync all vhosts that have a nanio default pool configured."""
     async with get_db_ctx() as db:
         vhosts = await db.execute_fetchall(

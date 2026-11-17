@@ -85,7 +85,7 @@ async def set_credentials(pool_id: int, body: CredentialSet):
             region=body.region,
         )
     except RuntimeError as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, str(e)) from e
 
     write_pool_credentials_sidecar(
         pool["name"],

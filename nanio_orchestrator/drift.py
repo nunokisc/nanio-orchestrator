@@ -30,7 +30,7 @@ async def check_drift_once() -> list[dict]:
         for r in rows:
             filepath = r["path"]
             try:
-                async with aiofiles.open(filepath, "r") as f:
+                async with aiofiles.open(filepath) as f:
                     content = await f.read()
                 disk_hash = sha256_str(content)
             except FileNotFoundError:

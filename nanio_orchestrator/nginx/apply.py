@@ -19,9 +19,10 @@ import asyncio
 import logging
 import os
 import weakref
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import AsyncIterator, Dict, List, Optional, Sequence, Tuple
+from typing import Optional
 
 from nanio_orchestrator.nginx import executor
 from nanio_orchestrator.nginx.generator import (
@@ -34,7 +35,7 @@ from nanio_orchestrator.nginx.generator import (
 logger = logging.getLogger(__name__)
 
 # One lock per event loop (the lock must be created inside the loop that uses it).
-_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = weakref.WeakKeyDictionary()
+_locks: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = weakref.WeakKeyDictionary()
 
 
 @dataclass
@@ -77,7 +78,7 @@ def _write_bytes_atomic(filepath: str, data: bytes) -> None:
         os.close(dir_fd)
 
 
-def _restore(previous: Dict[str, Optional[bytes]]) -> None:
+def _restore(previous: dict[str, Optional[bytes]]) -> None:
     """Put back the content each file had before the apply. Synchronous on purpose:
     it must complete even when the surrounding task is being cancelled."""
     for filepath, old in previous.items():
@@ -91,14 +92,14 @@ def _restore(previous: Dict[str, Optional[bytes]]) -> None:
             logger.error("Could not restore %s after failed apply: %s", filepath, exc)
 
 
-async def apply_config_files(files: Sequence[Tuple[str, str]], *, reload: bool = False) -> ApplyResult:
+async def apply_config_files(files: Sequence[tuple[str, str]], *, reload: bool = False) -> ApplyResult:
     """Write ``(filepath, content)`` pairs, validate with ``nginx -t`` and optionally reload.
 
     On any failure every file is restored to its previous content (or removed if it
     did not exist), so the tree on disk is never left in an unvalidated state.
     """
     async with nginx_lock():
-        previous: Dict[str, Optional[bytes]] = {}
+        previous: dict[str, Optional[bytes]] = {}
         try:
             for filepath, content in files:
                 previous[filepath] = _read_bytes(filepath)
@@ -168,7 +169,7 @@ async def write_vhost_config(vhost_id: int, db) -> tuple:
     return True, f"nginx -t: {result.output} (config written — apply via Config tab)"
 
 
-async def rebuild_all_configs() -> Dict[str, object]:
+async def rebuild_all_configs() -> dict[str, object]:
     """Regenerate every managed file and every sidecar from the DB, validate and reload.
 
     Returns {"ok", "stage", "output", "written", "removed"}. On failure the previous
@@ -179,7 +180,7 @@ async def rebuild_all_configs() -> Dict[str, object]:
 
     configs = await generate_all_configs()
     to_write = [(fp, ct) for fp, ct in configs if ct is not None]
-    removed: List[str] = []
+    removed: list[str] = []
 
     # A pool without members has no upstream block, so it must not have a file either
     async with get_db_ctx() as db:
@@ -192,7 +193,7 @@ async def rebuild_all_configs() -> Dict[str, object]:
         await db.commit()
 
     result = await apply_config_files(to_write, reload=True)
-    written: List[str] = []
+    written: list[str] = []
     if result.ok:
         async with get_db_ctx() as db:
             for filepath, content in to_write:
@@ -203,7 +204,7 @@ async def rebuild_all_configs() -> Dict[str, object]:
     return {"ok": result.ok, "stage": result.stage, "output": result.output, "written": written, "removed": removed}
 
 
-__all__: List[str] = [
+__all__: list[str] = [
     "ApplyResult",
     "apply_config_file",
     "apply_config_files",

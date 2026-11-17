@@ -114,7 +114,9 @@ class TestNodeConfigSecrets:
 
         async with get_db_ctx() as db:
             await db.execute("CREATE TABLE node_configs (id INTEGER PRIMARY KEY, member_id INTEGER, config_json TEXT)")
-            await db.execute("INSERT INTO node_configs (member_id, config_json) VALUES (1, 'secret_key = \"super-secret\"')")
+            await db.execute(
+                "INSERT INTO node_configs (member_id, config_json) VALUES (1, 'secret_key = \"super-secret\"')"
+            )
             await db.commit()
 
         await init_db()

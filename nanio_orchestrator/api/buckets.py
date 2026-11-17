@@ -5,9 +5,9 @@ All endpoints are nested under /api/vhosts/{vhost_id}/buckets.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from datetime import datetime, timezone
-from typing import List
 
 from fastapi import APIRouter, HTTPException
 
@@ -66,7 +66,7 @@ async def _first_enabled_member(pool_id: int, db) -> str:
     return dict(rows[0])["address"]
 
 
-async def _all_enabled_members(pool_id: int, db) -> List[str]:
+async def _all_enabled_members(pool_id: int, db) -> list[str]:
     rows = await db.execute_fetchall(
         "SELECT address FROM pool_members WHERE pool_id = ? AND enabled = 1 ORDER BY id",
         (pool_id,),
@@ -104,15 +104,13 @@ async def list_vhost_buckets(vhost_id: int, fetch_counts: bool = False):
         rd = dict(r)
         obj_count: int | None = None
         if fetch_counts and rd["status"] in ("unrouted", "migrating"):
-            try:
+            with contextlib.suppress(Exception):
                 obj_count = await count_objects(
                     default_member,
                     rd["bucket"],
                     access_key=count_ak,
                     secret_key=count_sk,
                 )
-            except Exception:
-                pass
         buckets.append(
             {
                 "name": rd["bucket"],
@@ -223,15 +221,14 @@ async def promote_bucket(vhost_id: int, bucket: str, body: BucketPromoteRequest)
             exc,
         )
 
-    if src_has_data and not body.migrate:
-        if body.pool_id != default_pool_id and not body.allow_orphan:
-            raise HTTPException(
-                400,
-                f"Bucket '{bucket}' already has objects on the source pool. "
-                "Routing to a different pool without migration will leave existing data "
-                "inaccessible via this route. Either enable 'Migrate existing objects' "
-                "or re-submit with allow_orphan=true to acknowledge data will remain on the source pool.",
-            )
+    if src_has_data and not body.migrate and body.pool_id != default_pool_id and not body.allow_orphan:
+        raise HTTPException(
+            400,
+            f"Bucket '{bucket}' already has objects on the source pool. "
+            "Routing to a different pool without migration will leave existing data "
+            "inaccessible via this route. Either enable 'Migrate existing objects' "
+            "or re-submit with allow_orphan=true to acknowledge data will remain on the source pool.",
+        )
 
     # ── Create nginx route ────────────────────────────────────────────────
     # When migration is requested the route initially points to the SOURCE
@@ -451,7 +448,7 @@ async def purge_orphan(vhost_id: int, bucket: str):
     try:
         keys = await list_objects(default_member, bucket, access_key=default_ak, secret_key=default_sk)
     except Exception as exc:
-        raise HTTPException(500, f"Failed to list objects in bucket '{bucket}': {exc}")
+        raise HTTPException(500, f"Failed to list objects in bucket '{bucket}': {exc}") from exc
 
     deleted = 0
     errors: list = []

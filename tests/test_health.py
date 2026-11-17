@@ -1,7 +1,6 @@
 """Tests for the health endpoint."""
 
 
-
 class TestHealth:
     async def test_health_ok(self, client):
         resp = await client.get("/api/health")

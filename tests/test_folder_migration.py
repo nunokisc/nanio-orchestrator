@@ -150,7 +150,7 @@ class TestSplit:
         assert "proxy_pass         http://pb$request_uri;" in conf
 
     async def test_one_move_at_a_time_per_bucket(self, client, mock_nginx, mock_s3, rclone, mtimes):
-        pa, pb, vhost, stuck = await self._stuck(client, mock_s3, rclone)
+        _pa, _pb, _vhost, stuck = await self._stuck(client, mock_s3, rclone)
         pc = await create_pool(client, "pc")
         await create_member(client, pc["id"], "10.0.0.3:9000")
 

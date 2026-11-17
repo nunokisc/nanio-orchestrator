@@ -34,13 +34,14 @@ A temporary rclone config is generated from pool credentials.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import re
 import shutil
 import tempfile
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Optional
 
 from nanio_orchestrator import s3client, subfolders
 from nanio_orchestrator.audit_log import log_audit
@@ -66,7 +67,7 @@ from nanio_orchestrator.subfolders import ensure_markers
 logger = logging.getLogger(__name__)
 
 # Track running migration tasks: migration_id → asyncio.Task
-_active_tasks: Dict[int, asyncio.Task] = {}
+_active_tasks: dict[int, asyncio.Task] = {}
 
 
 # ── HTTP cascade helpers ──────────────────────────────────────────────────────
@@ -597,7 +598,7 @@ async def _run_rclone_check(
     config_path: str,
     src_remote: str,
     dst_remote: str,
-) -> tuple[bool, int, Optional[Dict[str, list]]]:
+) -> tuple[bool, int, Optional[dict[str, list]]]:
     """Run a one-way rclone check: every source object must exist, identical, at the destination.
 
     One-way because during split routing the destination legitimately holds objects the source
@@ -612,10 +613,8 @@ async def _run_rclone_check(
     report_dir = os.path.dirname(config_path)
     report_paths = {name: os.path.join(report_dir, f"check-{name}.txt") for name in ("differ", "missing", "error")}
     for path in report_paths.values():
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(path)
-        except OSError:
-            pass
     cmd = [
         s.rclone_path,
         "check",
@@ -706,9 +705,9 @@ async def _run_rclone_check(
         return False, 0, None
 
 
-def _read_check_report(report_paths: Dict[str, str]) -> Optional[Dict[str, list]]:
+def _read_check_report(report_paths: dict[str, str]) -> Optional[dict[str, list]]:
     """Read the key lists written by rclone check. None if any of them is unreadable."""
-    report: Dict[str, list] = {}
+    report: dict[str, list] = {}
     try:
         for name, path in report_paths.items():
             with open(path, encoding="utf-8") as f:
@@ -818,14 +817,14 @@ def _parse_rclone_stats(line: str) -> Optional[dict]:
 # ── State machine: run a full migration ──────────────────────────────────────
 
 
-async def _finish_folder_move(vhost_id: int, route_id: Optional[int], route_path: str, dst_pool_id: int) -> List[str]:
+async def _finish_folder_move(vhost_id: int, route_id: Optional[int], route_path: str, dst_pool_id: int) -> list[str]:
     """After a folder switched pools: drop its route if it is back on the bucket's own pool.
 
     A folder route that points at the pool already serving the rest of the bucket does
     nothing, so it is removed together with its marker and its http routes. Returns log lines.
     """
-    notes: List[str] = []
-    changed: List[int] = []
+    notes: list[str] = []
+    changed: list[int] = []
     marker = None
     async with get_db_ctx() as db:
         # the parent is looked up without this route in the way: it is the bucket's own pool
@@ -837,7 +836,7 @@ async def _finish_folder_move(vhost_id: int, route_id: Optional[int], route_path
         await db.execute("DELETE FROM routes WHERE id = ?", (route_id,))
         http_changed, _ = await subfolders.sync_http_routes(db, bucket, route_path, parent["id"], None)
         await db.commit()
-        changed = [vhost_id] + http_changed
+        changed = [vhost_id, *http_changed]
         address = await subfolders.pool_endpoint(db, parent["id"])
         if address:
             marker = (address, bucket, subfolders.folder_key(route_path) + SUBFOLDER_MARKER, parent["id"])

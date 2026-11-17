@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio as _asyncio
-from typing import List
 
 from fastapi import APIRouter, HTTPException
 
@@ -89,7 +88,7 @@ def _validate_member_role(pool_type: str, role: str) -> None:
 # ── Pool CRUD ─────────────────────────────────────────────────────────────────
 
 
-@router.get("", response_model=List[PoolOut])
+@router.get("", response_model=list[PoolOut])
 async def list_pools():
     async with get_db_ctx() as db:
         rows = await db.execute_fetchall("SELECT * FROM pools ORDER BY name")
@@ -124,7 +123,7 @@ async def create_pool(body: PoolCreate):
             await db.commit()
         except Exception as e:
             if "UNIQUE" in str(e):
-                raise HTTPException(409, f"Pool '{body.name}' already exists")
+                raise HTTPException(409, f"Pool '{body.name}' already exists") from e
             raise
 
         row = await db.execute_fetchall("SELECT * FROM pools WHERE id = ?", (cursor.lastrowid,))
@@ -204,8 +203,8 @@ async def update_pool(pool_id: int, body: PoolUpdate):
             for m in members:
                 _validate_member_role(new_type, m["role"])
 
-        set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
-        values = list(updates.values()) + [pool_id]
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = [*list(updates.values()), pool_id]
         await db.execute(
             f"UPDATE pools SET {set_clause}, updated_at = datetime('now') WHERE id = ?",
             values,
@@ -316,7 +315,7 @@ async def delete_pool(pool_id: int):
 # ── Pool Members ──────────────────────────────────────────────────────────────
 
 
-@router.get("/{pool_id}/members", response_model=List[MemberOut])
+@router.get("/{pool_id}/members", response_model=list[MemberOut])
 async def list_members(pool_id: int):
     async with get_db_ctx() as db:
         rows = await db.execute_fetchall("SELECT * FROM pools WHERE id = ?", (pool_id,))
@@ -387,8 +386,8 @@ async def update_member(pool_id: int, member_id: int, body: MemberUpdate):
         if "enabled" in updates:
             updates["enabled"] = 1 if updates["enabled"] else 0
 
-        set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
-        values = list(updates.values()) + [member_id]
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = [*list(updates.values()), member_id]
         await db.execute(
             f"UPDATE pool_members SET {set_clause}, updated_at = datetime('now') WHERE id = ?",
             values,
@@ -544,7 +543,7 @@ async def pool_bucket_status(pool_id: int):
     try:
         raw_buckets = await s3_list_buckets(member_address, access_key=ak, secret_key=sk)
     except Exception as exc:
-        raise HTTPException(502, f"Failed to list buckets on pool '{pool['name']}': {exc}")
+        raise HTTPException(502, f"Failed to list buckets on pool '{pool['name']}': {exc}") from exc
 
     buckets = []
     for b in raw_buckets:
@@ -605,7 +604,7 @@ async def pool_bucket_objects(pool_id: int, bucket: str):
     try:
         keys = await list_objects(member_address, bucket, access_key=ak, secret_key=sk)
     except Exception as exc:
-        raise HTTPException(502, f"Failed to list objects in bucket '{bucket}': {exc}")
+        raise HTTPException(502, f"Failed to list objects in bucket '{bucket}': {exc}") from exc
 
     return {"pool_id": pool_id, "bucket": bucket, "objects": keys, "count": len(keys)}
 
@@ -636,7 +635,7 @@ async def pool_bucket_purge(pool_id: int, bucket: str):
     try:
         keys = await list_objects(member_address, bucket, access_key=ak, secret_key=sk)
     except Exception as exc:
-        raise HTTPException(502, f"Failed to list objects in bucket '{bucket}': {exc}")
+        raise HTTPException(502, f"Failed to list objects in bucket '{bucket}': {exc}") from exc
 
     deleted = 0
     errors: list = []

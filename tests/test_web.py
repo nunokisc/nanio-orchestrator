@@ -1,7 +1,6 @@
 """Tests for web UI routes."""
 
 
-
 class TestWebRoutes:
     async def test_dashboard_requires_auth(self, client):
         client.headers.pop("X-Orchestrator-Key", None)

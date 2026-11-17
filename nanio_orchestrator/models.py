@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import List, Literal, Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -26,7 +26,7 @@ class PoolCreate(BaseModel):
     source_nanio_pool_id: Optional[int] = None
 
     @model_validator(mode="after")
-    def validate_source_nanio_pool(self) -> "PoolCreate":
+    def validate_source_nanio_pool(self) -> PoolCreate:
         if self.source_nanio_pool_id is not None and self.type != "http":
             raise ValueError("source_nanio_pool_id can only be set on http pools")
         return self
@@ -41,7 +41,7 @@ class PoolUpdate(BaseModel):
     source_nanio_pool_id: Optional[int] = None
 
     @model_validator(mode="after")
-    def validate_source_nanio_pool(self) -> "PoolUpdate":
+    def validate_source_nanio_pool(self) -> PoolUpdate:
         # Only reject at model level if type is explicitly being changed to nanio.
         # If type is not set, server-side validation (api/pools.py) checks against the DB type.
         if self.source_nanio_pool_id is not None and self.type == "nanio":
@@ -130,11 +130,11 @@ class VhostCreate(BaseModel):
     ssl: bool = True
     ssl_cert_path: Optional[str] = None
     ssl_key_path: Optional[str] = None
-    extra_blocks: Optional[List[VhostExtraBlock]] = None
+    extra_blocks: Optional[list[VhostExtraBlock]] = None
     enabled: bool = True
     default_pool_id: Optional[int] = None
     ip_rule_mode: Optional[Literal["allow", "deny"]] = None
-    ip_rule_ips: Optional[List[str]] = None
+    ip_rule_ips: Optional[list[str]] = None
 
     @field_validator("server_name")
     @classmethod
@@ -148,7 +148,7 @@ class VhostCreate(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def require_ssl_certs_when_ssl(self) -> "VhostCreate":
+    def require_ssl_certs_when_ssl(self) -> VhostCreate:
         if self.ssl and (not self.ssl_cert_path or not self.ssl_key_path):
             raise ValueError("ssl_cert_path and ssl_key_path are required when ssl is enabled")
         if self.ip_rule_mode and not self.ip_rule_ips:
@@ -166,11 +166,11 @@ class VhostUpdate(BaseModel):
     ssl: Optional[bool] = None
     ssl_cert_path: Optional[str] = None
     ssl_key_path: Optional[str] = None
-    extra_blocks: Optional[List[VhostExtraBlock]] = None
+    extra_blocks: Optional[list[VhostExtraBlock]] = None
     enabled: Optional[bool] = None
     default_pool_id: Optional[int] = None
     ip_rule_mode: Optional[Literal["allow", "deny"]] = None
-    ip_rule_ips: Optional[List[str]] = None
+    ip_rule_ips: Optional[list[str]] = None
 
     @field_validator("server_name")
     @classmethod
@@ -186,7 +186,7 @@ class VhostUpdate(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def validate_ip_rules(self) -> "VhostUpdate":
+    def validate_ip_rules(self) -> VhostUpdate:
         if self.ip_rule_mode and not self.ip_rule_ips:
             raise ValueError("ip_rule_ips must be provided when ip_rule_mode is set")
         if self.ip_rule_ips:
@@ -203,11 +203,11 @@ class VhostOut(BaseModel):
     ssl: bool
     ssl_cert_path: Optional[str]
     ssl_key_path: Optional[str]
-    extra_blocks: Optional[List[VhostExtraBlock]] = None
+    extra_blocks: Optional[list[VhostExtraBlock]] = None
     enabled: bool
     default_pool_id: Optional[int] = None
     ip_rule_mode: Optional[Literal["allow", "deny"]] = None
-    ip_rule_ips: Optional[List[str]] = None
+    ip_rule_ips: Optional[list[str]] = None
     created_at: str
     updated_at: str
 
@@ -281,7 +281,7 @@ class BucketEntry(BaseModel):
 
 class BucketListOut(BaseModel):
     vhost_id: int
-    buckets: List[BucketEntry]
+    buckets: list[BucketEntry]
     last_synced_at: Optional[str] = None
 
 
@@ -355,7 +355,7 @@ class RcloneMigrationOut(BaseModel):
     orphaned_at: Optional[str] = None
     split_routing: bool = False  # nginx is serving this bucket through the live-migration split
     folder: str = ""  # "" = whole bucket, otherwise the folder being moved
-    cascade_warnings: Optional[List[str]] = None
+    cascade_warnings: Optional[list[str]] = None
 
 
 class OrphanedMigrationOut(BaseModel):
@@ -407,7 +407,7 @@ class ConfigFileStatus(BaseModel):
 
 
 class ConfigStatus(BaseModel):
-    files: List[ConfigFileStatus]
+    files: list[ConfigFileStatus]
     last_reload_ok: Optional[bool] = None
     last_reload_at: Optional[str] = None
 
@@ -445,9 +445,9 @@ class NodeConfigRequest(BaseModel):
 class NodeConfigOut(BaseModel):
     node_type: str
     member_address: str
-    files: List[NodeConfigFile]
+    files: list[NodeConfigFile]
     instructions: str
-    warnings: List[str] = []
+    warnings: list[str] = []
 
 
 # ── Audit ─────────────────────────────────────────────────────────────────────

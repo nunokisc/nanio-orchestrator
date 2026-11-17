@@ -11,9 +11,8 @@ import pytest
 
 @pytest.fixture
 def fernet(monkeypatch):
-    from cryptography.fernet import Fernet
-
     import nanio_orchestrator.config as cfg_mod
+    from cryptography.fernet import Fernet
     from nanio_orchestrator.credentials import reset_fernet
 
     monkeypatch.setenv("NANIO_ORCHESTRATOR_SECRET", Fernet.generate_key().decode())

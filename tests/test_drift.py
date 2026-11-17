@@ -33,9 +33,12 @@ class TestDrift:
         pool_file.write_text("# corrupted content")
 
         # Rewrite from DB
-        resp = await client.post("/api/config/rewrite-file", json={
-            "path": str(pool_file),
-        })
+        resp = await client.post(
+            "/api/config/rewrite-file",
+            json={
+                "path": str(pool_file),
+            },
+        )
         assert resp.status_code == 200
 
         # File should be restored (the header carries a generation timestamp)
@@ -53,7 +56,10 @@ class TestDrift:
         pool_file.write_text(new_content)
 
         # Absorb the disk version
-        resp = await client.post("/api/config/absorb-file", json={
-            "path": str(pool_file),
-        })
+        resp = await client.post(
+            "/api/config/absorb-file",
+            json={
+                "path": str(pool_file),
+            },
+        )
         assert resp.status_code == 200
