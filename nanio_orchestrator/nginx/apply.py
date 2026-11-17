@@ -204,6 +204,15 @@ async def write_configs(
     for filepath in gone:
         await db.execute("DELETE FROM config_files WHERE path = ?", (filepath,))
     await db.commit()
+
+    # The sidecars hold what the .conf files cannot (disabled members and routes, roles): they
+    # are rewritten with every accepted change, so the directory can always rebuild the database.
+    from nanio_orchestrator.sidecar import write_pool_sidecar_from_db, write_vhost_sidecar_from_db
+
+    for pool_id in pool_ids:
+        await write_pool_sidecar_from_db(db, pool_id)
+    for vhost_id in vhost_ids:
+        await write_vhost_sidecar_from_db(db, vhost_id)
     return True, f"nginx -t: {result.output} (config written — apply via Config tab)"
 
 

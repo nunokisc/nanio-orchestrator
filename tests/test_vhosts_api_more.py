@@ -647,33 +647,42 @@ class TestUpdateRoute:
 
         assert "cannot mix pool types" in detail
 
-    async def test_route_is_repointed_when_its_pool_has_no_member_left_to_ask(self, client, mock_nginx, tmp_dirs):
+    async def test_pool_without_members_cannot_say_the_bucket_is_empty(self, client, mock_nginx, tmp_dirs):
         _pa, pb, vhost = await _cluster(client)
         empty = await create_pool(client, "pc")
         route = await create_route(client, vhost["id"], "photos", empty["id"])
-        count = AsyncMock(return_value=5)
 
-        with patch("nanio_orchestrator.api.vhosts.count_objects", new=count):
-            resp = await client.put(f"/api/vhosts/{vhost['id']}/routes/{route['id']}", json={"pool_id": pb["id"]})
+        detail = await self._refused(client, tmp_dirs, vhost, route, {"pool_id": pb["id"]}, 502)
 
-        assert resp.status_code == 200
-        count.assert_not_awaited()
-        assert await routes(client, vhost) == {"/photos/": "pb", "/": "pa"}
-        assert "proxy_pass         http://pb;" in _location(_vhost_conf(tmp_dirs), "/photos/")
-        assert await sql("SELECT id FROM migrations") == []
+        assert "has no enabled member" in detail and "allow_orphan" in detail
 
-    async def test_route_is_repointed_when_its_pool_does_not_answer(self, client, mock_nginx, tmp_dirs):
+    async def test_pool_that_does_not_answer_cannot_say_the_bucket_is_empty(self, client, mock_nginx, tmp_dirs):
         pa, pb, vhost = await _cluster(client)
         route = await create_route(client, vhost["id"], "photos", pa["id"])
         count = AsyncMock(side_effect=OSError("connection refused"))
 
         with patch("nanio_orchestrator.api.vhosts.count_objects", new=count):
-            resp = await client.put(f"/api/vhosts/{vhost['id']}/routes/{route['id']}", json={"pool_id": pb["id"]})
+            detail = await self._refused(client, tmp_dirs, vhost, route, {"pool_id": pb["id"]}, 502)
+
+        assert count.call_args.args == ("10.0.0.1:9000", "photos")
+        assert "connection refused" in detail
+
+    async def test_route_can_be_taken_off_a_dead_pool_on_purpose(self, client, mock_nginx, tmp_dirs):
+        pa, pb, vhost = await _cluster(client)
+        route = await create_route(client, vhost["id"], "photos", pa["id"])
+        count = AsyncMock(side_effect=OSError("connection refused"))
+
+        with patch("nanio_orchestrator.api.vhosts.count_objects", new=count):
+            resp = await client.put(
+                f"/api/vhosts/{vhost['id']}/routes/{route['id']}", json={"pool_id": pb["id"], "allow_orphan": True}
+            )
 
         assert resp.status_code == 200
-        assert count.call_args.args == ("10.0.0.1:9000", "photos")
         assert (resp.json()["pool_name"], resp.json()["migration_id"]) == ("pb", None)
         assert await routes(client, vhost) == {"/photos/": "pb", "/": "pa"}
+        assert "proxy_pass         http://pb;" in _location(_vhost_conf(tmp_dirs), "/photos/")
+        assert await sql("SELECT id FROM migrations") == []
+
         assert await sql("SELECT id FROM migrations") == []
 
     async def test_route_stays_where_the_objects_are_when_no_migration_can_start(self, client, mock_nginx, tmp_dirs):

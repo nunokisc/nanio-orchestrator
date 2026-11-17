@@ -124,7 +124,29 @@ class TestVhostSidecar:
             "extra_blocks_json": '[{"zone": "top", "content": "x;"}]',
             "ip_rule_mode": "allow",
             "ip_rule_ips_json": '["10.0.0.0/8"]',
+            "enabled": True,
+            "disabled_routes": [],
         }
+
+    def test_what_the_server_block_cannot_hold_is_kept_until_replaced(self, dirs):
+        disabled = [{"path_prefix": "/old/", "pool_name": "cold"}]
+        sidecar.write_vhost_sidecar(2, "s3.example.com", enabled=False, disabled_routes=disabled)
+        sidecar.write_vhost_sidecar(2, "s3.example.com", default_pool_name="hot")  # an unrelated rewrite
+        data = _load(dirs["vhosts"] / "s3.example.com.meta.json")
+        assert data["enabled"] is False and data["disabled_routes"] == disabled
+
+        sidecar.write_vhost_sidecar(2, "s3.example.com", enabled=True, disabled_routes=[])
+        data = _load(dirs["vhosts"] / "s3.example.com.meta.json")
+        assert data["enabled"] is True and data["disabled_routes"] == []
+
+    def test_pool_members_are_kept_until_replaced(self, dirs):
+        members = [{"address": "10.0.0.1:80", "role": "primary", "enabled": False}]
+        sidecar.write_pool_sidecar(1, "web", "http", members=members)
+        sidecar.write_pool_sidecar(1, "web", "http", description="edited")  # an unrelated rewrite
+        assert _load(dirs["pools"] / "web.meta.json")["members"] == members
+
+        sidecar.write_pool_sidecar(1, "web", "http", members=[])
+        assert _load(dirs["pools"] / "web.meta.json")["members"] == []
 
     def test_rewriting_replaces_every_field(self, dirs):
         sidecar.write_vhost_sidecar(2, "s3.example.com", default_pool_id=4, ip_rule_mode="deny")

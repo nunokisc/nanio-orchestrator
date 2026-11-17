@@ -512,6 +512,7 @@ async def update_route(vhost_id: int, route_id: int, body: RouteUpdate):
         before = dict(rrows[0])
 
         updates = body.model_dump(exclude_none=True)
+        allow_orphan = updates.pop("allow_orphan")
 
         if before["path_prefix"] == "/" and "pool_id" in updates:
             raise HTTPException(
@@ -576,6 +577,7 @@ async def update_route(vhost_id: int, route_id: int, body: RouteUpdate):
             src_pool_id_cur = before["pool_id"]
             dst_pool_id_requested = updates["pool_id"]
             src_count = 0
+            unknown: Optional[str] = None
             try:
                 async with get_db_ctx() as db:
                     src_member_rows = await db.execute_fetchall(
@@ -590,11 +592,17 @@ async def update_route(vhost_id: int, route_id: int, body: RouteUpdate):
                         access_key=src_ak,
                         secret_key=src_sk,
                     )
+                else:
+                    unknown = "its current pool has no enabled member"
             except Exception as exc:
-                logger.warning(
-                    "update_route: source object count failed for '%s': %s",
-                    bucket_segment,
-                    exc,
+                unknown = f"its current pool could not be asked ({exc})"
+
+            # "Cannot tell" is not "empty": repointing would hide whatever the bucket holds
+            if unknown and not allow_orphan:
+                raise HTTPException(
+                    502,
+                    f"Cannot tell whether bucket '{bucket_segment}' has objects: {unknown}. Repointing the route "
+                    "would leave them behind. Bring the pool back, or send allow_orphan=true to repoint anyway.",
                 )
 
             if src_count > 0:

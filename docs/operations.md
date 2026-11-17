@@ -183,8 +183,13 @@ curl -s -X POST $ORCH/api/vhosts/1/buckets/photos/promote -H "X-Orchestrator-Key
 ```
 
 If the bucket already has objects and you route it to a different pool **without** migrating,
-the request is refused: the objects would stay behind on the old pool and become unreachable.
-Send `"allow_orphan": true` only if that is what you want.
+the request is refused (409): the objects would stay behind on the old pool and become
+unreachable. Send `"allow_orphan": true` only if that is what you want.
+
+The same goes when the orchestrator **cannot tell**: if the pool that serves the bucket now is
+down or has no enabled member, routing the bucket elsewhere is refused (502). "Cannot ask" is not
+"empty". To take a route off a dead pool on purpose, send `"allow_orphan": true`; this also
+applies to changing the pool of an existing route.
 
 A new, empty bucket can simply be routed (`"migrate": false`) and then created on the target
 pool by its owner.
@@ -256,7 +261,11 @@ it wrote. A file changed by hand shows up as *drifted* on the dashboard, in `GET
 | Regenerate every file and sidecar from the DB | Config tab → *Rebuild All*, `POST /api/config/rebuild` or `nanio-orchestrator config rebuild` |
 
 *Absorb* only records the file as accepted; it does not parse it into pools and routes. If you
-added a server or a location by hand, use *sync*.
+added a member to an upstream by hand, use *sync*.
+
+A `location` is imported as a route only when it carries the `# route_id:` comment that the
+orchestrator writes. A location you add yourself (in a vhost's extra blocks, for instance) stays
+what it is: your own nginx config. Create routes through the panel or the API.
 
 ### Bucket discovery
 

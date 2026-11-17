@@ -188,7 +188,8 @@ credentials). See [operations.md](operations.md#set-up-a-storage-node).
   (`"allow_orphan": true` overrides). It creates the bucket on the folder's pool. The response
   carries `warnings` (a list) for anything that needs attention.
 - `PUT` cannot change a route's path, nor the pool of a folder route, nor point a route at a
-  pool of another type. Changing the pool of a
+  pool of another type. If the route's current pool cannot be asked whether the bucket has
+  objects, changing its pool answers 502 unless `"allow_orphan": true` is sent. Changing the pool of a
   bucket route whose bucket has objects starts a migration; when no migration slot is free it
   answers 429 and changes nothing.
 - `DELETE` of a folder route is refused with 409 while the folder has objects on its pool, and
