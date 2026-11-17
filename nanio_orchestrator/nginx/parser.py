@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import contextlib
 import re
-from pathlib import Path
 from typing import Any, Optional
 
 MANAGED_MARKER = "# managed by nanio-orchestrator"
@@ -202,51 +201,3 @@ def parse_vhost_block(content: str) -> Optional[dict[str, Any]]:
             result["routes"].append(route)
 
     return result
-
-
-def scan_managed_files(config_dir: str) -> list[dict[str, Any]]:
-    """Scan a directory tree for managed config files.
-
-    Returns list of dicts with: path, type (upstream|vhost), parsed data.
-    """
-    results = []
-    config_path = Path(config_dir)
-
-    if not config_path.exists():
-        return results
-
-    for conf_file in sorted(config_path.rglob("*.conf")):
-        try:
-            content = conf_file.read_text(encoding="utf-8")
-        except Exception:
-            continue
-
-        if not is_managed_file(content):
-            continue
-
-        # Try as upstream
-        upstream = parse_upstream_block(content)
-        if upstream and upstream["name"]:
-            results.append(
-                {
-                    "path": str(conf_file),
-                    "type": "upstream",
-                    "data": upstream,
-                    "content": content,
-                }
-            )
-            continue
-
-        # Try as vhost
-        vhost = parse_vhost_block(content)
-        if vhost and vhost["server_name"]:
-            results.append(
-                {
-                    "path": str(conf_file),
-                    "type": "vhost",
-                    "data": vhost,
-                    "content": content,
-                }
-            )
-
-    return results

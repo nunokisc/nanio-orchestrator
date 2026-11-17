@@ -287,14 +287,11 @@ def config_show():
         # db_backup_path: show effective value, not the raw (possibly None) setting
         if field == "db_backup_path":
             raw = s.effective_db_backup_path
-        by_category.setdefault(cat, []).append((field, raw, desc, is_secret))
+        by_category[cat].append((field, raw, desc, is_secret))
 
     for cat in _CATEGORY_ORDER:
-        entries = by_category.get(cat, [])
-        if not entries:
-            continue
         print(f"\n{cat}")
-        for field, raw, desc, is_secret in entries:
+        for field, raw, desc, is_secret in by_category[cat]:
             value_str = _mask(raw, is_secret)
             print(f"  {field:<28} {value_str:<30}  {desc}")
 
@@ -312,7 +309,7 @@ def config_get(key):
     normalized = key.lower().removeprefix("nanio_orchestrator_")
     if normalized == "db_backup_path":
         print(s.effective_db_backup_path)
-    elif hasattr(s, normalized):
+    elif normalized in type(s).model_fields:  # a setting, not just any attribute of the object
         value = getattr(s, normalized)
         print("" if value is None else value)
     else:

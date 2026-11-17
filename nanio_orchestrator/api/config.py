@@ -11,7 +11,12 @@ from nanio_orchestrator.audit_log import log_audit
 from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator.models import ConfigFileStatus, ConfigStatus, NginxResult
-from nanio_orchestrator.nginx.apply import apply_config_file, rebuild_all_configs, reload_nginx_locked
+from nanio_orchestrator.nginx.apply import (
+    apply_config_file,
+    rebuild_all_configs,
+    reload_nginx_locked,
+    remove_config_file_checked,
+)
 from nanio_orchestrator.nginx.executor import test_config
 from nanio_orchestrator.nginx.generator import (
     generate_pool_config,
@@ -63,11 +68,8 @@ async def config_status():
                WHERE nginx_reload_ok IS NOT NULL
                ORDER BY id DESC LIMIT 1"""
         )
-        last_reload_ok = None
-        last_reload_at = None
-        if reload_rows:
-            last_reload_ok = bool(reload_rows[0]["nginx_reload_ok"])
-            last_reload_at = reload_rows[0]["created_at"]
+    last_reload_ok = bool(reload_rows[0]["nginx_reload_ok"]) if reload_rows else None
+    last_reload_at = reload_rows[0]["created_at"] if reload_rows else None
 
     return ConfigStatus(
         files=files,
@@ -219,10 +221,10 @@ async def rewrite_file(path: str = Body(..., embed=True)):
     if pool_match:
         filepath, content = await generate_pool_config(pool_match["id"])
         if content is None:
-            # Pool is now empty — remove
-            p = Path(filepath)
-            if p.exists():
-                p.unlink()
+            # Pool is now empty — remove, unless a vhost still proxies to it
+            removal = await remove_config_file_checked(filepath)
+            if not removal.ok:
+                return {"ok": False, "output": removal.output}
             async with get_db_ctx() as db:
                 await db.execute("DELETE FROM config_files WHERE path = ?", (filepath,))
                 await db.commit()
@@ -289,10 +291,10 @@ async def rebuild_from_disk_endpoint(dry_run: bool = False, force: bool = False)
     if not dry_run and not force:
         async with get_db_ctx() as db:
             pools = await db.execute_fetchall("SELECT COUNT(*) as cnt FROM pools")
-            if pools[0]["cnt"] > 0:
-                raise HTTPException(
-                    409, "Database already contains data. Use force=true to overwrite, or dry_run=true to preview."
-                )
+        if pools[0]["cnt"] > 0:
+            raise HTTPException(
+                409, "Database already contains data. Use force=true to overwrite, or dry_run=true to preview."
+            )
 
     if not dry_run and force:
         async with get_db_ctx() as db:

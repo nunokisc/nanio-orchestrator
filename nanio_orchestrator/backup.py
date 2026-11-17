@@ -14,6 +14,7 @@ import logging
 import os
 import shutil
 from pathlib import Path
+from typing import Optional
 
 import aiosqlite
 
@@ -22,10 +23,12 @@ from nanio_orchestrator.db import get_db_path
 
 logger = logging.getLogger(__name__)
 
-_stop_event = asyncio.Event()
+# Created by backup_loop(), not at import: on Python 3.9 an Event belongs to the event loop that
+# is current when it is constructed, and waiting on it from the server's loop fails.
+_stop_event: Optional[asyncio.Event] = None
 
 
-async def backup_database() -> str | None:
+async def backup_database() -> Optional[str]:
     """Copy SQLite DB to backup location using the online backup API.
 
     Rotates existing backups (keeps N copies).
@@ -81,11 +84,12 @@ async def backup_loop() -> None:
     """Periodic backup loop. Runs until stop_backup() is called."""
     s = get_settings()
     interval = s.db_backup_interval
-    _stop_event.clear()
+    global _stop_event
+    stop = _stop_event = asyncio.Event()
 
-    while not _stop_event.is_set():
+    while not stop.is_set():
         try:
-            await asyncio.wait_for(_stop_event.wait(), timeout=interval)
+            await asyncio.wait_for(stop.wait(), timeout=interval)
             break  # stop_event was set
         except asyncio.TimeoutError:
             pass  # interval elapsed, do backup
@@ -95,4 +99,5 @@ async def backup_loop() -> None:
 
 def stop_backup() -> None:
     """Signal the backup loop to stop."""
-    _stop_event.set()
+    if _stop_event is not None:
+        _stop_event.set()

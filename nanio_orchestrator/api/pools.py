@@ -172,6 +172,7 @@ async def update_pool(pool_id: int, body: PoolUpdate):
         # Validate source_nanio_pool_id
         if "source_nanio_pool_id" in updates:
             snp_id = updates["source_nanio_pool_id"]
+            # Explicitly setting it to NULL is allowed for any pool type
             if snp_id is not None:
                 if new_type != "http":
                     raise HTTPException(
@@ -190,9 +191,6 @@ async def update_pool(pool_id: int, body: PoolUpdate):
                         f"source_nanio_pool_id must reference a nanio pool, "
                         f"but pool {snp_id} is of type '{dict(ref_rows[0])['type']}'",
                     )
-            else:
-                # Explicitly setting to NULL is allowed for any pool type
-                pass
         elif new_type == "nanio" and before.get("source_nanio_pool_id") is not None:
             # If changing type to nanio, clear source_nanio_pool_id
             updates["source_nanio_pool_id"] = None
@@ -268,7 +266,7 @@ async def delete_pool(pool_id: int):
         active_mig = await db.execute_fetchall(
             """SELECT id FROM migrations
                WHERE (src_pool_id = ? OR dst_pool_id = ?)
-               AND phase IN ('pending','copying','verifying','switching')""",
+               AND phase IN ('pending','copying','write_routing','verifying','switching')""",
             (pool_id, pool_id),
         )
         if active_mig:

@@ -241,6 +241,25 @@ async def _route_id_for(db, vhost_id: int, state: dict) -> Optional[int]:
     return rows[0]["id"] if rows else None
 
 
+def _vhost_id_for(state: dict, vhost_ids: dict[str, int], old_vhost_names: dict[int, str]) -> Optional[int]:
+    """The rebuilt vhost a migration belongs to, or None when that cannot be told.
+
+    Vhost ids are reassigned by a rebuild, like route ids. The vhost sidecars remember which
+    vhost had the id stored in the state file. Without a sidecar the id is taken as it is,
+    and a lone vhost adopts whatever is left.
+    """
+    old_id = state.get("vhost_id")
+    if old_id in old_vhost_names:
+        vhost_id = vhost_ids.get(old_vhost_names[old_id])
+    elif old_id in vhost_ids.values():
+        vhost_id = old_id
+    else:
+        vhost_id = None
+    if vhost_id is None and len(vhost_ids) == 1:
+        vhost_id = next(iter(vhost_ids.values()))
+    return vhost_id
+
+
 async def rebuild_from_disk(dry_run: bool = False) -> dict[str, Any]:
     """Reconstruct the entire database from disk state.
 
@@ -272,7 +291,12 @@ async def rebuild_from_disk(dry_run: bool = False) -> dict[str, Any]:
         pool_name_to_id: dict[str, int] = imported["pool_name_to_id"]
 
         # Step 4: import in-progress migrations from state files
-        vhost_rows = await db.execute_fetchall("SELECT id, server_name FROM vhosts")
+        vhost_ids = {r["server_name"]: r["id"] for r in await db.execute_fetchall("SELECT id, server_name FROM vhosts")}
+        old_vhost_names = {
+            sc["vhost_id"]: sc["server_name"]
+            for sc in scan_vhost_sidecars()
+            if sc.get("server_name") and sc.get("vhost_id") is not None
+        }
         for state in migration_states:
             src_name = state.get("source_pool_name")
             dst_name = state.get("target_pool_name")
@@ -285,26 +309,15 @@ async def rebuild_from_disk(dry_run: bool = False) -> dict[str, Any]:
                 )
                 continue
 
-            # Find vhost_id by looking up vhosts
-            vhost_id_for_migration = None
-            if vhost_rows:
-                # Try matching by original vhost_id in state
-                for vr in vhost_rows:
-                    if vr["id"] == state.get("vhost_id"):
-                        vhost_id_for_migration = vr["id"]
-                        break
-                # If only one vhost, use it as fallback
-                if not vhost_id_for_migration and len(vhost_rows) == 1:
-                    vhost_id_for_migration = vhost_rows[0]["id"]
-                elif not vhost_id_for_migration:
-                    # Multiple vhosts and no match — skip to avoid assigning to wrong vhost
-                    warnings.append(
-                        f"Migration {state.get('migration_id')}: "
-                        f"vhost_id {state.get('vhost_id')} not found among rebuilt vhosts, "
-                        "skipping to avoid assigning to wrong vhost"
-                    )
-                    continue
-
+            vhost_id_for_migration = _vhost_id_for(state, vhost_ids, old_vhost_names)
+            if not vhost_id_for_migration and vhost_ids:
+                # Multiple vhosts and no match — skip to avoid assigning to wrong vhost
+                warnings.append(
+                    f"Migration {state.get('migration_id')}: "
+                    f"vhost_id {state.get('vhost_id')} not found among rebuilt vhosts, "
+                    "skipping to avoid assigning to wrong vhost"
+                )
+                continue
             if not vhost_id_for_migration:
                 warnings.append(f"Migration {state.get('migration_id')}: no vhosts found, skipping")
                 continue
@@ -355,15 +368,7 @@ async def rebuild_from_disk(dry_run: bool = False) -> dict[str, Any]:
                 )
                 continue
 
-            vhost_id_for_completion = None
-            if vhost_rows:
-                for vr in vhost_rows:
-                    if vr["id"] == state.get("vhost_id"):
-                        vhost_id_for_completion = vr["id"]
-                        break
-                if not vhost_id_for_completion and len(vhost_rows) == 1:
-                    vhost_id_for_completion = vhost_rows[0]["id"]
-
+            vhost_id_for_completion = _vhost_id_for(state, vhost_ids, old_vhost_names)
             if not vhost_id_for_completion:
                 warnings.append(f"Completed migration {state.get('migration_id')}: vhost not found, skipping")
                 continue
@@ -379,7 +384,8 @@ async def rebuild_from_disk(dry_run: bool = False) -> dict[str, Any]:
                     src_id,
                     dst_id,
                     await _route_id_for(db, vhost_id_for_completion, state),
-                    state.get("orphaned_source_pool_id"),
+                    # The orphaned data is on the source pool; the id in the file is its old one
+                    src_id if state.get("orphaned_source_pool_id") is not None else None,
                     state.get("orphaned_source_prefix"),
                     state.get("orphaned_at"),
                     state.get("folder", ""),
@@ -411,12 +417,7 @@ async def _rebuild_bucket_sync(
 ) -> None:
     """Rebuild bucket_sync table from live ListBuckets calls (best-effort)."""
     from nanio_orchestrator.db import get_db_ctx
-
-    try:
-        from nanio_orchestrator.s3client import list_buckets
-    except ImportError:
-        warnings.append("s3client not available — bucket_sync not rebuilt")
-        return
+    from nanio_orchestrator.s3client import list_buckets
 
     async with get_db_ctx() as db:
         vhosts = await db.execute_fetchall("SELECT id, default_pool_id FROM vhosts WHERE default_pool_id IS NOT NULL")
@@ -479,13 +480,8 @@ async def _dry_run_report(
     warnings: list[str] = []
 
     for conf_path in sorted(s.pools_dir.glob("*.conf")):
-        try:
-            content = conf_path.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        if not is_managed_file(content):
-            continue
-        parsed = parse_upstream_block(content)
+        content = _read_managed(conf_path)
+        parsed = parse_upstream_block(content) if content else None
         if parsed and parsed["name"]:
             sidecar = pool_sidecars.get(parsed["name"], {})
             pools.append(
@@ -500,13 +496,8 @@ async def _dry_run_report(
             )
 
     for conf_path in sorted(s.vhosts_dir.glob("*.conf")):
-        try:
-            content = conf_path.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        if not is_managed_file(content):
-            continue
-        parsed = parse_vhost_block(content)
+        content = _read_managed(conf_path)
+        parsed = parse_vhost_block(content) if content else None
         if parsed and parsed["server_name"]:
             sidecar = vhost_sidecars.get(parsed["server_name"], {})
             vhosts.append(

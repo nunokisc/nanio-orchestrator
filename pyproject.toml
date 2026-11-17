@@ -94,3 +94,17 @@ extend-immutable-calls = ["fastapi.Body", "fastapi.Query", "fastapi.Depends"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["nanio_orchestrator"]
+branch = true
+
+[tool.coverage.report]
+# 100% of statements and branches is enforced: `pytest --cov` fails below it.
+fail_under = 100
+show_missing = true
+skip_covered = true
+exclude_also = [
+  "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
+]

@@ -184,6 +184,25 @@ def _strip_ns(tag: str) -> str:
     return tag.split("}")[-1] if "}" in tag else tag
 
 
+def _page_key_count(root: ET.Element) -> int:
+    """Number of keys in a ListObjectsV2 page.
+
+    That is ``KeyCount``; a server that omits it (or sends something unusable) is judged by
+    the ``Contents`` entries it lists, so a page with keys never counts as empty.
+    """
+    contents = 0
+    for elem in root.iter():
+        tag = _strip_ns(elem.tag)
+        if tag == "KeyCount":
+            try:
+                return int(elem.text or "")
+            except ValueError:
+                pass
+        elif tag == "Contents":
+            contents += 1
+    return contents
+
+
 # ── Public async API ──────────────────────────────────────────────────────────
 
 
@@ -284,14 +303,7 @@ async def bucket_has_objects(
         raise RuntimeError(
             f"ListObjects HTTP {status} for bucket '{bucket}' at {address}: {body[:200].decode(errors='replace')}"
         )
-    root = ET.fromstring(body)
-    for elem in root.iter():
-        if _strip_ns(elem.tag) == "KeyCount":
-            try:
-                return int(elem.text or "0") > 0
-            except ValueError:
-                pass
-    return False
+    return _page_key_count(ET.fromstring(body)) > 0
 
 
 async def count_objects(
@@ -329,14 +341,7 @@ async def count_objects(
                 f"ListObjects HTTP {status} for bucket '{bucket}' at {address}: {body[:200].decode(errors='replace')}"
             )
         root = ET.fromstring(body)
-        page_count = 0
-        for elem in root.iter():
-            if _strip_ns(elem.tag) == "KeyCount":
-                try:
-                    page_count = int(elem.text or "0")
-                except ValueError:
-                    page_count = 0
-        total += page_count
+        total += _page_key_count(root)
 
         is_truncated = False
         next_token = None

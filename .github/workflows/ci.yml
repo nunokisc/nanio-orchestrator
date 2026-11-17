@@ -47,7 +47,7 @@ jobs:
         run: uv run ruff format --check nanio_orchestrator/ tests/
 
       - name: Run tests
-        run: uv run pytest -v --tb=short
+        run: uv run pytest -q --tb=short --cov --cov-report=term
 
   install:
     name: Installer on a real host

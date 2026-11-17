@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import socket
 from pathlib import Path
 
@@ -60,7 +61,7 @@ async def login_page(request: Request, error: str = ""):
 @router.post("/login")
 async def login_submit(request: Request, key: str = Form(...)):
     s = get_settings()
-    if key != s.api_key:
+    if not hmac.compare_digest(key.encode(), s.api_key.encode()):
         return _render("login.html", hostname=_hostname(), error="Invalid API key.")
 
     response = RedirectResponse(url="/", status_code=303)
@@ -105,14 +106,14 @@ async def dashboard():
                FROM migrations m
                LEFT JOIN pools sp ON m.src_pool_id = sp.id
                LEFT JOIN pools dp ON m.dst_pool_id = dp.id
-               WHERE m.phase IN ('pending','copying','verifying','switching')
+               WHERE m.phase IN ('pending','copying','write_routing','verifying','switching')
                ORDER BY m.id DESC"""
         )
         active_migrations = [dict(r) for r in active_mig_rows]
 
         # Unrouted buckets count for dashboard widget
         unrouted_row = await db.execute_fetchall("SELECT COUNT(*) as cnt FROM bucket_sync WHERE status = 'unrouted'")
-        unrouted_count = unrouted_row[0]["cnt"] if unrouted_row else 0
+        unrouted_count = unrouted_row[0]["cnt"]
 
     return _render(
         "dashboard.html",

@@ -105,7 +105,7 @@ def create_app() -> FastAPI:
         # ── /api/* — header OR cookie auth ─────────────────────────────────
         if path.startswith("/api/"):
             key = request.headers.get("X-Orchestrator-Key", "")
-            if key and hmac.compare_digest(key, s.api_key):
+            if key and hmac.compare_digest(key.encode(), s.api_key.encode()):
                 return await call_next(request)
             # Also allow a browser session cookie (Web UI calls the API directly)
             if is_authenticated(request, s.api_key, s.session_ttl):

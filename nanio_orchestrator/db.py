@@ -287,6 +287,9 @@ async def _run_migrations_async(db) -> None:
         or "mode" not in col_names
     )
     if needs_rebuild:
+        # The pragma does nothing inside a transaction, and the UPDATE above opened one. With
+        # foreign keys still on, DROP TABLE would cascade and empty migration_log.
+        await db.commit()
         await db.execute("PRAGMA foreign_keys=OFF")
         await db.execute("""CREATE TABLE migrations_new (
             id                      INTEGER PRIMARY KEY,
@@ -314,41 +317,20 @@ async def _run_migrations_async(db) -> None:
             orphaned_at             TEXT,
             created_at              TEXT NOT NULL DEFAULT (datetime('now'))
         )""")
-        # Migrate existing data; remap purge phases to 'done' (data is safe on dst)
-        existing_cols = {r["name"] for r in await db.execute_fetchall("PRAGMA table_info(migrations)")}
-        src_cols = [
-            "id",
-            "vhost_id",
-            "bucket",
-            "src_pool_id",
-            "dst_pool_id",
-            "rclone_pid",
-            "objects_total",
-            "objects_done",
-            "bytes_total",
-            "bytes_done",
-            "error_msg",
-            "started_at",
-            "finished_at",
-            "created_at",
-        ]
-        optional_cols = {
-            "mode": "'copy'",
-            "route_id": "NULL",
-        }
-        select_parts = []
-        for c in src_cols:
-            select_parts.append(c if c in existing_cols else f"NULL AS {c}")
-        for c, default in optional_cols.items():
-            select_parts.append(c if c in existing_cols else f"{default} AS {c}")
-        # Phase remapping: purge_source/needs_purge → done
-        phase_expr = "CASE WHEN phase IN ('purge_source','needs_purge') THEN 'done' ELSE phase END"
-        select_parts.append(f"{phase_expr} AS phase")
-        # orphaned_* always NULL for pre-existing records (unknown)
-        select_parts.extend(
-            ["NULL AS orphaned_source_pool_id", "NULL AS orphaned_source_prefix", "NULL AS orphaned_at"]
+        # Migrate existing data. The columns are named on both sides: the old and the new table
+        # do not have them in the same order. Left to their defaults: mode ('copy', the only one
+        # left — the old 'sync' is gone) and orphaned_* (NULL, unknown for pre-existing records).
+        kept_cols = (
+            "id, vhost_id, bucket, src_pool_id, dst_pool_id, rclone_pid, objects_total, objects_done, "
+            "bytes_total, bytes_done, error_msg, started_at, finished_at, created_at"
         )
-        await db.execute(f"INSERT INTO migrations_new SELECT {', '.join(select_parts)} FROM migrations")
+        route_expr = "route_id" if "route_id" in col_names else "NULL"
+        # Phase remapping: purge_source/needs_purge → done (data is safe on dst)
+        phase_expr = "CASE WHEN phase IN ('purge_source','needs_purge') THEN 'done' ELSE phase END"
+        await db.execute(
+            f"INSERT INTO migrations_new ({kept_cols}, route_id, phase) "
+            f"SELECT {kept_cols}, {route_expr}, {phase_expr} FROM migrations"
+        )
         await db.execute("DROP TABLE migrations")
         await db.execute("ALTER TABLE migrations_new RENAME TO migrations")
         await db.commit()

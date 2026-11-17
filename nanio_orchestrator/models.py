@@ -8,9 +8,8 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Patterns for nginx-safe values
-_PATH_PREFIX_RE = re.compile(r"^/[A-Za-z0-9._/@-]+/?$")
+_PATH_PREFIX_RE = re.compile(r"^/[A-Za-z0-9._/@-]+/?\Z")  # \Z, not $: no trailing newline
 _SERVER_NAME_RE = re.compile(r"^(\*\.)?[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$")
-_NGINX_DANGEROUS_RE = re.compile(r"[;{}\\]")
 _IP_ENTRY_RE = re.compile(r"^[\d:a-fA-F./]+$")  # IPv4, IPv6, CIDR notation
 
 

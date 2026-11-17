@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
+from typing import Optional
 
 from nanio_orchestrator import s3client
 from nanio_orchestrator.config import get_settings
@@ -25,7 +26,9 @@ from nanio_orchestrator.subfolders import ensure_markers
 
 logger = logging.getLogger(__name__)
 
-_stop_event = asyncio.Event()
+# Created by bucket_sync_loop(), not at import: on Python 3.9 an Event belongs to the event loop
+# that is current when it is constructed, and waiting on it from the server's loop fails.
+_stop_event: Optional[asyncio.Event] = None
 
 
 async def sync_vhost_buckets_once(vhost_id: int) -> dict:
@@ -284,24 +287,26 @@ async def sync_all_vhosts() -> list[dict]:
 
 async def bucket_sync_loop() -> None:
     """Run bucket sync in a loop."""
-    _stop_event.clear()
+    global _stop_event
+    stop = _stop_event = asyncio.Event()
     s = get_settings()
     interval = s.bucket_sync_interval
 
     logger.info("Bucket sync started (interval=%ds)", interval)
 
-    while not _stop_event.is_set():
+    while True:
         try:
             await sync_all_vhosts()
         except Exception as e:
             logger.error("Bucket sync error: %s", e)
 
         try:
-            await asyncio.wait_for(_stop_event.wait(), timeout=interval)
+            await asyncio.wait_for(stop.wait(), timeout=interval)
             break  # stop_event was set
         except asyncio.TimeoutError:
             pass  # interval elapsed, continue loop
 
 
 def stop_bucket_sync() -> None:
-    _stop_event.set()
+    if _stop_event is not None:
+        _stop_event.set()

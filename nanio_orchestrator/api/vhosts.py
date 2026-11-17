@@ -127,10 +127,8 @@ async def _get_pool_name(db, pool_id: int | None) -> str | None:
     return rows[0]["name"] if rows else None
 
 
-async def _get_pool_type(db, pool_id: int | None) -> str | None:
-    """Return the type of the given pool, or None if pool_id is None."""
-    if not pool_id:
-        return None
+async def _get_pool_type(db, pool_id: int) -> str | None:
+    """Return the type of the given pool, or None if there is no such pool."""
     rows = await db.execute_fetchall("SELECT type FROM pools WHERE id = ?", (pool_id,))
     return rows[0]["type"] if rows else None
 
@@ -262,6 +260,10 @@ async def update_vhost(vhost_id: int, body: VhostUpdate):
         before = dict(rows[0])
 
         updates = body.model_dump(exclude_none=True)
+        # These three are kept even when null: that is how they are cleared
+        for field in ("default_pool_id", "ip_rule_mode", "ip_rule_ips"):
+            if field in body.model_fields_set:
+                updates[field] = getattr(body, field)
         if not updates:
             return _enrich_vhost(before)
 
@@ -273,7 +275,7 @@ async def update_vhost(vhost_id: int, body: VhostUpdate):
             raise HTTPException(400, "ssl_cert_path and ssl_key_path are required when ssl is enabled")
 
         # Validate new default_pool type is consistent with existing routes
-        if updates.get("default_pool_id"):
+        if updates.get("default_pool_id") is not None:
             new_pool_type = await _get_pool_type(db, updates["default_pool_id"])
             if new_pool_type is None:
                 raise HTTPException(400, f"Pool {updates['default_pool_id']} not found")
@@ -294,14 +296,10 @@ async def update_vhost(vhost_id: int, body: VhostUpdate):
 
         # Handle extra_blocks serialization
         if "extra_blocks" in updates:
-            updates["extra_blocks_json"] = _serialize_extra_blocks(updates.pop("extra_blocks"))
-        elif "extra_blocks" in updates:
-            updates.pop("extra_blocks")
+            # from the model: `updates` holds plain dicts by now
+            del updates["extra_blocks"]
+            updates["extra_blocks_json"] = _serialize_extra_blocks(body.extra_blocks)
 
-        # Handle ip_rule fields — include even if None so they can be cleared
-        for field in ("ip_rule_mode", "ip_rule_ips"):
-            if field in body.model_fields_set:
-                updates[field] = getattr(body, field)
         if "ip_rule_ips" in updates:
             raw_ips = updates.pop("ip_rule_ips")
             updates["ip_rule_ips_json"] = json.dumps(raw_ips) if raw_ips else None
@@ -352,7 +350,8 @@ async def delete_vhost(vhost_id: int):
             raise HTTPException(404, "Vhost not found")
         vhost = dict(rows[0])
 
-        # Cascade: routes and bucket_sync are children of the vhost
+        # Cascade: migrations (they reference the routes), routes and bucket_sync are children of the vhost
+        await db.execute("DELETE FROM migrations WHERE vhost_id = ?", (vhost_id,))
         await db.execute("DELETE FROM routes WHERE vhost_id = ?", (vhost_id,))
         await db.execute("DELETE FROM bucket_sync WHERE vhost_id = ?", (vhost_id,))
         await db.execute("DELETE FROM vhosts WHERE id = ?", (vhost_id,))
@@ -399,12 +398,6 @@ async def create_route(vhost_id: int, body: RouteCreate):
     To migrate existing bucket data use PUT /{vhost_id}/routes/{route_id} to change
     the route's pool, which triggers the migration state machine.
     """
-    if body.path_prefix == "/":
-        raise HTTPException(
-            400,
-            "The '/' route is managed automatically via the vhost's default_pool_id and cannot be created manually",
-        )
-
     async with get_db_ctx() as db:
         rows = await db.execute_fetchall("SELECT * FROM vhosts WHERE id = ?", (vhost_id,))
         if not rows:
@@ -429,9 +422,8 @@ async def create_route(vhost_id: int, body: RouteCreate):
                 )
 
         # A folder of a bucket on an S3 pool: checks + bucket on the target pool, before anything is written
-        subfolder = None
-        if route_pool["type"] == "nanio" and is_subfolder_prefix(body.path_prefix):
-            subfolder = await _prepare_subfolder_route(db, vhost_row, body, route_pool)
+        is_folder_route = route_pool["type"] == "nanio" and is_subfolder_prefix(body.path_prefix)
+        subfolder = await _prepare_subfolder_route(db, vhost_row, body, route_pool) if is_folder_route else None
 
     # The S3 bucket name is the first path segment (e.g. /photos/2025/ → bucket=photos)
     bucket_segment = body.path_prefix.strip("/").split("/")[0]
@@ -529,21 +521,20 @@ async def update_route(vhost_id: int, route_id: int, body: RouteUpdate):
             )
             return dict(rrows2[0])
 
-        if "pool_id" in updates:
-            pool_rows = await db.execute_fetchall("SELECT id FROM pools WHERE id = ?", (updates["pool_id"],))
-            if not pool_rows:
-                raise HTTPException(400, f"Pool {updates['pool_id']} not found")
+        pool_missing = "pool_id" in updates and not await db.execute_fetchall(
+            "SELECT id FROM pools WHERE id = ?", (updates["pool_id"],)
+        )
 
-        if "enabled" in updates:
-            updates["enabled"] = 1 if updates["enabled"] else 0
+    if pool_missing:
+        raise HTTPException(400, f"Pool {updates['pool_id']} not found")
+    if "enabled" in updates:
+        updates["enabled"] = 1 if updates["enabled"] else 0
 
     # ── Scenario 2: pool change on a bucket route → migration ────────────────
     # If pool changes, bucket is not a sub-path, and source has data, start
     # migration instead of directly updating the pool_id.  The migration engine
     # will flip the route to the destination pool when switching completes.
     migration_id: Optional[int] = None
-    migration_warning: Optional[str] = None
-    dst_pool_id_requested: Optional[int] = None
 
     if "pool_id" in updates and updates["pool_id"] != before["pool_id"]:
         bucket_segment = before["path_prefix"].strip("/").split("/")[0]
@@ -604,14 +595,8 @@ async def update_route(vhost_id: int, route_id: int, body: RouteUpdate):
                             dst_pool_id_requested,
                         )
                     except RuntimeError as exc:
-                        migration_warning = str(exc)
-                        # Migration couldn't start — put pool_id back so direct update proceeds
-                        updates["pool_id"] = dst_pool_id_requested
-                        logger.warning(
-                            "update_route: could not start migration for '%s': %s",
-                            bucket_segment,
-                            exc,
-                        )
+                        # Repointing the route now would hide the objects that could not be moved
+                        raise HTTPException(429, str(exc)) from exc
 
     async with get_db_ctx() as db:
         if updates:
@@ -636,8 +621,6 @@ async def update_route(vhost_id: int, route_id: int, body: RouteUpdate):
         await db.commit()
 
     after["migration_id"] = migration_id
-    if migration_warning:
-        after["migration_warning"] = migration_warning
     return after
 
 
@@ -662,7 +645,13 @@ async def delete_route(vhost_id: int, route_id: int, allow_orphan: bool = False)
             bucket = path_segments(before["path_prefix"])[0]
             folder = subfolders.folder_key(before["path_prefix"])
             target_addr = await subfolders.pool_endpoint(db, before["pool_id"])
-            if not allow_orphan and target_addr:
+            if not allow_orphan:
+                if not target_addr:
+                    raise HTTPException(
+                        400,
+                        f"The pool holding '{folder}' of bucket '{bucket}' has no enabled member to ask whether the "
+                        "folder is empty. Send ?allow_orphan=true to delete the route anyway.",
+                    )
                 target_ak, target_sk, _ = await get_pool_s3_params(before["pool_id"])
                 try:
                     has_objects = await s3client.bucket_has_objects(
