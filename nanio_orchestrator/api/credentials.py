@@ -13,7 +13,6 @@ import logging
 from fastapi import APIRouter, HTTPException
 
 from nanio_orchestrator.audit_log import log_audit
-from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.credentials import (
     delete_pool_credentials,
     get_pool_credentials,
@@ -58,32 +57,18 @@ async def _require_nanio_pool(pool_id: int) -> dict:
 
 @router.get("/{pool_id}/credentials", response_model=CredentialOut)
 async def get_credentials(pool_id: int):
-    """Return effective credentials for a pool.
-
-    If pool-specific credentials are stored, returns those (masked).
-    Otherwise falls back to the global S3_ACCESS_KEY / S3_SECRET_KEY from settings,
-    with source='global' to indicate no pool-specific override is set.
-    """
+    """Return the credentials stored for a pool (access key masked, secret never returned)."""
     await _require_nanio_pool(pool_id)
     creds = await get_pool_credentials(pool_id)
-    if creds:
-        return CredentialOut(
-            pool_id=pool_id,
-            access_key_masked=_mask(creds["access_key"]),
-            endpoint_url=creds["endpoint_url"],
-            region=creds["region"],
-            source="pool",
-            created_at=creds["created_at"],
-            updated_at=creds["updated_at"],
-        )
-
-    s = get_settings()
+    if not creds:
+        raise HTTPException(404, "No credentials stored for this pool")
     return CredentialOut(
         pool_id=pool_id,
-        access_key_masked=_mask(s.s3_access_key or "") if s.s3_access_key else "(not set)",
-        endpoint_url=None,
-        region="us-east-1",
-        source="global",
+        access_key_masked=_mask(creds["access_key"]),
+        endpoint_url=creds["endpoint_url"],
+        region=creds["region"],
+        created_at=creds["created_at"],
+        updated_at=creds["updated_at"],
     )
 
 

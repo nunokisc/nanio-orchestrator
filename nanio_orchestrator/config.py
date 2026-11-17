@@ -41,8 +41,6 @@ class Settings(BaseSettings):
     drift_interval: int = 60
     session_ttl: int = 28800  # seconds; default 8 hours
     bucket_sync_interval: int = 300  # seconds; default 5 minutes
-    s3_access_key: Optional[str] = None
-    s3_secret_key: Optional[str] = None
     secret: Optional[str] = None  # Fernet key for credential encryption
     rclone_path: str = "rclone"
     migration_max_parallel: int = 2

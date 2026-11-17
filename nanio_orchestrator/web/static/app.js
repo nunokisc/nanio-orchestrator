@@ -815,12 +815,8 @@ async function showCredentials(poolId) {
             return;
         }
         const data = await res.json();
-        const sourceLabel = data.source === 'global'
-            ? '⚠ global fallback (no pool-specific credentials set)'
-            : '✓ pool-specific';
         alert(
-            `Pool #${poolId} — effective S3 credentials\n\n` +
-            `Source:     ${sourceLabel}\n` +
+            `Pool #${poolId} — stored S3 credentials\n\n` +
             `Access Key: ${data.access_key_masked}\n` +
             `Region:     ${data.region}\n` +
             `Endpoint:   ${data.endpoint_url || '(default)'}`

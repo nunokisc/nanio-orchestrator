@@ -117,12 +117,10 @@ async def delete_pool_credentials(pool_id: int) -> bool:
 async def get_pool_s3_params(pool_id: int) -> Tuple[Optional[str], Optional[str], str]:
     """Get (access_key, secret_key, region) for S3 operations against a pool.
 
-    Falls back to global s3_access_key / s3_secret_key from config if no
-    per-pool credentials are stored.
+    A pool without stored credentials yields (None, None, "us-east-1"): the request is sent
+    unsigned and nanio answers 403, which callers report as an error.
     """
     creds = await get_pool_credentials(pool_id)
     if creds:
         return creds["access_key"], creds["secret_key"], creds["region"]
-
-    s = get_settings()
-    return s.s3_access_key, s.s3_secret_key, "us-east-1"
+    return None, None, "us-east-1"

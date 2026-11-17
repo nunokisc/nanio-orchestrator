@@ -31,8 +31,6 @@ not exist.
 | `NANIO_ORCHESTRATOR_MIGRATION_CHECKERS` | int | `8` | `8` | rclone `--checkers` value |
 | `NANIO_ORCHESTRATOR_MIGRATION_TRANSFERS` | int | `4` | `4` | rclone `--transfers` value |
 | `NANIO_ORCHESTRATOR_MIGRATION_MAX_COPY_PASSES` | int | `10` | `10` | Maximum passes in the `copying` phase, and again in the `verifying` phase |
-| `NANIO_ORCHESTRATOR_S3_ACCESS_KEY` | str | *(none)* | *(none)* | Fallback S3 access key, used for a pool that has no credentials of its own |
-| `NANIO_ORCHESTRATOR_S3_SECRET_KEY` | str | *(none)* | *(none)* | Fallback S3 secret key (see above) |
 | `NANIO_ORCHESTRATOR_S3_REQUEST_TIMEOUT` | int | `3600` | `3600` | Socket timeout in seconds for S3 HTTP requests |
 | `NANIO_ORCHESTRATOR_DB_BACKUP_PATH` | str | `<db_path>.bak` | `<db_path>.bak` | Path for rotating DB backups |
 | `NANIO_ORCHESTRATOR_DB_BACKUP_INTERVAL` | int | `300` | `300` | Seconds between timed backups |
@@ -67,7 +65,7 @@ the service runs and where it writes, so the panel key alone must not be enough 
 | Core | `HOST`, `PORT`, `API_KEY`, `LOG_LEVEL`, `LOG_FILE`, `SESSION_TTL` | Bind the panel to an internal address; rotate the API key |
 | Database | `DB_PATH`, `DB_BACKUP_PATH`, `DB_BACKUP_INTERVAL`, `DB_BACKUP_ROTATE` | Put the backups on another disk |
 | Security | `SECRET` | Once, before storing pool credentials |
-| S3 | `BUCKET_SYNC_INTERVAL`, `S3_REQUEST_TIMEOUT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY` | How often buckets are discovered |
+| S3 | `BUCKET_SYNC_INTERVAL`, `S3_REQUEST_TIMEOUT` | How often buckets are discovered |
 | Nginx | `NGINX_CONFIG_DIR`, `DRIFT_INTERVAL` | Rarely |
 | Migrations | `RCLONE_PATH`, `MIGRATION_*` | Speed versus load, see [migrations.md](migrations.md#tuning) |
 

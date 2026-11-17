@@ -293,7 +293,6 @@ async def _build_rclone_config(src_pool_id: int, dst_pool_id: int) -> str:
     src_creds = await get_pool_credentials(src_pool_id)
     dst_creds = await get_pool_credentials(dst_pool_id)
 
-    s = get_settings()
     lines = []
 
     for name, creds, pool_id in [("src", src_creds, src_pool_id), ("dst", dst_creds, dst_pool_id)]:
@@ -309,12 +308,6 @@ async def _build_rclone_config(src_pool_id: int, dst_pool_id: int) -> str:
             lines.append(f"access_key_id = {creds['access_key']}")
             lines.append(f"secret_access_key = {creds['secret_key']}")
             lines.append(f"region = {creds['region']}")
-        else:
-            # Fallback to global credentials
-            if s.s3_access_key:
-                lines.append(f"access_key_id = {s.s3_access_key}")
-            if s.s3_secret_key:
-                lines.append(f"secret_access_key = {s.s3_secret_key}")
 
         if addr:
             lines.append(f"endpoint = http://{addr}")
