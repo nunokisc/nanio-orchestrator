@@ -306,7 +306,6 @@ class CredentialOut(BaseModel):
     access_key_masked: str
     endpoint_url: Optional[str]
     region: str
-    source: str = "pool"  # "pool" | "global"
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 

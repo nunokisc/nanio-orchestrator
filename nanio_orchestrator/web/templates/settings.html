@@ -36,7 +36,7 @@ const CATEGORIES = [
     ["Core",       ["host","port","api_key","log_level","session_ttl"]],
     ["Database",   ["db_path","db_backup_path","db_backup_interval","db_backup_rotate"]],
     ["Security",   ["secret"]],
-    ["S3",         ["s3_access_key","s3_secret_key","bucket_sync_interval"]],
+    ["S3",         ["bucket_sync_interval"]],
     ["Nginx",      ["nginx_config_dir","drift_interval"]],
     ["Migrations", ["rclone_path","migration_max_parallel","migration_bandwidth_limit","migration_checkers","migration_transfers"]],
 ];
@@ -52,8 +52,6 @@ const DESCRIPTIONS = {
     db_backup_interval:        "Seconds between timed backups",
     db_backup_rotate:          "Number of backup copies to keep",
     secret:                    "Fernet key for credential encryption",
-    s3_access_key:             "Global S3 access key",
-    s3_secret_key:             "Global S3 secret key",
     s3_proxy_port:             "Internal S3 listing proxy port",
     bucket_sync_interval:      "Seconds between bucket syncs",
     nginx_config_dir:          "Root directory for generated configs",
@@ -65,7 +63,7 @@ const DESCRIPTIONS = {
     migration_transfers:       "rclone --transfers value",
 };
 
-const SECRET_KEYS = new Set(["api_key","secret","s3_access_key","s3_secret_key"]);
+const SECRET_KEYS = new Set(["api_key","secret"]);
 
 // Keys whose values should be treated as editable (excludes meta)
 const READONLY_KEYS = new Set(["config_file","dev_mode","host_only","rclone_path","db_path","db_backup_path","nginx_config_dir"]);

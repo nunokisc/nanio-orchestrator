@@ -319,7 +319,7 @@ async def trigger_backup_endpoint():
 
 # ── Settings introspection ────────────────────────────────────────────────────
 
-_SECRET_FIELDS = {"api_key", "secret", "s3_access_key", "s3_secret_key"}
+_SECRET_FIELDS = {"api_key", "secret"}
 
 
 def _mask(value, is_secret: bool) -> str | None:

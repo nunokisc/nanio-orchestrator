@@ -89,7 +89,7 @@ pools. A `replica` is written to the upstream as a `backup` server.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/pools/{id}/credentials` | Effective credentials; the access key is masked, the secret is never returned |
+| GET | `/api/pools/{id}/credentials` | Stored credentials; the access key is masked, the secret is never returned. 404 when none are stored. |
 | PUT | `/api/pools/{id}/credentials` | Store or replace |
 | DELETE | `/api/pools/{id}/credentials` | Remove |
 

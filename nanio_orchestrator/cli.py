@@ -22,8 +22,6 @@ _SETTINGS_META = {
     "db_backup_interval": ("Database", "Seconds between timed backups", False),
     "db_backup_rotate": ("Database", "Number of backup copies to keep", False),
     "secret": ("Security", "Fernet key for credential encryption", True),
-    "s3_access_key": ("S3", "Global S3 access key", True),
-    "s3_secret_key": ("S3", "Global S3 secret key", True),
     "bucket_sync_interval": ("S3", "Seconds between bucket syncs", False),
     "nginx_config_dir": ("Nginx", "Root directory for generated configs", False),
     "drift_interval": ("Nginx", "Seconds between drift checks", False),
