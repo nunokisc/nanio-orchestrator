@@ -285,7 +285,7 @@ server {{
             "metadata": {},
         }
 
-    def test_location_without_a_route_comment_is_a_route_with_no_metadata(self):
+    def test_location_without_a_route_comment_is_not_a_route(self):
         content = f"""{MANAGED_MARKER}
 server {{
     listen 80;
@@ -295,7 +295,28 @@ server {{
     }}
 }}
 """
-        assert parse_vhost_block(content)["routes"] == [{"path_prefix": "/photos/", "pool_name": "hot", "metadata": {}}]
+        assert parse_vhost_block(content)["routes"] == []
+
+    def test_location_inside_an_extra_block_is_not_imported_as_a_route(self):
+        """An operator's own `location … { proxy_pass … }` must not come back as a route: the
+        next generation would then write that location twice."""
+        content = f"""{MANAGED_MARKER}
+server {{
+    listen 80;
+    server_name s3.example.com;
+
+    location /health/ {{
+        proxy_pass http://monitoring;
+    }}
+
+    # route_id:1 prefix:/
+    location / {{
+        proxy_pass http://hot;
+    }}
+}}
+"""
+        routes = parse_vhost_block(content)["routes"]
+        assert [(r["path_prefix"], r["pool_name"]) for r in routes] == [("/", "hot")]
 
     def test_locations_that_do_not_proxy_to_an_upstream_are_not_routes(self):
         content = f"""{MANAGED_MARKER}
@@ -335,7 +356,7 @@ server {{
 """
         assert parse_vhost_block(content)["routes"] == []
 
-    def test_route_comment_for_another_prefix_is_not_applied(self):
+    def test_route_comment_for_another_prefix_does_not_make_a_location_a_route(self):
         content = f"""{MANAGED_MARKER}
 server {{
     listen 80;
@@ -346,7 +367,7 @@ server {{
     }}
 }}
 """
-        assert parse_vhost_block(content)["routes"] == [{"path_prefix": "/photos/", "pool_name": "hot", "metadata": {}}]
+        assert parse_vhost_block(content)["routes"] == []
 
     @pytest.mark.parametrize(
         "content",

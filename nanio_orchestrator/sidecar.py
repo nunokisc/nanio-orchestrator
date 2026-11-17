@@ -75,8 +75,14 @@ def write_pool_sidecar(
     description: Optional[str] = None,
     credentials: Optional[dict[str, Any]] = None,
     source_nanio_pool_id: Optional[int] = None,
+    members: Optional[list[dict[str, Any]]] = None,
 ) -> None:
-    """Write or update a pool sidecar file."""
+    """Write or update a pool sidecar file.
+
+    ``members`` records what the upstream file cannot: the role of each member (an http
+    ``primary`` looks like any other server line) and the members that are disabled, which
+    are not written to the file at all. Left out, the members already recorded are kept.
+    """
     filepath = pool_sidecar_path(name)
     data: dict[str, Any] = {
         "pool_id": pool_id,
@@ -96,6 +102,10 @@ def write_pool_sidecar(
         existing = _read_json(filepath)
         if existing and "credentials" in existing:
             data["credentials"] = existing["credentials"]
+    if members is None:
+        members = (_read_json(filepath) or {}).get("members")
+    if members is not None:
+        data["members"] = members
     _write_atomic(filepath, data)
     logger.debug("Wrote pool sidecar: %s", filepath)
 
@@ -152,10 +162,19 @@ def write_vhost_sidecar(
     extra_blocks_json: Optional[str] = None,
     ip_rule_mode: Optional[str] = None,
     ip_rule_ips_json: Optional[str] = None,
+    enabled: Optional[bool] = None,
+    disabled_routes: Optional[list[dict[str, Any]]] = None,
 ) -> None:
-    """Write or update a vhost sidecar file."""
+    """Write or update a vhost sidecar file.
+
+    ``enabled`` and ``disabled_routes`` record what the server block cannot: a disabled route is
+    not written to it at all. Left out, what is already recorded is kept.
+    """
     filepath = vhost_sidecar_path(server_name)
+    existing = _read_json(filepath) or {}
     data = {
+        "enabled": existing.get("enabled", True) if enabled is None else enabled,
+        "disabled_routes": existing.get("disabled_routes", []) if disabled_routes is None else disabled_routes,
         "vhost_id": vhost_id,
         "server_name": server_name,
         "default_pool_id": default_pool_id,
@@ -174,45 +193,81 @@ def delete_vhost_sidecar(server_name: str) -> None:
     _delete_file(vhost_sidecar_path(server_name))
 
 
-async def write_all_sidecars(db) -> int:
-    """Rewrite every pool and vhost sidecar from the database. Returns how many were written."""
-    count = 0
-    pools = await db.execute_fetchall(
+async def write_pool_sidecar_from_db(db, pool_id: int) -> None:
+    """Rewrite one pool's sidecar from the database (uncommitted changes of ``db`` included)."""
+    rows = await db.execute_fetchall(
         """SELECT p.id, p.name, p.type, p.description, p.source_nanio_pool_id,
                   c.access_key_enc, c.secret_key_enc, c.endpoint_url, c.region
-           FROM pools p LEFT JOIN pool_credentials c ON c.pool_id = p.id"""
+           FROM pools p LEFT JOIN pool_credentials c ON c.pool_id = p.id WHERE p.id = ?""",
+        (pool_id,),
     )
-    for p in pools:
-        credentials = None
-        if p["access_key_enc"] and p["secret_key_enc"]:
-            credentials = {
-                "access_key_enc": p["access_key_enc"],
-                "secret_key_enc": p["secret_key_enc"],
-                "endpoint_url": p["endpoint_url"],
-                "region": p["region"] or "us-east-1",
-            }
-        else:
-            delete_pool_credentials_sidecar(p["name"])  # the DB is the truth here
-        write_pool_sidecar(p["id"], p["name"], p["type"], p["description"], credentials, p["source_nanio_pool_id"])
-        count += 1
+    if not rows:
+        return
+    p = rows[0]
+    credentials = None
+    if p["access_key_enc"] and p["secret_key_enc"]:
+        credentials = {
+            "access_key_enc": p["access_key_enc"],
+            "secret_key_enc": p["secret_key_enc"],
+            "endpoint_url": p["endpoint_url"],
+            "region": p["region"] or "us-east-1",
+        }
+    else:
+        delete_pool_credentials_sidecar(p["name"])  # the DB is the truth here
+    members = await db.execute_fetchall(
+        """SELECT address, role, weight, max_fails, fail_timeout_s, enabled
+           FROM pool_members WHERE pool_id = ? ORDER BY id""",
+        (pool_id,),
+    )
+    write_pool_sidecar(
+        p["id"],
+        p["name"],
+        p["type"],
+        p["description"],
+        credentials,
+        p["source_nanio_pool_id"],
+        members=[{**dict(m), "enabled": bool(m["enabled"])} for m in members],
+    )
 
-    vhosts = await db.execute_fetchall(
-        """SELECT v.id, v.server_name, v.default_pool_id, v.extra_blocks_json,
+
+async def write_vhost_sidecar_from_db(db, vhost_id: int) -> None:
+    """Rewrite one vhost's sidecar from the database (uncommitted changes of ``db`` included)."""
+    rows = await db.execute_fetchall(
+        """SELECT v.id, v.server_name, v.default_pool_id, v.extra_blocks_json, v.enabled,
                   v.ip_rule_mode, v.ip_rule_ips_json, p.name AS default_pool_name
-           FROM vhosts v LEFT JOIN pools p ON p.id = v.default_pool_id"""
+           FROM vhosts v LEFT JOIN pools p ON p.id = v.default_pool_id WHERE v.id = ?""",
+        (vhost_id,),
     )
-    for v in vhosts:
-        write_vhost_sidecar(
-            v["id"],
-            v["server_name"],
-            v["default_pool_id"],
-            v["default_pool_name"],
-            v["extra_blocks_json"],
-            v["ip_rule_mode"],
-            v["ip_rule_ips_json"],
-        )
-        count += 1
-    return count
+    if not rows:
+        return
+    v = rows[0]
+    disabled = await db.execute_fetchall(
+        """SELECT r.path_prefix, p.name AS pool_name FROM routes r JOIN pools p ON p.id = r.pool_id
+           WHERE r.vhost_id = ? AND r.enabled = 0 ORDER BY r.path_prefix""",
+        (vhost_id,),
+    )
+    write_vhost_sidecar(
+        v["id"],
+        v["server_name"],
+        v["default_pool_id"],
+        v["default_pool_name"],
+        v["extra_blocks_json"],
+        v["ip_rule_mode"],
+        v["ip_rule_ips_json"],
+        enabled=bool(v["enabled"]),
+        disabled_routes=[dict(r) for r in disabled],
+    )
+
+
+async def write_all_sidecars(db) -> int:
+    """Rewrite every pool and vhost sidecar from the database. Returns how many were written."""
+    pools = await db.execute_fetchall("SELECT id FROM pools")
+    vhosts = await db.execute_fetchall("SELECT id FROM vhosts")
+    for row in pools:
+        await write_pool_sidecar_from_db(db, row["id"])
+    for row in vhosts:
+        await write_vhost_sidecar_from_db(db, row["id"])
+    return len(pools) + len(vhosts)
 
 
 # ── Migration state files ────────────────────────────────────────────────────

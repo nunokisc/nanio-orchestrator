@@ -119,6 +119,18 @@ What a rebuild recovers:
 Without a sidecar a pool is imported as type `nanio` with no credentials, and a vhost has no
 default pool. Fix those in the UI afterwards.
 
+What comes from where:
+
+| From the `.conf` files | From the `.meta.json` sidecars |
+|------------------------|--------------------------------|
+| Pools and their enabled members, load-balancing method | Pool type, description, encrypted credentials |
+| Vhosts: hostname, port, TLS | Each member's role, and the members that are disabled |
+| Enabled routes | Vhost default pool, extra blocks, IP rules, enabled state |
+| | Disabled routes |
+
+The sidecars are rewritten with every change nginx accepts, so the directory is always enough
+to rebuild from. Back up the two kinds of file together.
+
 ### 3. The nginx config directory is damaged or deleted
 
 The database is intact, so regenerate the files from it:

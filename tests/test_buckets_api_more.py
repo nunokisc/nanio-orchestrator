@@ -231,24 +231,45 @@ class TestPromote:
         assert await routes(client, vhost) == {"/photos/": "pa", "/": "pa"}
         assert await _tracked(vhost) == {"photos": ("routed", pa["id"])}
 
-    async def test_bucket_is_promoted_when_the_default_pool_does_not_answer(
-        self, client, mock_nginx, mock_s3, tmp_dirs
-    ):
+    async def test_unreachable_source_is_not_taken_for_an_empty_one(self, client, mock_nginx, mock_s3, tmp_dirs):
+        """Routing a bucket elsewhere without a migration hides whatever it holds; when the
+        pool cannot say what it holds, the answer is no."""
         _pa, pb, vhost = await _cluster(client)
         mock_s3["promote_src_has_objects"].side_effect = OSError("connection refused")
+        before = (await routes(client, vhost), managed_files(tmp_dirs))
 
         resp = await client.post(f"/api/vhosts/{vhost['id']}/buckets/photos/promote", json={"pool_id": pb["id"]})
 
+        assert resp.status_code == 502
+        assert "connection refused" in resp.json()["detail"] and "allow_orphan" in resp.json()["detail"]
+        assert (await routes(client, vhost), managed_files(tmp_dirs)) == before
+
+    async def test_unreachable_source_can_be_left_behind_on_purpose(self, client, mock_nginx, mock_s3, tmp_dirs):
+        _pa, pb, vhost = await _cluster(client)
+        mock_s3["promote_src_has_objects"].side_effect = OSError("connection refused")
+
+        resp = await client.post(
+            f"/api/vhosts/{vhost['id']}/buckets/photos/promote", json={"pool_id": pb["id"], "allow_orphan": True}
+        )
+
         assert resp.status_code == 200
         assert await routes(client, vhost) == {"/photos/": "pb", "/": "pa"}
-        assert await _tracked(vhost) == {"photos": ("routed", pb["id"])}
-        (entry,) = await audit(client, "promote_bucket")
-        assert json.loads(entry["after_json"]) == {
-            "bucket": "photos",
-            "pool_id": pb["id"],
-            "initial_route_pool_id": pb["id"],
-            "migrate": False,
-        }
+
+    async def test_unreachable_source_does_not_stop_a_promote_that_migrates(
+        self, client, mock_nginx, mock_s3, tmp_dirs
+    ):
+        """The migration checks the source itself, and the route stays on it until then."""
+        _pa, pb, vhost = await _cluster(client)
+        mock_s3["promote_src_has_objects"].side_effect = OSError("connection refused")
+        started = AsyncMock(return_value=41)
+
+        with patch("nanio_orchestrator.api.buckets.engine_start_migration", new=started):
+            resp = await client.post(
+                f"/api/vhosts/{vhost['id']}/buckets/photos/promote", json={"pool_id": pb["id"], "migrate": True}
+            )
+
+        assert resp.status_code == 200 and resp.json()["migration_id"] == 41
+        assert await routes(client, vhost) == {"/photos/": "pa", "/": "pa"}
 
 
 class TestIgnore:

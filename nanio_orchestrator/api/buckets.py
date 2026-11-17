@@ -227,12 +227,14 @@ async def promote_bucket(vhost_id: int, bucket: str, body: BucketPromoteRequest)
     try:
         src_has_data = await bucket_has_objects(default_member, bucket, access_key=default_ak, secret_key=default_sk)
     except Exception as exc:
-        logger.warning(
-            "promote %s (vhost %d): could not check source bucket contents (%s) — proceeding",
-            bucket,
-            vhost_id,
-            exc,
-        )
+        # "Cannot tell" is not "empty". A migration checks the source itself; routing without
+        # one would hide whatever the bucket holds.
+        if not body.migrate and body.pool_id != default_pool_id and not body.allow_orphan:
+            raise HTTPException(
+                502,
+                f"Cannot tell whether bucket '{bucket}' has objects on its current pool ({exc}). Routing it "
+                "elsewhere would leave them behind. Bring the pool back, or send allow_orphan=true.",
+            ) from None
 
     if src_has_data and not body.migrate and body.pool_id != default_pool_id and not body.allow_orphan:
         raise HTTPException(

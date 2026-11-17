@@ -177,13 +177,11 @@ Schema upgrades live only in `db._run_migrations_async()`; `init_db_sync()` just
    default pool for a bucket that lives on another pool, so that `ListBuckets` shows it. Bucket
    routes and `promote_bucket` never create buckets.
 
-10. **Refuse rather than hide data.** An operation that would leave existing objects unreachable
-    (routing over a non-empty folder, deleting the route of a non-empty folder, promoting without
-    migrating) is refused with 409 unless the caller passes `allow_orphan`.
-
-8. **Keep rebuild working.** Any new field stored in the DB must also be:
-   - Written to the sidecar in `sidecar.py` (update `write_vhost_sidecar` or `write_pool_sidecar`)
-   - Restored in `rebuild.py` (the INSERT + dry-run report)
+10. **Refuse rather than hide data — and "cannot tell" is not "empty".** An operation that would
+    leave existing objects unreachable (routing over a non-empty folder, deleting the route of a
+    non-empty folder, promoting or repointing without migrating) is refused with 409 unless the
+    caller passes `allow_orphan`. When the pool cannot be asked whether it holds objects, the
+    answer is 502, not "go ahead"; `allow_orphan` is again the explicit way through.
 
 ## Running commands
 

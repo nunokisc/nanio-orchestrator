@@ -239,6 +239,9 @@ class RouteUpdate(BaseModel):
     path_prefix: Optional[str] = None
     pool_id: Optional[int] = None
     enabled: Optional[bool] = None
+    # Repoint the route although its current pool cannot be asked whether the bucket has
+    # objects (the pool is down or has no member). Whatever is there stays behind.
+    allow_orphan: bool = False
 
     @field_validator("path_prefix")
     @classmethod

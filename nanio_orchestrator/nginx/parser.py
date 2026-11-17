@@ -186,9 +186,12 @@ def parse_vhost_block(content: str) -> Optional[dict[str, Any]]:
 
         # Extract proxy_pass upstream name
         pp_match = re.search(r"proxy_pass\s+http://(\S+);", loc_block)
-        if pp_match:
+        # A route is a location the generator wrote, announced by its `# route_id:` comment.
+        # Any other location with a proxy_pass (one inside an extra block, for instance) is
+        # the operator's own nginx config, not a route.
+        if pp_match and prefix in route_metas:
             pool_name = pp_match.group(1)
-            meta = route_metas.get(prefix, {})
+            meta = route_metas[prefix]
             # Live-migration split: the location proxies to the destination pool, but the
             # route still belongs to the source pool until the migration switches.
             if meta.get("migration_src"):

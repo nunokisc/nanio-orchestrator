@@ -111,16 +111,29 @@ async def import_configs(db, warnings: list[str]) -> dict[str, Any]:
                 )
             counts["pools_updated"] += 1
 
-        for m in parsed["members"]:
+        # The upstream file lists the enabled members; the sidecar also knows each member's
+        # role (an http `primary` is written like any other server) and the disabled ones.
+        recorded = {m["address"]: m for m in (sidecar or {}).get("members", [])}
+        in_file = {m["address"]: {**m, "enabled": True} for m in parsed["members"]}
+        for address, m in {**recorded, **in_file}.items():
             exists = await db.execute_fetchall(
-                "SELECT id FROM pool_members WHERE pool_id=? AND address=?", (pool_id, m["address"])
+                "SELECT id FROM pool_members WHERE pool_id=? AND address=?", (pool_id, address)
             )
             if not exists:
+                role = recorded.get(address, m)["role"]
                 await db.execute(
                     """INSERT INTO pool_members
                        (pool_id, address, role, weight, max_fails, fail_timeout_s, enabled)
-                       VALUES (?, ?, ?, ?, ?, ?, 1)""",
-                    (pool_id, m["address"], m["role"], m["weight"], m["max_fails"], m["fail_timeout_s"]),
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        pool_id,
+                        address,
+                        role,
+                        m["weight"],
+                        m["max_fails"],
+                        m["fail_timeout_s"],
+                        1 if m["enabled"] else 0,
+                    ),
                 )
                 counts["members_new"] += 1
 
@@ -194,10 +207,11 @@ async def import_configs(db, warnings: list[str]) -> dict[str, Any]:
                 """INSERT INTO vhosts
                    (server_name, listen_port, ssl, ssl_cert_path, ssl_key_path, enabled,
                     default_pool_id, extra_blocks_json, ip_rule_mode, ip_rule_ips_json)
-                   VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     server_name,
                     *from_conf,
+                    0 if sidecar.get("enabled") is False else 1,
                     default_pool_id,
                     sidecar.get("extra_blocks_json"),
                     sidecar.get("ip_rule_mode"),
@@ -222,6 +236,19 @@ async def import_configs(db, warnings: list[str]) -> dict[str, Any]:
                 (vhost_id, route["path_prefix"], pool_id),
             )
             counts["routes"] += 1
+
+        # Disabled routes are not in the server block at all; the sidecar remembers them
+        for route in sidecar.get("disabled_routes", []):
+            pool_id = pool_name_to_id.get(route["pool_name"])
+            known = await db.execute_fetchall(
+                "SELECT id FROM routes WHERE vhost_id=? AND path_prefix=?", (vhost_id, route["path_prefix"])
+            )
+            if pool_id and not known:
+                await db.execute(
+                    "INSERT INTO routes (vhost_id, path_prefix, pool_id, enabled) VALUES (?, ?, ?, 0)",
+                    (vhost_id, route["path_prefix"], pool_id),
+                )
+                counts["routes"] += 1
 
         h = sha256_str(content)
         await db.execute(_RECORD_FILE_SQL, (str(conf_path), h, h, content, now))
