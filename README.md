@@ -45,19 +45,46 @@ NGINX (gateway machine) ─────────────── config wri
 
 ## Quick start
 
+Two ways to run it. Both end with the panel on port 8080.
+
+### On the gateway host
+
 Requirements: Linux with systemd, Python 3.9+, nginx. rclone only if you will migrate buckets.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nunokisc/nanio-orchestrator/main/install.sh | sudo bash
 ```
 
-With Docker instead: [`compose.yaml`](compose.yaml) runs the gateway and the orchestrator as two
-containers of one image; see [docs/installation.md](docs/installation.md#docker).
-
-The install command installs the program, creates the settings (API key and encryption secret), hooks the
-managed config into nginx, starts the service and prints the Web UI address and the API key.
+That installs the program, creates the settings (API key and encryption secret), hooks the
+managed config into nginx, starts the service and prints the panel address and the API key.
 Run it again to upgrade. `sudo nanio-orchestrator doctor` checks an installation and prints the
 fix for anything that is wrong.
+
+### With Docker
+
+The image `ghcr.io/nunokisc/nanio-orchestrator` holds nginx, the orchestrator and rclone. It runs
+as **two containers**: `gateway` (nginx, serving traffic) and `orchestrator` (the control plane).
+They are separate so that nginx keeps serving when the orchestrator stops, and the same image so
+that the nginx validating the config is the nginx serving it.
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/nunokisc/nanio-orchestrator/main/compose.yaml
+
+echo "NANIO_ORCHESTRATOR_API_KEY=$(openssl rand -base64 32)" > .env
+echo "NANIO_ORCHESTRATOR_SECRET=$(docker run --rm ghcr.io/nunokisc/nanio-orchestrator config generate-secret)" >> .env
+
+docker compose up -d
+```
+
+The panel is on `http://127.0.0.1:8080`; log in with the API key from `.env`. In
+[`compose.yaml`](compose.yaml), publish on the `gateway` service every port your vhosts listen
+on, and mount your TLS certificates at the same path in both services. Keep a copy of
+`NANIO_ORCHESTRATOR_SECRET`: it encrypts the stored pool credentials.
+
+Details, upgrades and what the two containers share:
+[docs/installation.md](docs/installation.md#docker).
+
+### First steps
 
 Then, in the web panel (the **Overview** screen walks you through the same steps):
 
@@ -99,22 +126,52 @@ credentials of every pool and can change what nginx serves.
 
 ## Development
 
+### A whole cluster in Docker
+
+The quickest way to see it work, and the environment the end-to-end test runs in: the gateway,
+the orchestrator and two nanio storage servers, on one machine.
+
 ```bash
 git clone https://github.com/nunokisc/nanio-orchestrator
 cd nanio-orchestrator
+make stack             # builds the image and starts everything
+```
+
+| | |
+|---|---|
+| Panel | `http://localhost:8080`, API key `dev-key` |
+| Gateway | `http://localhost:8081` (create a vhost that listens on 8081) |
+| Storage servers | `nanio-a:9000` and `nanio-b:9000`, access key `AKDEV`, secret `devsecretdevsecret` |
+
+nginx, nanio and rclone are real here, so routing, reloads and migrations behave as in
+production. The orchestrator runs the code of your checkout and restarts when you edit it.
+
+```bash
+make e2e               # end-to-end test: pools, routes, bucket and folder migrations, explorer
+make stack-down        # stop and delete the cluster's data
+```
+
+Without `make`: `docker compose -f compose.dev.yaml up -d --build --wait`. The panel is a React
+application; `make stack` builds it when Node.js is installed, otherwise run `make ui` on a
+machine that has it.
+
+### Without Docker
+
+```bash
 make install-dev       # creates .venv and installs dependencies
 make ui                # builds the web panel (needs Node.js); once, and after changing ui/
 make run               # dev server at http://localhost:8080, API key "dev"
 make test              # pytest
+make test-cov          # with coverage; fails below 100%
 make lint              # ruff
-make stack             # full cluster in Docker: real nginx, two nanio servers, rclone
-make e2e               # end-to-end test against that cluster
 ```
 
-In dev mode the database and generated config live under `./dev-data/` and nginx commands are
-printed instead of executed. The panel is a React application in `ui/`; its build is shipped
-inside the Python package, so only a source checkout needs Node.js. See
-[docs/contributing.md](docs/contributing.md).
+In this mode the database and generated config live under `./dev-data/` and nginx commands are
+printed instead of executed: good for working on the API and the panel, not for anything that
+depends on what nginx or nanio really do.
+
+The panel is in `ui/`; its build is shipped inside the Python package, so only a source checkout
+needs Node.js. See [docs/contributing.md](docs/contributing.md).
 
 ## License
 
