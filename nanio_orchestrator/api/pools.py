@@ -287,11 +287,6 @@ async def delete_pool(pool_id: int):
             (pool_id,),
         )
 
-        # Delete node_configs for all members first (FK chain)
-        await db.execute(
-            "DELETE FROM node_configs WHERE member_id IN (SELECT id FROM pool_members WHERE pool_id = ?)",
-            (pool_id,),
-        )
         # Delete members, then the pool itself
         await db.execute("DELETE FROM pool_members WHERE pool_id = ?", (pool_id,))
         await db.execute("DELETE FROM pools WHERE id = ?", (pool_id,))
@@ -417,8 +412,6 @@ async def delete_member(pool_id: int, member_id: int):
             raise HTTPException(404, "Member not found")
         before = dict(mrows[0])
 
-        # Remove saved node config before deleting the member (FK constraint)
-        await db.execute("DELETE FROM node_configs WHERE member_id = ?", (member_id,))
         await db.execute("DELETE FROM pool_members WHERE id = ?", (member_id,))
         await db.commit()
 

@@ -17,7 +17,7 @@ class TestDatabase:
 
         expected = {
             "pools", "pool_members", "vhosts", "routes",
-            "config_files", "audit_log", "node_configs",
+            "config_files", "audit_log",
             "bucket_sync",
             "pool_credentials", "migrations", "migration_log",
         }

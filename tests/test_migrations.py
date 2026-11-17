@@ -45,7 +45,6 @@ class TestMigrationsAPI:
         data = resp.json()
         assert data["bucket"] == "mig-bucket"
         assert data["phase"] == "pending"
-        assert data["mode"] == "copy"  # default mode
 
     async def test_create_migration_default_mode(self, client, mock_nginx, mock_rclone, mock_s3):
         src = await create_pool(client, "mig-copy-src")
@@ -64,7 +63,7 @@ class TestMigrationsAPI:
             "dst_pool_id": dst["id"],
         })
         assert resp.status_code == 201
-        assert resp.json()["mode"] == "copy"
+        assert "mode" not in resp.json()
 
     async def test_list_migrations(self, client):
         resp = await client.get("/api/migrations")

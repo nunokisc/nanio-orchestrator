@@ -616,7 +616,7 @@ upstream no-sidecar {
             async with get_db_ctx() as db:
                 for table in [
                     "migration_log", "migrations",
-                    "node_configs", "bucket_sync", "pool_credentials",
+                    "bucket_sync", "pool_credentials",
                     "routes", "pool_members", "audit_log", "config_files",
                     "vhosts", "pools",
                 ]:

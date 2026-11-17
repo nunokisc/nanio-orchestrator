@@ -125,16 +125,15 @@ async def create_vhost(body: VhostCreate):
         try:
             cursor = await db.execute(
                 """INSERT INTO vhosts (server_name, listen_port, ssl, ssl_cert_path, ssl_key_path,
-                   extra_directives, extra_blocks_json, enabled, default_pool_id,
+                   extra_blocks_json, enabled, default_pool_id,
                    ip_rule_mode, ip_rule_ips_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     body.server_name,
                     body.listen_port,
                     1 if body.ssl else 0,
                     body.ssl_cert_path,
                     body.ssl_key_path,
-                    body.extra_directives,
                     extra_blocks_json,
                     1 if body.enabled else 0,
                     body.default_pool_id,
@@ -377,14 +376,13 @@ async def create_route(vhost_id: int, body: RouteCreate):
     async with get_db_ctx() as db:
         try:
             cursor = await db.execute(
-                """INSERT INTO routes (vhost_id, path_prefix, pool_id, key_prefix, extra_directives, enabled)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO routes (vhost_id, path_prefix, pool_id, key_prefix, enabled)
+                   VALUES (?, ?, ?, ?, ?)""",
                 (
                     vhost_id,
                     body.path_prefix,
                     body.pool_id,
                     body.key_prefix,
-                    body.extra_directives,
                     1 if body.enabled else 0,
                 ),
             )

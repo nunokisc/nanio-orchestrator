@@ -91,14 +91,6 @@ CREATE TABLE IF NOT EXISTS audit_log (
     created_at          TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE IF NOT EXISTS node_configs (
-    id           INTEGER PRIMARY KEY,
-    member_id    INTEGER NOT NULL REFERENCES pool_members(id) ON DELETE CASCADE,
-    node_type    TEXT NOT NULL CHECK (node_type IN ('nanio-only','nginx-only','nginx-nanio')),
-    config_json  TEXT NOT NULL,
-    generated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
 CREATE TABLE IF NOT EXISTS bucket_sync (
     id              INTEGER PRIMARY KEY,
     vhost_id        INTEGER NOT NULL REFERENCES vhosts(id) ON DELETE CASCADE,
@@ -164,7 +156,6 @@ CREATE TABLE IF NOT EXISTS migration_log (
 CLEAR_TABLES = [
     "migration_log",
     "migrations",
-    "node_configs",
     "bucket_sync",
     "pool_credentials",
     "routes",
@@ -368,26 +359,9 @@ async def _run_migrations_async(db) -> None:
         await db.commit()
         await db.execute("PRAGMA foreign_keys=ON")
 
-    # node_configs: ensure ON DELETE CASCADE on member_id FK
-    row = await db.execute_fetchall("SELECT sql FROM sqlite_master WHERE type='table' AND name='node_configs'")
-    if row and "ON DELETE CASCADE" not in (row[0]["sql"] or ""):
-        await db.execute("PRAGMA foreign_keys=OFF")
-        await db.execute("""CREATE TABLE node_configs_new (
-            id           INTEGER PRIMARY KEY,
-            member_id    INTEGER NOT NULL REFERENCES pool_members(id) ON DELETE CASCADE,
-            node_type    TEXT NOT NULL CHECK (node_type IN ('nanio-only','nginx-only','nginx-nanio')),
-            config_json  TEXT NOT NULL,
-            generated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )""")
-        await db.execute("INSERT INTO node_configs_new SELECT * FROM node_configs")
-        await db.execute("DROP TABLE node_configs")
-        await db.execute("ALTER TABLE node_configs_new RENAME TO node_configs")
-        await db.commit()
-        await db.execute("PRAGMA foreign_keys=ON")
-
-    # node_configs used to keep every generated node config, including the S3 secret key in
-    # plain text. Nothing writes to it any more; drop what older versions left behind.
-    await db.execute("DELETE FROM node_configs")
+    # node_configs kept every generated node config, S3 secret key included, in plain text.
+    # Nothing has written to it since; the table is gone for good.
+    await db.execute("DROP TABLE IF EXISTS node_configs")
 
     # migrations.split_routing (live-migration split persisted independently of the phase)
     info = await db.execute_fetchall("PRAGMA table_info(migrations)")

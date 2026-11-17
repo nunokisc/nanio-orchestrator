@@ -179,7 +179,7 @@ credentials). See [operations.md](operations.md#set-up-a-storage-node).
 
 `path_prefix` is `/bucket/`. Routing is per bucket; paths inside a bucket cannot be sent to
 different pools. Creating a route does not create the bucket on the target pool and does not
-move any object. Optional: `key_prefix`, `extra_directives`.
+move any object. Optional: `key_prefix`.
 
 ---
 

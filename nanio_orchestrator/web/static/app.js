@@ -357,7 +357,6 @@ async function createVhost(e) {
         ssl: sslChecked,
         ssl_cert_path: certPath || null,
         ssl_key_path: keyPath || null,
-        extra_directives: form.extra_directives.value || null,
         default_pool_id: rawPoolId ? parseInt(rawPoolId) : null,
     };
 
@@ -449,7 +448,6 @@ async function addRoute(e) {
     const data = {
         path_prefix: form.path_prefix.value,
         pool_id: parseInt(form.pool_id.value),
-        extra_directives: form.extra_directives.value || null,
     };
 
     try {
@@ -788,7 +786,6 @@ async function createMigration(event) {
         bucket: form.bucket.value,
         src_pool_id: srcId,
         dst_pool_id: dstId,
-        mode: form.mode.value,
     };
     try {
         const res = await fetch('/api/migrations', {
