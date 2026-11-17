@@ -25,8 +25,8 @@ run:
 test:
 	.venv/bin/python -m pytest -v
 
-test-cov:
-	.venv/bin/python -m pytest -v --cov=nanio_orchestrator --cov-report=term-missing --cov-report=html
+test-cov:          # fails below 100% of statements and branches
+	.venv/bin/python -m pytest -q --cov --cov-report=term --cov-report=html
 
 lint:
 	.venv/bin/ruff check nanio_orchestrator/ tests/

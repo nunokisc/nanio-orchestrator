@@ -257,7 +257,8 @@ Key settings:
 - Pool-type consistency within a vhost (all routes must be same type)
 - The audit log — all mutations should call `log_audit()`
 - Migration convergence loop in `migration_engine.py`
-- The test suite (`make test`, run before every commit)
+- The test suite (`make test`, run before every commit) and its coverage: 100% of statements and
+  branches, enforced by `make test-cov` and CI. Delete unreachable code instead of excluding it
 - The docs: `docs/*.md` describe behaviour operators rely on — update them in the same change.
   `docs/clients.md` lists every limit an S3 application meets; a change that adds or removes one
   must update it

@@ -160,7 +160,7 @@ credentials). See [operations.md](operations.md#set-up-a-storage-node).
 |-------|-------|
 | `ssl` | Default `true`; then both certificate paths are required |
 | `listen_port` | Default `443` |
-| `default_pool_id` | Pool for `location /`. Its type fixes the type every route of the vhost must use. |
+| `default_pool_id` | Pool for `location /`. Its type fixes the type every route of the vhost must use. On update, `null` removes the default pool and its `/` route. |
 | `extra_blocks` | Raw nginx directives. `zone`: `top` (after `server_name` and IP rules), `ssl` (after the certificate lines), `proxy` (after the proxy buffering lines), `end` (before the closing brace) |
 | `ip_rule_mode` | `allow`: only the listed addresses, then `deny all`. `deny`: the listed addresses are blocked. `null`: no restriction. |
 | `ip_rule_ips` | IPv4, IPv6, or CIDR; validated on write |
@@ -185,9 +185,11 @@ credentials). See [operations.md](operations.md#set-up-a-storage-node).
 - A folder route is refused with 409 if the folder already has objects on the bucket's own pool
   (`"allow_orphan": true` overrides). It creates the bucket on the folder's pool. The response
   carries `warnings` (a list) for anything that needs attention.
-- `PUT` cannot change a route's path, nor the pool of a folder route.
-- `DELETE` of a folder route is refused with 409 while the folder has objects on its pool
-  (`?allow_orphan=true` overrides).
+- `PUT` cannot change a route's path, nor the pool of a folder route. Changing the pool of a
+  bucket route whose bucket has objects starts a migration; when no migration slot is free it
+  answers 429 and changes nothing.
+- `DELETE` of a folder route is refused with 409 while the folder has objects on its pool, and
+  with 400 when its pool has no enabled member to ask (`?allow_orphan=true` overrides both).
 
 ---
 

@@ -260,7 +260,17 @@ async def _cascade_http_switching(
     return swept
 
 
-_migration_lock = asyncio.Lock()
+# Created on first use, not at import: on Python 3.9 a Lock belongs to the event loop that is
+# current when it is constructed, and acquiring it from the server's loop fails.
+_migration_lock: Optional[asyncio.Lock] = None
+
+
+def _start_lock() -> asyncio.Lock:
+    """Serialises the "is there a free slot" check with the creation of the migration."""
+    global _migration_lock
+    if _migration_lock is None:
+        _migration_lock = asyncio.Lock()
+    return _migration_lock
 
 
 def _now() -> str:
@@ -455,19 +465,17 @@ async def _write_state_sidecar(migration_id: int, db) -> None:
     write_migration_state(state)
 
 
-async def _update_progress(
-    migration_id: int,
-    objects_total: int = 0,
-    objects_done: int = 0,
-    bytes_total: int = 0,
-    bytes_done: int = 0,
-) -> None:
+async def _update_progress(migration_id: int, progress: dict[str, int]) -> None:
+    """Store the counters found in one rclone stats line (see _parse_rclone_stats).
+
+    A line carries either the byte counters or the object counters, rarely both: the ones it
+    does not mention keep their value.
+    """
+    assignments = ", ".join(f"{column}=?" for column in progress)
     async with get_db_ctx() as db:
         await db.execute(
-            """UPDATE migrations SET
-               objects_total=?, objects_done=?, bytes_total=?, bytes_done=?
-               WHERE id=?""",
-            (objects_total, objects_done, bytes_total, bytes_done, migration_id),
+            f"UPDATE migrations SET {assignments} WHERE id=?",
+            (*progress.values(), migration_id),
         )
         await db.commit()
 
@@ -481,24 +489,20 @@ async def _run_rclone(
     src_remote: str,
     dst_remote: str,
     phase: str,
-    check_only: bool = False,
     update: bool = False,
 ) -> bool:
-    """Run rclone copy or check. Returns True on success.
+    """Run rclone copy. Returns True on success.
 
     update=True adds --update: a destination object newer than its source is left alone.
     Required as soon as split routing is active, because the destination then holds client
     writes that a plain copy would overwrite with the older source version.
     """
     s = get_settings()
-    cmd = [s.rclone_path]
-
-    if check_only:
-        cmd += ["check", src_remote, dst_remote]
-    else:
-        cmd += ["copy", src_remote, dst_remote]
-
-    cmd += [
+    cmd = [
+        s.rclone_path,
+        "copy",
+        src_remote,
+        dst_remote,
         "--config",
         config_path,
         "--checkers",
@@ -512,10 +516,10 @@ async def _run_rclone(
         "NOTICE",
     ]
 
-    if s.migration_bandwidth_limit and not check_only:
+    if s.migration_bandwidth_limit:
         cmd += ["--bwlimit", s.migration_bandwidth_limit]
 
-    if update and not check_only:
+    if update:
         cmd += ["--update"]
 
     await _log(migration_id, phase, f"Running: {' '.join(cmd)}")
@@ -562,7 +566,7 @@ async def _run_rclone(
             # Parse progress from rclone stats lines and update DB
             progress = _parse_rclone_stats(line)
             if progress:
-                await _update_progress(migration_id, **progress)
+                await _update_progress(migration_id, progress)
 
         # Flush remaining buffered log lines
         await _flush_log_buffer()
@@ -824,8 +828,6 @@ async def _finish_folder_move(vhost_id: int, route_id: Optional[int], route_path
     nothing, so it is removed together with its marker and its http routes. Returns log lines.
     """
     notes: list[str] = []
-    changed: list[int] = []
-    marker = None
     async with get_db_ctx() as db:
         # the parent is looked up without this route in the way: it is the bucket's own pool
         parent = await subfolders.parent_pool(db, vhost_id, route_path)
@@ -836,11 +838,8 @@ async def _finish_folder_move(vhost_id: int, route_id: Optional[int], route_path
         await db.execute("DELETE FROM routes WHERE id = ?", (route_id,))
         http_changed, _ = await subfolders.sync_http_routes(db, bucket, route_path, parent["id"], None)
         await db.commit()
-        changed = [vhost_id, *http_changed]
         address = await subfolders.pool_endpoint(db, parent["id"])
-        if address:
-            marker = (address, bucket, subfolders.folder_key(route_path) + SUBFOLDER_MARKER, parent["id"])
-    for changed_vhost_id in changed:
+    for changed_vhost_id in [vhost_id, *http_changed]:
         filepath, content = await generate_vhost_config(changed_vhost_id)
         result = await apply_config_file(filepath, content, reload=True)
         if result.ok:
@@ -849,10 +848,10 @@ async def _finish_folder_move(vhost_id: int, route_id: Optional[int], route_path
                 await db.commit()
         else:
             notes.append(f"WARNING: nginx {result.stage} failed while removing the folder route: {result.output}")
-    if marker:
-        address, bucket, key, parent_id = marker
+    if address:
+        key = subfolders.folder_key(route_path) + SUBFOLDER_MARKER
         try:
-            access_key, secret_key, _ = await get_pool_s3_params(parent_id)
+            access_key, secret_key, _ = await get_pool_s3_params(parent["id"])
             await s3client.delete_object(address, bucket, key, access_key=access_key, secret_key=secret_key)
         except Exception as exc:
             notes.append(f"WARNING: could not remove the marker '{key}': {exc}")
@@ -1405,7 +1404,7 @@ async def start_migration(
               path_prefix doesn't match /{bucket}/ (e.g. /photos/2025/).
     """
     s = get_settings()
-    async with _migration_lock:
+    async with _start_lock():
         if get_active_count() >= s.migration_max_parallel:
             raise RuntimeError(
                 f"Max parallel migrations reached ({s.migration_max_parallel}). "
@@ -1446,27 +1445,26 @@ async def cancel_migration(migration_id: int) -> bool:
     # Kill rclone process if running — SIGTERM first, SIGKILL after 10s
     async with get_db_ctx() as db:
         rows = await db.execute_fetchall("SELECT rclone_pid FROM migrations WHERE id = ?", (migration_id,))
-        if rows:
-            pid = dict(rows[0]).get("rclone_pid")
-            if pid:
+    pid = rows[0]["rclone_pid"] if rows else None
+    if pid:
+        try:
+            os.kill(pid, 15)  # SIGTERM
+            # Wait up to 10s for process to exit, then SIGKILL
+            for _ in range(20):
+                await asyncio.sleep(0.5)
                 try:
-                    os.kill(pid, 15)  # SIGTERM
-                    # Wait up to 10s for process to exit, then SIGKILL
-                    for _ in range(20):
-                        await asyncio.sleep(0.5)
-                        try:
-                            os.kill(pid, 0)  # check if still alive
-                        except OSError:
-                            break  # process exited
-                    else:
-                        # Still alive after 10s — escalate to SIGKILL
-                        try:
-                            os.kill(pid, 9)  # SIGKILL
-                            logger.warning("Migration %d: rclone pid %d required SIGKILL", migration_id, pid)
-                        except OSError:
-                            pass
+                    os.kill(pid, 0)  # check if still alive
+                except OSError:
+                    break  # process exited
+            else:
+                # Still alive after 10s — escalate to SIGKILL
+                try:
+                    os.kill(pid, 9)  # SIGKILL
+                    logger.warning("Migration %d: rclone pid %d required SIGKILL", migration_id, pid)
                 except OSError:
                     pass
+        except OSError:
+            pass
 
     # Cancel the asyncio task
     task = _active_tasks.get(migration_id)

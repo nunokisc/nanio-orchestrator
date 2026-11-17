@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Optional
 
 import aiofiles
 
@@ -18,7 +19,9 @@ from nanio_orchestrator.nginx.generator import sha256_str
 
 logger = logging.getLogger(__name__)
 
-_stop_event = asyncio.Event()
+# Created by drift_loop(), not at import: on Python 3.9 an Event belongs to the event loop that
+# is current when it is constructed, and waiting on it from the server's loop fails.
+_stop_event: Optional[asyncio.Event] = None
 
 
 async def check_drift_once() -> list[dict]:
@@ -71,20 +74,21 @@ async def check_drift_once() -> list[dict]:
 
 async def drift_loop() -> None:
     """Run drift detection in a loop."""
-    _stop_event.clear()
+    global _stop_event
+    stop = _stop_event = asyncio.Event()
     s = get_settings()
     interval = s.drift_interval
 
     logger.info("Drift detection started (interval=%ds)", interval)
 
-    while not _stop_event.is_set():
+    while True:
         try:
             await check_drift_once()
         except Exception as e:
             logger.error("Drift check error: %s", e)
 
         try:
-            await asyncio.wait_for(_stop_event.wait(), timeout=interval)
+            await asyncio.wait_for(stop.wait(), timeout=interval)
             break  # stop_event was set
         except asyncio.TimeoutError:
             pass  # interval elapsed, continue loop
@@ -92,4 +96,5 @@ async def drift_loop() -> None:
 
 def stop_drift() -> None:
     """Signal the drift loop to stop."""
-    _stop_event.set()
+    if _stop_event is not None:
+        _stop_event.set()

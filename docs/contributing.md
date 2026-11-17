@@ -30,8 +30,20 @@ The dev server runs at `http://localhost:8080` with API key `dev`.
 
 ```bash
 make test           # pytest -v
-make test-cov       # with coverage report
+make test-cov       # with coverage; fails below 100%
 ```
+
+Coverage of statements and branches is **100% and enforced** in CI (`fail_under = 100` in
+`pyproject.toml`) on Python 3.11 and 3.12. On 3.9 the whole suite must pass, but the threshold
+is not applied: that version's tracer misreports `continue` lines and `async for` exits. A change that adds code adds the tests that exercise it.
+
+- Test the behaviour, not the line: assert on the response and on the resulting state (database
+  rows through the API, generated nginx files, sidecars, the S3 or rclone calls issued).
+- Code that cannot be reached is deleted, not excluded. There is no `# pragma: no cover` in the
+  package; adding one needs a comment that says why.
+- Background loops and locks are created when the loop starts, never at import (see
+  `test_no_asyncio_primitive_is_created_at_import`): on Python 3.9 they would be bound to the
+  wrong event loop.
 
 Tests use pytest-asyncio (`asyncio_mode = auto`) and httpx for API testing.
 No external services are required — nginx and S3 are mocked.

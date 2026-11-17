@@ -100,11 +100,6 @@ def write_pool_sidecar(
     logger.debug("Wrote pool sidecar: %s", filepath)
 
 
-def read_pool_sidecar(pool_name: str) -> Optional[dict]:
-    """Read a pool sidecar file."""
-    return _read_json(pool_sidecar_path(pool_name))
-
-
 def delete_pool_sidecar(pool_name: str) -> None:
     """Delete a pool sidecar file."""
     _delete_file(pool_sidecar_path(pool_name))
@@ -172,11 +167,6 @@ def write_vhost_sidecar(
     }
     _write_atomic(filepath, data)
     logger.debug("Wrote vhost sidecar: %s", filepath)
-
-
-def read_vhost_sidecar(server_name: str) -> Optional[dict]:
-    """Read a vhost sidecar file."""
-    return _read_json(vhost_sidecar_path(server_name))
 
 
 def delete_vhost_sidecar(server_name: str) -> None:

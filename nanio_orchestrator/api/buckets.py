@@ -17,6 +17,7 @@ from nanio_orchestrator.bucket_sync import sync_vhost_buckets_once
 from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.credentials import get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
+from nanio_orchestrator.migration_engine import get_active_count
 from nanio_orchestrator.migration_engine import start_migration as engine_start_migration
 from nanio_orchestrator.models import BucketListOut, BucketPromoteRequest
 from nanio_orchestrator.nginx.apply import write_vhost_config as _write_vhost_config
@@ -48,14 +49,6 @@ async def _require_vhost_with_default_pool(vhost_id: int, db):
     return vhost
 
 
-async def _require_vhost(vhost_id: int, db):
-    """Return vhost dict without requiring a default_pool_id."""
-    rows = await db.execute_fetchall("SELECT * FROM vhosts WHERE id = ?", (vhost_id,))
-    if not rows:
-        raise HTTPException(404, "Vhost not found")
-    return dict(rows[0])
-
-
 async def _first_enabled_member(pool_id: int, db) -> str:
     rows = await db.execute_fetchall(
         "SELECT address FROM pool_members WHERE pool_id = ? AND enabled = 1 ORDER BY id LIMIT 1",
@@ -72,6 +65,15 @@ async def _all_enabled_members(pool_id: int, db) -> list[str]:
         (pool_id,),
     )
     return [dict(r)["address"] for r in rows]
+
+
+def _require_free_migration_slot() -> None:
+    limit = get_settings().migration_max_parallel
+    if get_active_count() >= limit:
+        raise HTTPException(
+            429,
+            f"Max parallel migrations reached ({limit}). Wait for a running migration to finish or cancel one.",
+        )
 
 
 # ── List buckets ──────────────────────────────────────────────────────────────
@@ -136,13 +138,11 @@ async def trigger_bucket_sync(vhost_id: int):
     """Immediately sync bucket list from nanio-default for this vhost."""
     async with get_db_ctx() as db:
         rows = await db.execute_fetchall("SELECT id FROM vhosts WHERE id = ?", (vhost_id,))
-        if not rows:
-            raise HTTPException(404, "Vhost not found")
+    if not rows:
+        raise HTTPException(404, "Vhost not found")
     result = await sync_vhost_buckets_once(vhost_id)
     async with get_db_ctx() as db:
-        await log_audit(
-            db, "sync_buckets", "vhost", vhost_id, after={"found": result.get("found"), "new": result.get("new")}
-        )
+        await log_audit(db, "sync_buckets", "vhost", vhost_id, after=result)
         await db.commit()
     return result
 
@@ -200,6 +200,9 @@ async def promote_bucket(vhost_id: int, bucket: str, body: BucketPromoteRequest)
             )
 
         if body.migrate:
+            # Checked before the route is created: a route left behind by a migration that could
+            # not start would say the bucket is routed while nothing moves it
+            _require_free_migration_slot()
             # Migration needs at least one member on the target pool to proceed
             target_members = await _all_enabled_members(body.pool_id, db)
             if not target_members:
@@ -319,10 +322,6 @@ async def ignore_bucket(vhost_id: int, bucket: str):
 @router.post("/{vhost_id}/buckets/{bucket}/migrate")
 async def start_migration(vhost_id: int, bucket: str):
     """Start (or restart) object migration for a routed bucket via rclone engine."""
-    from nanio_orchestrator.migration_engine import get_active_count
-
-    s = get_settings()
-
     async with get_db_ctx() as db:
         vhost = await _require_vhost_with_default_pool(vhost_id, db)
 
@@ -341,20 +340,15 @@ async def start_migration(vhost_id: int, bucket: str):
             "SELECT status FROM bucket_sync WHERE vhost_id = ? AND bucket = ?",
             (vhost_id, bucket),
         )
-        if bs_rows and dict(bs_rows[0])["status"] == "deleted":
-            raise HTTPException(
-                400,
-                f"Bucket '{bucket}' no longer exists on source pool. "
-                "Remove the orphaned route and verify data before migrating.",
-            )
+    if bs_rows and dict(bs_rows[0])["status"] == "deleted":
+        raise HTTPException(
+            400,
+            f"Bucket '{bucket}' no longer exists on source pool. "
+            "Remove the orphaned route and verify data before migrating.",
+        )
 
     # Check parallel limit
-    if get_active_count() >= s.migration_max_parallel:
-        raise HTTPException(
-            429,
-            f"Max parallel migrations reached ({s.migration_max_parallel}). "
-            "Wait for a running migration to finish or cancel one.",
-        )
+    _require_free_migration_slot()
 
     if src_pool_id == dst_pool_id:
         raise HTTPException(
@@ -519,6 +513,8 @@ async def remove_bucket_route(vhost_id: int, bucket: str):
             raise HTTPException(404, f"No route found for /{bucket}/ on vhost {vhost_id}")
 
         route_id = route_rows[0]["id"]
+        # Finished migrations keep a reference to the route they moved (no ON DELETE SET NULL)
+        await db.execute("UPDATE migrations SET route_id = NULL WHERE route_id = ?", (route_id,))
         await db.execute("DELETE FROM routes WHERE id = ?", (route_id,))
 
         # Check if bucket_sync has a 'deleted' entry — if so, delete it; else mark unrouted
@@ -657,9 +653,6 @@ async def add_http_bucket_route(vhost_id: int, bucket: str):
                 400,
                 "Route management for http vhosts is only available when source_nanio_pool_id is configured",
             )
-        if not vhost.get("default_pool_id"):
-            raise HTTPException(400, "Vhost has no default_pool_id — cannot create a route")
-
         # Check route doesn't already exist
         existing = await db.execute_fetchall(
             "SELECT id FROM routes WHERE vhost_id = ? AND path_prefix = ?",

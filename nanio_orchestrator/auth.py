@@ -48,7 +48,7 @@ def verify_session_token(token: str, api_key: str, ttl: int) -> bool:
 
     # Timing-safe comparison
     expected = _sign(api_key, ts)
-    if not hmac.compare_digest(sig, expected):
+    if not hmac.compare_digest(sig.encode(), expected.encode()):
         return False
 
     # Check TTL

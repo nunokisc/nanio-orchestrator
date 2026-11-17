@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Optional
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_INLINE_COMMENT_RE = re.compile(r"(^|\s)#.*$")
+
+
+def strip_inline_comment(value: str) -> str:
+    """`300  # seconds` → `300`. A `#` starts a comment only at the start of the value or after
+    whitespace, so a `#` inside a value (an API key such as `abc#123`) is kept."""
+    return _INLINE_COMMENT_RE.sub("", value).strip()
 
 
 def _detect_dev_mode() -> bool:
@@ -66,7 +75,7 @@ class Settings(BaseSettings):
     def strip_inline_comments(cls, values: dict) -> dict:
         """Strip inline shell-style comments from env file values (e.g. '300 # seconds' → '300')."""
         if isinstance(values, dict):
-            return {k: v.split("#")[0].strip() if isinstance(v, str) else v for k, v in values.items()}
+            return {k: strip_inline_comment(v) if isinstance(v, str) else v for k, v in values.items()}
         return values
 
     @property

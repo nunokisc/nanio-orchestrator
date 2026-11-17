@@ -15,6 +15,7 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
+from nanio_orchestrator.config import strip_inline_comment
 from nanio_orchestrator.nginx.executor import detect_nginx
 
 SERVICE = "nanio-orchestrator"
@@ -124,7 +125,7 @@ def read_env_file(path: Path) -> dict[str, str]:
         key, _, value = line.partition("=")
         key = key.strip()
         if key.startswith(ENV_PREFIX):
-            values[key[len(ENV_PREFIX) :].lower()] = value.split("#")[0].strip()
+            values[key[len(ENV_PREFIX) :].lower()] = strip_inline_comment(value)
     return values
 
 
