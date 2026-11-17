@@ -143,15 +143,28 @@ def serve(host, port, do_reload):
 
 
 @main.command()
-def install():
-    """Install nanio-orchestrator for production use.
+@click.option("--no-start", is_flag=True, default=False, help="Do not enable and start the service.")
+def install(no_start):
+    """Install or upgrade nanio-orchestrator for production use.
 
-    Creates directories, config files, systemd unit, and DB schema.
-    Must be run as root.
+    Creates the service user, config file (API key and encryption secret),
+    database, nginx include, sudoers rule and systemd unit, starts the
+    service and checks the result. Safe to run again. Must be run as root.
     """
     from nanio_orchestrator.install import run_install
 
-    run_install()
+    run_install(start=not no_start)
+
+
+@main.command()
+def doctor():
+    """Check that everything the service needs is in place, and say how to fix what is not.
+
+    Must be run as root.
+    """
+    from nanio_orchestrator.install import run_doctor
+
+    run_doctor()
 
 
 @main.command()
@@ -159,17 +172,15 @@ def install():
     "--purge",
     is_flag=True,
     default=False,
-    help="Also delete data (/opt/nanio-orchestrator) and config (/etc/nanio-orchestrator).",
+    help="Also delete the managed nginx config, the database, the settings and the program.",
 )
 @click.option("--yes", "-y", is_flag=True, default=False, help="Skip confirmation prompt.")
 def remove(purge, yes):
-    """Remove nanio-orchestrator from the system.
+    """Remove the nanio-orchestrator service from the system.
 
-    Stops and disables the service, removes the systemd unit, sudoers
-    drop-in, nginx nanio config directories, and the service user.
-
-    Use --purge to also delete all data and config files.
-    Must be run as root.
+    Removes the systemd unit, sudoers rule and service user. The managed
+    nginx config stays, so nginx keeps serving; the database and settings
+    stay too. Use --purge to delete all of it. Must be run as root.
     """
     from nanio_orchestrator.install import run_remove
 

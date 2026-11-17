@@ -19,11 +19,11 @@ Key design constraints:
 ```
 nanio_orchestrator/
 ├── app.py              # FastAPI app factory + auth middleware
-├── cli.py              # Click CLI: serve, install, remove, rebuild
+├── cli.py              # Click CLI: serve, install, doctor, remove, rebuild-db, config …
 ├── config.py           # Settings (pydantic-settings), dev/prod detection
 ├── db.py               # SQLite schema, migrations, get_db_ctx()
 ├── models.py           # Pydantic request/response models
-├── install.py          # Production install: dirs, systemd, sudoers, DB init
+├── install.py          # install (idempotent), doctor (checks + fixes), remove
 ├── rebuild.py          # Reconstruct DB from nginx config + sidecar files
 ├── sidecar.py          # .meta.json sidecar read/write (pool + vhost sidecars)
 ├── audit_log.py        # Structured audit log entries
@@ -56,8 +56,7 @@ nanio_orchestrator/
 
 tests/                  # pytest suite (asyncio_mode=auto)
 docs/                   # Detailed documentation
-scripts/                # bootstrap.sh (bare-server setup)
-systemd/                # nanio-orchestrator.service template
+install.sh              # One-command install/upgrade: venv in /opt + `nanio-orchestrator install`
 ```
 
 ## Key concepts
@@ -182,20 +181,15 @@ pip install -e ".[dev]"
 source .venv/bin/activate
 ```
 
-## Production install (from PyPI)
+## Production install
 
 ```bash
-# Install the tool (pick one)
-pipx install nanio-orchestrator
-# or:
-uv tool install nanio-orchestrator
-
-# Run the installer (requires root)
-sudo nanio-orchestrator install
-
-# Start/enable service
-sudo systemctl enable --now nanio-orchestrator
+curl -fsSL https://raw.githubusercontent.com/nunokisc/nanio-orchestrator/main/install.sh | sudo bash
+sudo nanio-orchestrator doctor     # verify; prints the fix for anything wrong
 ```
+
+`install` must stay idempotent (never overwrite config, DB or managed nginx files) and `remove`
+without `--purge` must leave `/etc/nginx/nanio` in place — nginx keeps serving.
 
 ## Environment variables
 
@@ -210,7 +204,7 @@ Key settings:
 | `NANIO_ORCHESTRATOR_API_KEY` | *(generated)* | API key for all requests |
 | `NANIO_ORCHESTRATOR_DB_PATH` | `/opt/nanio-orchestrator/data/orchestrator.db` | SQLite file |
 | `NANIO_ORCHESTRATOR_NGINX_CONFIG_DIR` | `/etc/nginx/nanio` | Where to write nginx configs |
-| `NANIO_ORCHESTRATOR_SECRET` | *(none)* | Fernet key for credential encryption |
+| `NANIO_ORCHESTRATOR_SECRET` | *(generated)* | Fernet key for credential encryption |
 | `NANIO_ORCHESTRATOR_RCLONE_PATH` | `rclone` | Binary path for migrations |
 | `NANIO_ORCHESTRATOR_MIGRATION_MAX_PARALLEL` | `2` | Concurrent migrations |
 

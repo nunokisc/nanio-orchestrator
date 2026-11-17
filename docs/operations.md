@@ -244,8 +244,9 @@ from disk.
 
 ```
 nanio-orchestrator [serve]                  Start the server (default command)
-nanio-orchestrator install                  Production install (root)
-nanio-orchestrator remove [--purge] [-y]    Uninstall; --purge also deletes data
+nanio-orchestrator install [--no-start]     Install or upgrade in place (root)
+nanio-orchestrator doctor                   Check the installation and print fixes (root)
+nanio-orchestrator remove [--purge] [-y]    Remove the service; --purge also deletes config and data
 nanio-orchestrator rebuild-db               Rebuild the database from the files on disk
   --dry-run                                   Show what would be imported
   --force                                     Replace existing data
