@@ -411,7 +411,7 @@ def config_reload():
 
 @config.command("rebuild")
 def config_rebuild():
-    """Rebuild all config files from DB."""
+    """Rebuild all config files and sidecars from DB, then reload nginx."""
     import asyncio
 
     async def _rebuild():
@@ -422,24 +422,19 @@ def config_rebuild():
         s.ensure_dirs()
         await init_db()
 
-        from nanio_orchestrator.nginx.apply import apply_config_files
-        from nanio_orchestrator.nginx.generator import generate_all_configs, remove_config_file
+        from nanio_orchestrator.nginx.apply import rebuild_all_configs
 
-        configs = await generate_all_configs()
-        for filepath, content in configs:
-            if content is None:  # empty pool — no upstream block to write
-                await remove_config_file(filepath)
-                print(f"  - {filepath} (removed: pool has no members)")
-
-        to_write = [(fp, ct) for fp, ct in configs if ct is not None]
-        result = await apply_config_files(to_write, reload=True)
-        if result.ok:
-            for filepath, _ in to_write:
+        result = await rebuild_all_configs()
+        for filepath in result["removed"]:
+            print(f"  - {filepath} (removed: pool has no members)")
+        if result["ok"]:
+            for filepath in result["written"]:
                 print(f"  ✓ {filepath}")
+            print("  ✓ sidecars (.meta.json) rewritten")
         else:
-            print(f"nginx {result.stage} failed — previous config files restored")
-        print(result.output)
-        return result.ok
+            print(f"nginx {result['stage']} failed — previous config files restored")
+        print(result["output"])
+        return result["ok"]
 
     ok = asyncio.run(_rebuild())
     sys.exit(0 if ok else 1)

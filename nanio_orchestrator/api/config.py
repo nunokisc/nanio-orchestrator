@@ -12,10 +12,9 @@ from nanio_orchestrator.audit_log import log_audit
 from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator.models import ConfigFileStatus, ConfigStatus, NginxResult
-from nanio_orchestrator.nginx.apply import apply_config_file, apply_config_files, reload_nginx_locked
+from nanio_orchestrator.nginx.apply import apply_config_file, rebuild_all_configs, reload_nginx_locked
 from nanio_orchestrator.nginx.executor import test_config
 from nanio_orchestrator.nginx.generator import (
-    generate_all_configs,
     generate_pool_config,
     generate_vhost_config,
     record_file_state,
@@ -110,208 +109,22 @@ async def sync_from_disk():
     members, vhosts, and routes — never deletes existing data.  Safe to run
     at any time; running it twice is idempotent.
     """
-    from datetime import datetime, timezone
+    from nanio_orchestrator.rebuild import import_configs
 
-    from nanio_orchestrator.nginx.parser import is_managed_file, parse_upstream_block, parse_vhost_block
-    from nanio_orchestrator.sidecar import scan_pool_sidecars, scan_vhost_sidecars
-
-    s = get_settings()
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    pool_sidecars = {sc["name"]: sc for sc in scan_pool_sidecars() if sc.get("name")}
-    vhost_sidecars = {sc["server_name"]: sc for sc in scan_vhost_sidecars() if sc.get("server_name")}
-
-    pools_new = pools_updated = members_new = 0
-    vhosts_new = vhosts_updated = routes_synced = files_synced = 0
     warnings: list = []
-
     async with get_db_ctx() as db:
-        pool_name_to_id: dict = {}
-
-        # ── Step 1: pools from upstream configs ───────────────────────────
-        for conf_path in sorted(s.pools_dir.glob("*.conf")):
-            try:
-                content = conf_path.read_text(encoding="utf-8")
-            except OSError:
-                continue
-            if not is_managed_file(content):
-                continue
-
-            parsed = parse_upstream_block(content)
-            if not parsed or not parsed["name"]:
-                continue
-
-            name = parsed["name"]
-            sidecar = pool_sidecars.get(name, {})
-            pool_type = sidecar.get("type", "nanio")
-            description = sidecar.get("description")
-
-            existing = await db.execute_fetchall("SELECT id FROM pools WHERE name=?", (name,))
-            if existing:
-                pool_id = existing[0]["id"]
-                await db.execute(
-                    """UPDATE pools SET description=?, type=?, lb_method=?, keepalive=?,
-                       updated_at=datetime('now') WHERE id=?""",
-                    (description, pool_type, parsed["lb_method"], parsed["keepalive"], pool_id),
-                )
-                pools_updated += 1
-            else:
-                cursor = await db.execute(
-                    "INSERT INTO pools (name, description, type, lb_method, keepalive) VALUES (?,?,?,?,?)",
-                    (name, description, pool_type, parsed["lb_method"], parsed["keepalive"]),
-                )
-                pool_id = cursor.lastrowid
-                pools_new += 1
-
-            pool_name_to_id[name] = pool_id
-
-            for m in parsed["members"]:
-                already = await db.execute_fetchall(
-                    "SELECT id FROM pool_members WHERE pool_id=? AND address=?", (pool_id, m["address"])
-                )
-                if not already:
-                    await db.execute(
-                        """INSERT INTO pool_members
-                           (pool_id, address, role, weight, max_fails, fail_timeout_s, enabled)
-                           VALUES (?,?,?,?,?,?,1)""",
-                        (pool_id, m["address"], m["role"], m["weight"], m["max_fails"], m["fail_timeout_s"]),
-                    )
-                    members_new += 1
-
-            creds = sidecar.get("credentials")
-            if creds and creds.get("access_key_enc") and creds.get("secret_key_enc"):
-                no_creds = await db.execute_fetchall("SELECT id FROM pool_credentials WHERE pool_id=?", (pool_id,))
-                if not no_creds:
-                    await db.execute(
-                        """INSERT INTO pool_credentials
-                           (pool_id, access_key_enc, secret_key_enc, endpoint_url, region)
-                           VALUES (?,?,?,?,?)""",
-                        (
-                            pool_id,
-                            creds["access_key_enc"],
-                            creds["secret_key_enc"],
-                            creds.get("endpoint_url"),
-                            creds.get("region", "us-east-1"),
-                        ),
-                    )
-
-            h = sha256_str(content)
-            await db.execute(
-                """INSERT INTO config_files (path, sha256_disk, sha256_db, content_snapshot, last_synced_at)
-                   VALUES (?,?,?,?,?)
-                   ON CONFLICT(path) DO UPDATE SET
-                     sha256_disk=excluded.sha256_disk, sha256_db=excluded.sha256_db,
-                     content_snapshot=excluded.content_snapshot,
-                     last_synced_at=excluded.last_synced_at""",
-                (str(conf_path), h, h, content, now),
-            )
-            files_synced += 1
-
-        # ── Step 2: vhosts + routes from server configs ───────────────────
-        for conf_path in sorted(s.vhosts_dir.glob("*.conf")):
-            try:
-                content = conf_path.read_text(encoding="utf-8")
-            except OSError:
-                continue
-            if not is_managed_file(content):
-                continue
-
-            parsed = parse_vhost_block(content)
-            if not parsed or not parsed["server_name"]:
-                continue
-
-            server_name = parsed["server_name"]
-            sidecar = vhost_sidecars.get(server_name, {})
-
-            default_pool_id = None
-            sc_pool_name = sidecar.get("default_pool_name")
-            if sc_pool_name:
-                default_pool_id = pool_name_to_id.get(sc_pool_name)
-                if not default_pool_id:
-                    row = await db.execute_fetchall("SELECT id FROM pools WHERE name=?", (sc_pool_name,))
-                    if row:
-                        default_pool_id = row[0]["id"]
-
-            existing_v = await db.execute_fetchall("SELECT id FROM vhosts WHERE server_name=?", (server_name,))
-            if existing_v:
-                vhost_id = existing_v[0]["id"]
-                await db.execute(
-                    """UPDATE vhosts SET listen_port=?, ssl=?, ssl_cert_path=?, ssl_key_path=?,
-                       default_pool_id=COALESCE(?,default_pool_id), updated_at=datetime('now')
-                       WHERE id=?""",
-                    (
-                        parsed["listen_port"],
-                        1 if parsed["ssl"] else 0,
-                        parsed["ssl_cert_path"],
-                        parsed["ssl_key_path"],
-                        default_pool_id,
-                        vhost_id,
-                    ),
-                )
-                vhosts_updated += 1
-            else:
-                cursor = await db.execute(
-                    """INSERT INTO vhosts
-                       (server_name, listen_port, ssl, ssl_cert_path, ssl_key_path, enabled, default_pool_id)
-                       VALUES (?,?,?,?,?,1,?)""",
-                    (
-                        server_name,
-                        parsed["listen_port"],
-                        1 if parsed["ssl"] else 0,
-                        parsed["ssl_cert_path"],
-                        parsed["ssl_key_path"],
-                        default_pool_id,
-                    ),
-                )
-                vhost_id = cursor.lastrowid
-                vhosts_new += 1
-
-            for route in parsed["routes"]:
-                pool_name = route["pool_name"]
-                pool_id = pool_name_to_id.get(pool_name)
-                if not pool_id:
-                    row = await db.execute_fetchall("SELECT id FROM pools WHERE name=?", (pool_name,))
-                    pool_id = row[0]["id"] if row else None
-                if not pool_id:
-                    warnings.append(
-                        f"Route {route['path_prefix']} on {server_name}: pool '{pool_name}' not found — skipped"
-                    )
-                    continue
-
-                await db.execute(
-                    """INSERT INTO routes (vhost_id, path_prefix, pool_id, key_prefix, enabled)
-                       VALUES (?,?,?,?,1)
-                       ON CONFLICT(vhost_id, path_prefix) DO UPDATE SET
-                         pool_id=excluded.pool_id,
-                         key_prefix=excluded.key_prefix,
-                         updated_at=datetime('now')""",
-                    (vhost_id, route["path_prefix"], pool_id, route.get("key_prefix")),
-                )
-                routes_synced += 1
-
-            h = sha256_str(content)
-            await db.execute(
-                """INSERT INTO config_files (path, sha256_disk, sha256_db, content_snapshot, last_synced_at)
-                   VALUES (?,?,?,?,?)
-                   ON CONFLICT(path) DO UPDATE SET
-                     sha256_disk=excluded.sha256_disk, sha256_db=excluded.sha256_db,
-                     content_snapshot=excluded.content_snapshot,
-                     last_synced_at=excluded.last_synced_at""",
-                (str(conf_path), h, h, content, now),
-            )
-            files_synced += 1
-
+        counts = await import_configs(db, warnings)
         await db.commit()
 
     return {
         "ok": True,
-        "pools_new": pools_new,
-        "pools_updated": pools_updated,
-        "members_new": members_new,
-        "vhosts_new": vhosts_new,
-        "vhosts_updated": vhosts_updated,
-        "routes_synced": routes_synced,
-        "files_synced": files_synced,
+        "pools_new": counts["pools_new"],
+        "pools_updated": counts["pools_updated"],
+        "members_new": counts["members_new"],
+        "vhosts_new": counts["vhosts_new"],
+        "vhosts_updated": counts["vhosts_updated"],
+        "routes_synced": counts["routes"],
+        "files_synced": counts["files"],
         "warnings": warnings,
     }
 
@@ -321,52 +134,23 @@ async def sync_from_disk():
 
 @router.post("/rebuild")
 async def rebuild_all():
-    """Rebuild all config files from DB, validate, and reload."""
-
-    configs = await generate_all_configs()
-    errors = []
-    written = []
-    removed = []
-
-    # Separate empty-pool entries (content=None) from real configs
-    to_write = [(fp, ct) for fp, ct in configs if ct is not None]
-    to_remove = [fp for fp, ct in configs if ct is None]
-
-    # Remove files for empty pools
-    async with get_db_ctx() as db:
-        for filepath in to_remove:
-            p = Path(filepath)
-            if p.exists():
-                p.unlink()
-                removed.append(filepath)
-            await db.execute("DELETE FROM config_files WHERE path = ?", (filepath,))
-        await db.commit()
-
-    # Write, nginx -t, reload — every file is restored if the test or the reload fails
+    """Rebuild all config files and sidecars from DB, validate, and reload."""
     try:
-        result = await apply_config_files(to_write, reload=True)
+        result = await rebuild_all_configs()
     except OSError as e:
-        return {"ok": False, "output": str(e), "written": [], "removed": removed, "errors": [str(e)]}
+        return {"ok": False, "output": str(e), "written": [], "removed": [], "errors": [str(e)]}
 
-    if result.stage == "test" and not result.ok:
-        return {"ok": False, "output": result.output, "written": [], "removed": removed}
-
-    written = [fp for fp, _ in to_write] if result.ok else []
-
-    # Record all in DB
-    async with get_db_ctx() as db:
-        if result.ok:
-            for filepath, content in to_write:
-                await record_file_state(db, filepath, content)
-        await log_audit(db, "rebuild", "config", None, reload_ok=result.ok, reload_output=result.output)
-        await db.commit()
+    if not (result["stage"] == "test" and not result["ok"]):
+        async with get_db_ctx() as db:
+            await log_audit(db, "rebuild", "config", None, reload_ok=result["ok"], reload_output=result["output"])
+            await db.commit()
 
     return {
-        "ok": result.ok,
-        "output": result.output,
-        "written": written,
-        "removed": removed,
-        "errors": errors,
+        "ok": result["ok"],
+        "output": result["output"],
+        "written": result["written"],
+        "removed": result["removed"],
+        "errors": [],
     }
 
 

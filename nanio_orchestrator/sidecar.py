@@ -185,6 +185,47 @@ def delete_vhost_sidecar(server_name: str) -> None:
     _delete_file(vhost_sidecar_path(server_name))
 
 
+async def write_all_sidecars(db) -> int:
+    """Rewrite every pool and vhost sidecar from the database. Returns how many were written."""
+    count = 0
+    pools = await db.execute_fetchall(
+        """SELECT p.id, p.name, p.type, p.description, p.source_nanio_pool_id,
+                  c.access_key_enc, c.secret_key_enc, c.endpoint_url, c.region
+           FROM pools p LEFT JOIN pool_credentials c ON c.pool_id = p.id"""
+    )
+    for p in pools:
+        credentials = None
+        if p["access_key_enc"] and p["secret_key_enc"]:
+            credentials = {
+                "access_key_enc": p["access_key_enc"],
+                "secret_key_enc": p["secret_key_enc"],
+                "endpoint_url": p["endpoint_url"],
+                "region": p["region"] or "us-east-1",
+            }
+        else:
+            delete_pool_credentials_sidecar(p["name"])  # the DB is the truth here
+        write_pool_sidecar(p["id"], p["name"], p["type"], p["description"], credentials, p["source_nanio_pool_id"])
+        count += 1
+
+    vhosts = await db.execute_fetchall(
+        """SELECT v.id, v.server_name, v.default_pool_id, v.extra_blocks_json,
+                  v.ip_rule_mode, v.ip_rule_ips_json, p.name AS default_pool_name
+           FROM vhosts v LEFT JOIN pools p ON p.id = v.default_pool_id"""
+    )
+    for v in vhosts:
+        write_vhost_sidecar(
+            v["id"],
+            v["server_name"],
+            v["default_pool_id"],
+            v["default_pool_name"],
+            v["extra_blocks_json"],
+            v["ip_rule_mode"],
+            v["ip_rule_ips_json"],
+        )
+        count += 1
+    return count
+
+
 # ── Migration state files ────────────────────────────────────────────────────
 
 

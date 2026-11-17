@@ -105,6 +105,11 @@ SQLite database from:
 
 **This is a core feature. Never break it.**
 
+There is one importer, `rebuild.import_configs()`: `rebuild_from_disk()` runs it on an empty DB,
+`POST /api/config/sync` on a live one. The opposite direction is `apply.rebuild_all_configs()`
+(`POST /api/config/rebuild`, `config rebuild`), which rewrites every `.conf` **and** every sidecar.
+Schema upgrades live only in `db._run_migrations_async()`; `init_db_sync()` just runs `init_db()`.
+
 ## Golden rules
 
 1. **Always update both DB and sidecar together.** When writing vhost fields (extra_blocks,

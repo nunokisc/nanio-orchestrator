@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator, Optional
@@ -394,133 +393,8 @@ async def _run_migrations_async(db) -> None:
 
 
 def init_db_sync() -> None:
-    """Synchronous schema creation for CLI / install commands."""
-    path = get_db_path()
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
-    conn.executescript(SCHEMA_SQL)
-    # Migration: vhosts.default_pool_id
-    info = conn.execute("PRAGMA table_info(vhosts)").fetchall()
-    col_names = {r[1] for r in info}
-    if "default_pool_id" not in col_names:
-        conn.execute("ALTER TABLE vhosts ADD COLUMN default_pool_id INTEGER REFERENCES pools(id)")
-    # Migration: routes.key_prefix
-    info = conn.execute("PRAGMA table_info(routes)").fetchall()
-    col_names = {r[1] for r in info}
-    if "key_prefix" not in col_names:
-        conn.execute("ALTER TABLE routes ADD COLUMN key_prefix TEXT")
+    """Create/upgrade the schema from synchronous code (CLI, installer)."""
+    import asyncio
 
-    # Migration: vhosts.ip_rule_mode + ip_rule_ips_json (per-vhost IP access control)
-    info = conn.execute("PRAGMA table_info(vhosts)").fetchall()
-    col_names = {r[1] for r in info}
-    if "ip_rule_mode" not in col_names:
-        conn.execute("ALTER TABLE vhosts ADD COLUMN ip_rule_mode TEXT")
-        conn.execute("ALTER TABLE vhosts ADD COLUMN ip_rule_ips_json TEXT")
-
-    # Migration: rename pool type 'cold' → 'http' (cold was an alias with no functional difference)
-    conn.execute("UPDATE pools SET type = 'http' WHERE type = 'cold'")
-
-    # Rebuild migrations table when needed:
-    # - Remove purge_source / needs_purge phases (purge was removed intentionally — data is never
-    #   deleted automatically; orphaned source data is tracked instead)
-    # - Add mode, route_id, orphaned_* columns
-    # - Any existing purge_source/needs_purge records are converted to 'done'
-    info = conn.execute("PRAGMA table_info(migrations)").fetchall()
-    col_names_mig = {r[1] for r in info}
-    row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='migrations'").fetchone()
-    migrations_sql = row[0] if row else ""
-    needs_rebuild = (
-        "purge_source" in migrations_sql
-        or "needs_purge" in migrations_sql
-        or "orphaned_source_pool_id" not in col_names_mig
-        or "route_id" not in col_names_mig
-        or "mode" not in col_names_mig
-    )
-    if needs_rebuild:
-        conn.execute("PRAGMA foreign_keys=OFF")
-        conn.execute("""CREATE TABLE migrations_new (
-            id                      INTEGER PRIMARY KEY,
-            vhost_id                INTEGER NOT NULL REFERENCES vhosts(id) ON DELETE CASCADE,
-            bucket                  TEXT NOT NULL,
-            src_pool_id             INTEGER NOT NULL REFERENCES pools(id),
-            dst_pool_id             INTEGER NOT NULL REFERENCES pools(id),
-            mode                    TEXT NOT NULL DEFAULT 'copy'
-                                    CHECK (mode IN ('copy')),
-            phase                   TEXT NOT NULL DEFAULT 'pending'
-                                    CHECK (phase IN
-                                        ('pending','copying','write_routing','verifying',
-                                         'switching','done','error','cancelled')),
-            rclone_pid              INTEGER,
-            objects_total           INTEGER NOT NULL DEFAULT 0,
-            objects_done            INTEGER NOT NULL DEFAULT 0,
-            bytes_total             INTEGER NOT NULL DEFAULT 0,
-            bytes_done              INTEGER NOT NULL DEFAULT 0,
-            error_msg               TEXT,
-            started_at              TEXT,
-            finished_at             TEXT,
-            route_id                INTEGER REFERENCES routes(id),
-            orphaned_source_pool_id INTEGER REFERENCES pools(id),
-            orphaned_source_prefix  TEXT,
-            orphaned_at             TEXT,
-            created_at              TEXT NOT NULL DEFAULT (datetime('now'))
-        )""")
-        src_cols = [
-            "id",
-            "vhost_id",
-            "bucket",
-            "src_pool_id",
-            "dst_pool_id",
-            "rclone_pid",
-            "objects_total",
-            "objects_done",
-            "bytes_total",
-            "bytes_done",
-            "error_msg",
-            "started_at",
-            "finished_at",
-            "created_at",
-        ]
-        optional_cols = {"mode": "'copy'", "route_id": "NULL"}
-        select_parts = []
-        for c in src_cols:
-            select_parts.append(c if c in col_names_mig else f"NULL AS {c}")
-        for c, default in optional_cols.items():
-            select_parts.append(c if c in col_names_mig else f"{default} AS {c}")
-        phase_expr = "CASE WHEN phase IN ('purge_source','needs_purge') THEN 'done' ELSE phase END"
-        select_parts.append(f"{phase_expr} AS phase")
-        select_parts.extend(
-            ["NULL AS orphaned_source_pool_id", "NULL AS orphaned_source_prefix", "NULL AS orphaned_at"]
-        )
-        conn.execute(f"INSERT INTO migrations_new SELECT {', '.join(select_parts)} FROM migrations")
-        conn.execute("DROP TABLE migrations")
-        conn.execute("ALTER TABLE migrations_new RENAME TO migrations")
-        conn.commit()
-        conn.execute("PRAGMA foreign_keys=ON")
-
-    # node_configs: ensure ON DELETE CASCADE on member_id FK
-    row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='node_configs'").fetchone()
-    if row and "ON DELETE CASCADE" not in (row[0] or ""):
-        conn.execute("PRAGMA foreign_keys=OFF")
-        conn.execute("""CREATE TABLE node_configs_new (
-            id           INTEGER PRIMARY KEY,
-            member_id    INTEGER NOT NULL REFERENCES pool_members(id) ON DELETE CASCADE,
-            node_type    TEXT NOT NULL CHECK (node_type IN ('nanio-only','nginx-only','nginx-nanio')),
-            config_json  TEXT NOT NULL,
-            generated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )""")
-        conn.execute("INSERT INTO node_configs_new SELECT * FROM node_configs")
-        conn.execute("DROP TABLE node_configs")
-        conn.execute("ALTER TABLE node_configs_new RENAME TO node_configs")
-        conn.commit()
-        conn.execute("PRAGMA foreign_keys=ON")
-
-    # node_configs: purge generated node configs stored by older versions (plain-text secrets)
-    conn.execute("DELETE FROM node_configs")
-
-    # migrations.split_routing (live-migration split persisted independently of the phase)
-    info = conn.execute("PRAGMA table_info(migrations)").fetchall()
-    if "split_routing" not in {r[1] for r in info}:
-        conn.execute("ALTER TABLE migrations ADD COLUMN split_routing INTEGER NOT NULL DEFAULT 0")
-        conn.execute("UPDATE migrations SET split_routing = 1 WHERE phase IN ('write_routing', 'verifying')")
-    conn.commit()
-    conn.close()
+    Path(get_db_path()).parent.mkdir(parents=True, exist_ok=True)
+    asyncio.run(init_db())

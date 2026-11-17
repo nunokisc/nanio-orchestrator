@@ -38,8 +38,11 @@ class TestDrift:
         })
         assert resp.status_code == 200
 
-        # File should be restored
-        assert pool_file.read_text() == original
+        # File should be restored (the header carries a generation timestamp)
+        def without_stamp(text):
+            return [ln.split(" updated:")[0] for ln in text.splitlines()]
+
+        assert without_stamp(pool_file.read_text()) == without_stamp(original)
 
     async def test_absorb_file(self, client, mock_nginx, tmp_dirs):
         pool = await create_pool(client, "absorb-pool")

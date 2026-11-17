@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.nginx.generator import sha256_str
@@ -31,99 +31,103 @@ from nanio_orchestrator.sidecar import (
 logger = logging.getLogger(__name__)
 
 
-async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
-    """Reconstruct the entire database from disk state.
+_RECORD_FILE_SQL = """INSERT INTO config_files (path, sha256_disk, sha256_db, content_snapshot, last_synced_at)
+   VALUES (?, ?, ?, ?, ?)
+   ON CONFLICT(path) DO UPDATE SET
+     sha256_disk = excluded.sha256_disk, sha256_db = excluded.sha256_db,
+     content_snapshot = excluded.content_snapshot, last_synced_at = excluded.last_synced_at"""
 
-    Args:
-        dry_run: If True, report what would be imported without writing to DB.
 
-    Returns dict with counts and warnings.
+def _read_managed(conf_path) -> Optional[str]:
+    try:
+        content = conf_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return content if is_managed_file(content) else None
+
+
+async def import_configs(db, warnings: List[str]) -> Dict[str, Any]:
+    """Upsert the pools, members, credentials, vhosts and routes found on disk. Never deletes.
+
+    The one disk → DB importer: a full import on an empty database (``rebuild_from_disk``),
+    an additive one on a live database (``POST /api/config/sync``).
+
+    What the ``.conf`` files define (members, ports, TLS, routes) is always taken from disk.
+    What only the sidecars know (pool type, description, credentials, default pool, extra
+    blocks, IP rules) fills new rows; on existing rows the database stays authoritative,
+    except pool type/description and the default pool, which follow a sidecar that is present.
+
+    The caller commits. Returns counts plus ``pool_name_to_id``.
     """
-    from nanio_orchestrator.db import get_db_ctx, init_db
-
     s = get_settings()
-    warnings: List[str] = []
-    pool_count = 0
-    vhost_count = 0
-    route_count = 0
-    member_count = 0
-    migration_count = 0
-    credentials_count = 0
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    pool_sidecars = {sc["name"]: sc for sc in scan_pool_sidecars() if sc.get("name")}
+    vhost_sidecars = {sc["server_name"]: sc for sc in scan_vhost_sidecars() if sc.get("server_name")}
+    counts = {
+        "pools_new": 0,
+        "pools_updated": 0,
+        "members_new": 0,
+        "credentials_new": 0,
+        "vhosts_new": 0,
+        "vhosts_updated": 0,
+        "routes": 0,
+        "files": 0,
+    }
 
-    # Build sidecar lookup tables
-    pool_sidecars: Dict[str, dict] = {}
-    for sc in scan_pool_sidecars():
-        name = sc.get("name")
-        if name:
-            pool_sidecars[name] = sc
+    pool_name_to_id: Dict[str, int] = {
+        r["name"]: r["id"] for r in await db.execute_fetchall("SELECT id, name FROM pools")
+    }
+    new_http_pools: List[str] = []
 
-    vhost_sidecars: Dict[str, dict] = {}
-    for sc in scan_vhost_sidecars():
-        sn = sc.get("server_name")
-        if sn:
-            vhost_sidecars[sn] = sc
+    # ── Pools, members, credentials ──────────────────────────────────────────
+    for conf_path in sorted(s.pools_dir.glob("*.conf")):
+        content = _read_managed(conf_path)
+        parsed = parse_upstream_block(content) if content else None
+        if not parsed or not parsed["name"]:
+            continue
 
-    migration_states = scan_migration_states()
-    migration_completions = scan_migration_completions()
-
-    if dry_run:
-        return await _dry_run_report(s, pool_sidecars, vhost_sidecars, migration_states, migration_completions)
-
-    # Step 1: (re)create schema
-    await init_db()
-
-    async with get_db_ctx() as db:
-        # Name → inserted ID mapping
-        pool_name_to_id: Dict[str, int] = {}
-        # path → content cache (avoid re-reading files in step 5)
-        conf_content_cache: Dict[str, str] = {}
-
-        # Step 2: import pools from nginx upstream configs + sidecars
-        for conf_path in sorted(s.pools_dir.glob("*.conf")):
-            try:
-                content = conf_path.read_text(encoding="utf-8")
-            except OSError:
-                continue
-            if not is_managed_file(content):
-                continue
-            conf_content_cache[str(conf_path)] = content
-
-            parsed = parse_upstream_block(content)
-            if not parsed or not parsed["name"]:
-                continue
-
-            name = parsed["name"]
-            sidecar = pool_sidecars.get(name, {})
-
-            pool_type = sidecar.get("type", "nanio")
-            description = sidecar.get("description")
-
+        name = parsed["name"]
+        sidecar = pool_sidecars.get(name)
+        pool_id = pool_name_to_id.get(name)
+        if pool_id is None:
+            pool_type = (sidecar or {}).get("type", "nanio")
             cursor = await db.execute(
-                """INSERT INTO pools (name, description, type, lb_method, keepalive)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (name, description, pool_type, parsed["lb_method"], parsed["keepalive"]),
+                "INSERT INTO pools (name, description, type, lb_method, keepalive) VALUES (?, ?, ?, ?, ?)",
+                (name, (sidecar or {}).get("description"), pool_type, parsed["lb_method"], parsed["keepalive"]),
             )
-            pool_id = cursor.lastrowid
-            pool_name_to_id[name] = pool_id
-            # Store source_nanio_pool_id from sidecar for second pass
-            snp_raw = sidecar.get("source_nanio_pool_id")
-            if pool_type == "http" and snp_raw is not None:
-                pool_name_to_id[f"__snp__{name}"] = snp_raw  # use sentinel key
-            pool_count += 1
+            pool_id = pool_name_to_id[name] = cursor.lastrowid
+            counts["pools_new"] += 1
+            if pool_type == "http":
+                new_http_pools.append(name)
+        else:
+            await db.execute(
+                "UPDATE pools SET lb_method=?, keepalive=?, updated_at=datetime('now') WHERE id=?",
+                (parsed["lb_method"], parsed["keepalive"], pool_id),
+            )
+            if sidecar:  # without a sidecar there is nothing better than what the DB already has
+                await db.execute(
+                    "UPDATE pools SET description=?, type=? WHERE id=?",
+                    (sidecar.get("description"), sidecar.get("type", "nanio"), pool_id),
+                )
+            counts["pools_updated"] += 1
 
-            # Import members
-            for m in parsed["members"]:
+        for m in parsed["members"]:
+            exists = await db.execute_fetchall(
+                "SELECT id FROM pool_members WHERE pool_id=? AND address=?", (pool_id, m["address"])
+            )
+            if not exists:
                 await db.execute(
                     """INSERT INTO pool_members
                        (pool_id, address, role, weight, max_fails, fail_timeout_s, enabled)
                        VALUES (?, ?, ?, ?, ?, ?, 1)""",
                     (pool_id, m["address"], m["role"], m["weight"], m["max_fails"], m["fail_timeout_s"]),
                 )
-                member_count += 1
+                counts["members_new"] += 1
 
-            # Recover credentials from sidecar
-            creds = sidecar.get("credentials")
-            if creds and creds.get("access_key_enc") and creds.get("secret_key_enc"):
+        creds = (sidecar or {}).get("credentials")
+        if creds and creds.get("access_key_enc") and creds.get("secret_key_enc"):
+            has_creds = await db.execute_fetchall("SELECT id FROM pool_credentials WHERE pool_id=?", (pool_id,))
+            if not has_creds:
                 await db.execute(
                     """INSERT INTO pool_credentials
                        (pool_id, access_key_enc, secret_key_enc, endpoint_url, region)
@@ -136,76 +140,64 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
                         creds.get("region", "us-east-1"),
                     ),
                 )
-                credentials_count += 1
+                counts["credentials_new"] += 1
 
-        # Second pass: resolve source_nanio_pool_id for http pools using name→id map
-        for pool_name, pool_id in pool_name_to_id.items():
-            if pool_name.startswith("__snp__"):
-                continue
-            snp_raw = pool_name_to_id.get(f"__snp__{pool_name}")
-            if snp_raw is None:
-                continue
-            # snp_raw is the pool_id stored in the sidecar (original DB id)
-            # We need to find the *new* id of that referenced pool by matching through sidecar
-            # The sidecar stores the source_nanio_pool_id as an integer (old pool id);
-            # we resolve by checking which pool sidecar had that pool_id.
-            resolved_snp_id = None
-            for sc in scan_pool_sidecars():
-                if sc.get("pool_id") == snp_raw and sc.get("type") == "nanio":
-                    ref_name = sc.get("name")
-                    if ref_name and ref_name in pool_name_to_id:
-                        resolved_snp_id = pool_name_to_id[ref_name]
-                        break
-            if resolved_snp_id is not None:
-                await db.execute(
-                    "UPDATE pools SET source_nanio_pool_id = ? WHERE id = ?",
-                    (resolved_snp_id, pool_id),
-                )
-            else:
-                warnings.append(
-                    f"Pool '{pool_name}': could not resolve source_nanio_pool_id {snp_raw} "
-                    "(referenced nanio pool not found in sidecars)"
-                )
+        h = sha256_str(content)
+        await db.execute(_RECORD_FILE_SQL, (str(conf_path), h, h, content, now))
+        counts["files"] += 1
 
-        # Step 3: import vhosts + routes from nginx server configs + sidecars
-        for conf_path in sorted(s.vhosts_dir.glob("*.conf")):
-            try:
-                content = conf_path.read_text(encoding="utf-8")
-            except OSError:
-                continue
-            if not is_managed_file(content):
-                continue
-            conf_content_cache[str(conf_path)] = content
+    # An http pool's sidecar names its backing nanio pool by the id it had when written.
+    # Ids change on a rebuild, so resolve it through the sidecar that carried that id.
+    for name in new_http_pools:
+        old_id = pool_sidecars[name].get("source_nanio_pool_id")
+        if old_id is None:
+            continue
+        source_name = next(
+            (sc["name"] for sc in pool_sidecars.values() if sc.get("pool_id") == old_id and sc.get("type") == "nanio"),
+            None,
+        )
+        if source_name in pool_name_to_id:
+            await db.execute(
+                "UPDATE pools SET source_nanio_pool_id=? WHERE id=?",
+                (pool_name_to_id[source_name], pool_name_to_id[name]),
+            )
+        else:
+            warnings.append(
+                f"Pool '{name}': could not resolve source_nanio_pool_id {old_id} "
+                "(referenced nanio pool not found in sidecars)"
+            )
 
-            parsed = parse_vhost_block(content)
-            if not parsed or not parsed["server_name"]:
-                continue
+    # ── Vhosts and routes ────────────────────────────────────────────────────
+    for conf_path in sorted(s.vhosts_dir.glob("*.conf")):
+        content = _read_managed(conf_path)
+        parsed = parse_vhost_block(content) if content else None
+        if not parsed or not parsed["server_name"]:
+            continue
 
-            server_name = parsed["server_name"]
-            sidecar = vhost_sidecars.get(server_name, {})
+        server_name = parsed["server_name"]
+        sidecar = vhost_sidecars.get(server_name, {})
+        default_pool_id = pool_name_to_id.get(sidecar.get("default_pool_name") or "")
+        from_conf = (parsed["listen_port"], 1 if parsed["ssl"] else 0, parsed["ssl_cert_path"], parsed["ssl_key_path"])
 
-            # Resolve default_pool_id
-            default_pool_id = None
-            sc_default = sidecar.get("default_pool_id")
-            sc_default_name = sidecar.get("default_pool_name")
-            if sc_default_name and sc_default_name in pool_name_to_id:
-                default_pool_id = pool_name_to_id[sc_default_name]
-            elif sc_default and isinstance(sc_default, int):
-                # Original ID may not match after reimport; try name-based
-                pass
-
+        existing = await db.execute_fetchall("SELECT id FROM vhosts WHERE server_name=?", (server_name,))
+        if existing:
+            vhost_id = existing[0]["id"]
+            await db.execute(
+                """UPDATE vhosts SET listen_port=?, ssl=?, ssl_cert_path=?, ssl_key_path=?,
+                   default_pool_id=COALESCE(?, default_pool_id), updated_at=datetime('now')
+                   WHERE id=?""",
+                from_conf + (default_pool_id, vhost_id),
+            )
+            counts["vhosts_updated"] += 1
+        else:
             cursor = await db.execute(
                 """INSERT INTO vhosts
-                   (server_name, listen_port, ssl, ssl_cert_path, ssl_key_path,
-                    enabled, default_pool_id, extra_blocks_json,
-                    ip_rule_mode, ip_rule_ips_json)
+                   (server_name, listen_port, ssl, ssl_cert_path, ssl_key_path, enabled,
+                    default_pool_id, extra_blocks_json, ip_rule_mode, ip_rule_ips_json)
                    VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)""",
-                (
-                    server_name,
-                    parsed["listen_port"],
-                    1 if parsed["ssl"] else 0,
-                    parsed["ssl_cert_path"],
-                    parsed["ssl_key_path"],
+                (server_name,)
+                + from_conf
+                + (
                     default_pool_id,
                     sidecar.get("extra_blocks_json"),
                     sidecar.get("ip_rule_mode"),
@@ -213,27 +205,60 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
                 ),
             )
             vhost_id = cursor.lastrowid
-            vhost_count += 1
+            counts["vhosts_new"] += 1
 
-            # Import routes
-            for route in parsed["routes"]:
-                pool_name = route["pool_name"]
-                pool_id = pool_name_to_id.get(pool_name)
-                if not pool_id:
-                    warnings.append(
-                        f"Route {route['path_prefix']} on {server_name}: pool '{pool_name}' not found, skipping"
-                    )
-                    continue
-
-                key_prefix = route.get("key_prefix")
-
-                await db.execute(
-                    """INSERT INTO routes
-                       (vhost_id, path_prefix, pool_id, key_prefix, enabled)
-                       VALUES (?, ?, ?, ?, 1)""",
-                    (vhost_id, route["path_prefix"], pool_id, key_prefix),
+        for route in parsed["routes"]:
+            pool_id = pool_name_to_id.get(route["pool_name"])
+            if not pool_id:
+                warnings.append(
+                    f"Route {route['path_prefix']} on {server_name}: pool '{route['pool_name']}' not found, skipping"
                 )
-                route_count += 1
+                continue
+            await db.execute(
+                """INSERT INTO routes (vhost_id, path_prefix, pool_id, key_prefix, enabled)
+                   VALUES (?, ?, ?, ?, 1)
+                   ON CONFLICT(vhost_id, path_prefix) DO UPDATE SET
+                     pool_id=excluded.pool_id, key_prefix=excluded.key_prefix, updated_at=datetime('now')""",
+                (vhost_id, route["path_prefix"], pool_id, route.get("key_prefix")),
+            )
+            counts["routes"] += 1
+
+        h = sha256_str(content)
+        await db.execute(_RECORD_FILE_SQL, (str(conf_path), h, h, content, now))
+        counts["files"] += 1
+
+    return {**counts, "pool_name_to_id": pool_name_to_id}
+
+
+async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
+    """Reconstruct the entire database from disk state.
+
+    Args:
+        dry_run: If True, report what would be imported without writing to DB.
+
+    Returns dict with counts and warnings.
+    """
+    from nanio_orchestrator.db import get_db_ctx, init_db
+
+    s = get_settings()
+    warnings: List[str] = []
+    migration_count = 0
+
+    migration_states = scan_migration_states()
+    migration_completions = scan_migration_completions()
+
+    if dry_run:
+        pool_sidecars = {sc["name"]: sc for sc in scan_pool_sidecars() if sc.get("name")}
+        vhost_sidecars = {sc["server_name"]: sc for sc in scan_vhost_sidecars() if sc.get("server_name")}
+        return await _dry_run_report(s, pool_sidecars, vhost_sidecars, migration_states, migration_completions)
+
+    # Step 1: (re)create schema
+    await init_db()
+
+    async with get_db_ctx() as db:
+        # Steps 2, 3 and 5: pools, members, credentials, vhosts, routes, config_files
+        imported = await import_configs(db, warnings)
+        pool_name_to_id: Dict[str, int] = imported["pool_name_to_id"]
 
         # Step 4: import in-progress migrations from state files
         vhost_rows = await db.execute_fetchall("SELECT id, server_name FROM vhosts")
@@ -352,35 +377,19 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
             completion_count += 1
             migration_count += 1
 
-        # Step 5: rebuild config_files sha256 records
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        for path_str, content in conf_content_cache.items():
-            h = sha256_str(content)
-            await db.execute(
-                """INSERT INTO config_files
-                   (path, sha256_disk, sha256_db, content_snapshot, last_synced_at)
-                   VALUES (?, ?, ?, ?, ?)
-                   ON CONFLICT(path) DO UPDATE SET
-                     sha256_disk = excluded.sha256_disk,
-                     sha256_db = excluded.sha256_db,
-                     content_snapshot = excluded.content_snapshot,
-                     last_synced_at = excluded.last_synced_at""",
-                (path_str, h, h, content, now),
-            )
-
         await db.commit()
 
     # Step 6: rebuild bucket_sync from live nanio-default (best-effort)
     await _rebuild_bucket_sync(pool_name_to_id, warnings)
 
     return {
-        "pools_imported": pool_count,
-        "members_imported": member_count,
-        "vhosts_imported": vhost_count,
-        "routes_imported": route_count,
+        "pools_imported": imported["pools_new"] + imported["pools_updated"],
+        "members_imported": imported["members_new"],
+        "vhosts_imported": imported["vhosts_new"] + imported["vhosts_updated"],
+        "routes_imported": imported["routes"],
         "migrations_imported": migration_count,
         "completed_migrations_imported": completion_count,
-        "credentials_recovered": credentials_count,
+        "credentials_recovered": imported["credentials_new"],
         "warnings": warnings,
     }
 
