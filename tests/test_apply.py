@@ -301,7 +301,7 @@ class TestWriteVhostConfig:
         with p_test, p_reload:
             ok, output = await write_vhost_config(1, cluster["db"])
 
-        assert ok and output == "nginx -t: syntax ok (config written — apply via Config tab)"
+        assert ok and output == "nginx -t: syntax ok (config written — apply with Reload nginx)"
         content = cluster["vhost"].read_text()
         assert "location /photos/ {" in content
         assert await _recorded(cluster["db"]) == {"s3.example.com.conf": content}

@@ -90,6 +90,11 @@ A vhost is an nginx `server {}` block. The orchestrator manages:
 - Additional named routes (`/bucket-name/` → specific pool)
 - `extra_blocks` — freeform nginx directives injected at `top`/`ssl`/`proxy`/`end` zones
 - `ip_rule_mode` + `ip_rule_ips` — server-level IP allowlist or denylist
+- `enabled` — an enabled vhost is `vhosts/<server_name>.conf`; a disabled one has the very same
+  content as `vhosts/<server_name>.conf.disabled`, which nginx does not include. A vhost has
+  exactly one of the two files. `generator.vhost_config_path()` is the only place that builds
+  the path; `apply.write_configs()` writes one variant and removes the other as one change. The
+  importer takes `enabled` from the file name (it wins over the sidecar, with a warning)
 
 ### Sidecar files
 Alongside each nginx `.conf` file there is a `.meta.json` sidecar:
@@ -194,8 +199,9 @@ Schema upgrades live only in `db._run_migrations_async()`; `init_db_sync()` just
 
 10. **Refuse rather than hide data — and "cannot tell" is not "empty".** An operation that would
     leave existing objects unreachable (routing over a non-empty folder, deleting the route of a
-    non-empty folder, promoting or repointing without migrating) is refused with 409 unless the
-    caller passes `allow_orphan`. When the pool cannot be asked whether it holds objects, the
+    non-empty folder, promoting or repointing without migrating; adding, deleting, disabling or
+    enabling a bucket route — `common.refuse_to_leave_objects_behind()`) is refused with 409
+    unless the caller passes `allow_orphan`. When the pool cannot be asked whether it holds objects, the
     answer is 502, not "go ahead"; `allow_orphan` is again the explicit way through.
 
 ## Running commands

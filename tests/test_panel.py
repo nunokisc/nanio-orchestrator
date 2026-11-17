@@ -172,7 +172,7 @@ class TestOverview:
             "missing_buckets": [],
         }
 
-    async def test_summarises_pools_vhosts_routes_and_buckets(self, client, mock_nginx):
+    async def test_summarises_pools_vhosts_routes_and_buckets(self, client, mock_nginx, empty_buckets):
         a = (await client.post("/api/pools", json={"name": "pool-a"})).json()["id"]
         b = (await client.post("/api/pools", json={"name": "pool-b"})).json()["id"]
         cdn = (await client.post("/api/pools", json={"name": "cdn", "type": "http"})).json()["id"]

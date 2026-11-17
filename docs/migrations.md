@@ -149,7 +149,9 @@ split have *Start again* in the history.
 While a split is active for a bucket:
 
 - a migration to any other pool is refused (HTTP 409),
+- disabling the vhost is refused (HTTP 409),
 - editing the vhost or regenerating its config keeps the split,
+- the Explorer shows the bucket (or folder) as being moved, served by the destination first,
 - a database rebuild from disk restores it.
 
 ### Restart of the orchestrator during a migration

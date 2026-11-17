@@ -89,6 +89,11 @@ Changes are written and validated, not applied. The panel shows a bar at the top
 while something is waiting. Reload nginx: *Reload nginx* on that bar or on the Configuration
 screen, `POST /api/config/reload` or `nanio-orchestrator config reload`.
 
+### A hostname stopped answering after a reload
+
+Check that its vhost was not disabled: **Vhosts** shows *disabled — not served*, and on disk its
+file is `vhosts/<hostname>.conf.disabled`. *Enable* it and reload nginx.
+
 ### The panel reports drift
 
 A managed file differs from what the orchestrator wrote. See
@@ -130,8 +135,8 @@ does).
 
 ### Objects seem to have disappeared after routing a bucket
 
-The bucket was routed to another pool without migrating, so the objects are still on the old
-pool. Remove the route to get them back immediately, then route the bucket again with *Move
+The bucket was routed to another pool without migrating (with `allow_orphan`; without it the
+change is refused while the bucket has objects), so the objects are still on the old pool. Remove the route to get them back immediately, then route the bucket again with *Move
 them (live migration)*. The Explorer shows which pool holds the objects.
 `GET /api/vhosts/{id}/buckets/orphans` lists such leftovers.
 

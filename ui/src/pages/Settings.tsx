@@ -30,7 +30,7 @@ const GROUPS: { title: string; settings: Meta[] }[] = [
       },
       { key: "log_level", text: "debug, info, warning or error" },
       { key: "session_ttl", text: "How long a panel session lasts, in seconds" },
-      { key: "log_file", text: "Rotating log file; empty logs to stdout only", fileOnly: true },
+      { key: "log_file", text: "Rotating log file; empty logs to stdout only" },
     ],
   },
   {
@@ -57,7 +57,7 @@ const GROUPS: { title: string; settings: Meta[] }[] = [
     title: "S3",
     settings: [
       { key: "bucket_sync_interval", text: "Seconds between bucket discoveries" },
-      { key: "s3_request_timeout", text: "Socket timeout of the orchestrator's own S3 calls, in seconds", fileOnly: true },
+      { key: "s3_request_timeout", text: "Socket timeout of the orchestrator's own S3 calls, in seconds" },
     ],
   },
   {
@@ -75,7 +75,7 @@ const GROUPS: { title: string; settings: Meta[] }[] = [
       { key: "migration_transfers", text: "rclone --transfers: parallel object copies" },
       { key: "migration_checkers", text: "rclone --checkers" },
       { key: "migration_bandwidth_limit", text: "rclone --bwlimit, e.g. 50M; empty for no limit" },
-      { key: "migration_max_copy_passes", text: "Maximum passes while copying, and again while verifying", fileOnly: true },
+      { key: "migration_max_copy_passes", text: "Maximum passes while copying, and again while verifying" },
     ],
   },
 ];

@@ -71,6 +71,17 @@ def download(path: str) -> tuple[int, dict, bytes]:
         return error.code, {k.lower(): v for k, v in error.headers.items()}, error.read()
 
 
+def gateway_answer(path: str) -> str:
+    """What an unsigned GET to the gateway gets: the HTTP status, or "connection refused"."""
+    try:
+        with urllib.request.urlopen(f"http://{GATEWAY}{path}", timeout=10) as response:
+            return str(response.status)
+    except urllib.error.HTTPError as error:
+        return str(error.code)
+    except urllib.error.URLError as error:
+        return "connection refused" if isinstance(error.reason, ConnectionRefusedError) else f"error: {error.reason}"
+
+
 def wait_for_migration(migration_id: int) -> dict:
     deadline = time.monotonic() + 180
     while time.monotonic() < deadline:
@@ -234,6 +245,21 @@ async def main() -> None:
     check("after.txt" in await keys(NODE_B, "docs"), "new objects land on pool-b")
     check(await keys(NODE_A, "docs") == ["one.txt", "sub/three.txt", "two.txt"], "the source copy was left in place")
 
+    step("The route of a bucket that has objects on its pool cannot be removed")
+    routes = {r["path_prefix"]: r for r in api("GET", f"/api/vhosts/{vhost['id']}/routes", expect=200)}
+    for path in (
+        f"/api/vhosts/{vhost['id']}/routes/{routes['/docs/']['id']}",
+        f"/api/vhosts/{vhost['id']}/buckets/docs/route",
+    ):
+        status, body = api("DELETE", path)
+        check(status == 409, f"DELETE {path.rsplit('/', 2)[-2]}/… is refused with 409 (got {status})")
+        check("has objects on pool 'pool-b'" in (body or {}).get("detail", ""), "the answer says where the objects are")
+    status, body = api("PUT", f"/api/vhosts/{vhost['id']}/routes/{routes['/docs/']['id']}", {"enabled": False})
+    check(status == 409, f"disabling the route is refused with 409 too (got {status})")
+    still = [r["path_prefix"] for r in api("GET", f"/api/vhosts/{vhost['id']}/routes", expect=200) if r["enabled"]]
+    check("/docs/" in still, "the route is still there and enabled")
+    check(await s3client.get_object(GATEWAY, "docs", "one.txt", **AUTH) == b"one.txt", "and the bucket is still served")
+
     step("ListBuckets through the gateway shows the bucket that now lives on pool-b")
     api("POST", f"/api/vhosts/{vhost['id']}/buckets/sync", expect=200)
     listed = sorted(b["name"] for b in await s3client.list_buckets(GATEWAY, **AUTH))
@@ -253,6 +279,36 @@ async def main() -> None:
     )
     await put(GATEWAY, "photos", "2025/back.txt", b"back")
     check("2025/back.txt" in await keys(NODE_A, "photos"), "new objects in the folder land on pool-a")
+
+    step("A disabled vhost is not served")
+    check(gateway_answer("/photos/2024/a.txt") == "403", "before: the gateway answers (403, unsigned request)")
+    disabled = api("PUT", f"/api/vhosts/{vhost['id']}", {"enabled": False}, expect=200)
+    check(disabled["enabled"] is False, "the vhost is disabled")
+    status_now = api("GET", "/api/config/status", expect=200)
+    check(
+        status_now["pending_reload"] is True
+        and [f["change"] for f in status_now["pending_files"] if f["path"].endswith("/s3.dev.conf")] == ["removed"],
+        f"it is a pending change: s3.dev.conf removed ({status_now['pending_files']})",
+    )
+    check(gateway_answer("/photos/2024/a.txt") == "403", "until nginx is reloaded it is still served")
+    check(api("POST", "/api/config/reload", expect=200)["ok"], "nginx reloaded")
+    time.sleep(1)
+    answer = gateway_answer("/photos/2024/a.txt")
+    check(answer == "connection refused", f"after the reload nothing listens on the vhost's port ({answer})")
+    dry = api("POST", "/api/config/rebuild-from-disk?dry_run=true", expect=200)
+    check(
+        [(v["server_name"], v["enabled"]) for v in dry["vhosts"]] == [("s3.dev", False)],
+        f"its server block is still on disk and would be rebuilt as disabled ({dry['vhosts']})",
+    )
+    enabled = api("PUT", f"/api/vhosts/{vhost['id']}", {"enabled": True}, expect=200)
+    check(enabled["enabled"] is True, "the vhost is enabled again")
+    check(api("POST", "/api/config/reload", expect=200)["ok"], "nginx reloaded")
+    time.sleep(1)
+    check(
+        await s3client.get_object(GATEWAY, "photos", "2024/a.txt", **AUTH) == b"2024/a.txt",
+        "after the reload the gateway serves it again",
+    )
+    check(api("GET", "/api/config/status", expect=200)["pending_reload"] is False, "nothing is left waiting")
 
     step("Health")
     health = api("GET", "/api/health", expect=200)

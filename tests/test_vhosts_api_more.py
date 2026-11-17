@@ -11,6 +11,9 @@ import pytest
 from tests.api_state import audit, break_inserts, conf, managed_files, routes, sidecar, sql
 from tests.conftest import create_member, create_pool, create_route, create_vhost
 
+# The pools here are only addresses: asked whether a bucket has objects, they say it is empty.
+pytestmark = pytest.mark.usefixtures("empty_buckets")
+
 
 async def _cluster(client, default=True):
     pa = await create_pool(client, "pa")
@@ -187,7 +190,13 @@ class TestUpdateVhost:
         saved = (await client.get(f"/api/vhosts/{vhost['id']}")).json()
         assert resp.json() == saved
         assert (saved["ssl"], saved["listen_port"], saved["enabled"]) == (True, 8443, False)
-        content = _vhost_conf(tmp_dirs)
+        # disabled: the server block is kept, under the name nginx does not load
+        assert not conf(tmp_dirs, "vhosts", vhost["server_name"]).exists()
+        content = (
+            conf(tmp_dirs, "vhosts", vhost["server_name"])
+            .with_name(f"{vhost['server_name']}.conf.disabled")
+            .read_text()
+        )
         assert "listen 8443 ssl;" in content and "ssl_certificate     /c.pem;" in content
 
         resp = await client.put(f"/api/vhosts/{vhost['id']}", json={"ssl": False, "enabled": True})

@@ -164,7 +164,7 @@ function Served({
 }) {
   if (located.isError) return <ErrorNotice error={located.error} title="Cannot tell which pool serves this" />;
   if (!located.data) return null;
-  const { pool: serving, route, bucket, prefix } = located.data;
+  const { pool: serving, route, bucket, prefix, split } = located.data;
   const what = (
     <Mono>
       {bucket}/{prefix}
@@ -175,6 +175,33 @@ function Served({
     return (
       <Notice tone="info" title={`${vhost?.server_name ?? "This vhost"} serves this from an http pool`}>
         {what} goes to <Mono>{serving.name}</Mono> ({by}), which has no S3 API to browse.
+      </Notice>
+    );
+  }
+  if (split) {
+    const looking = !pool
+      ? ""
+      : pool.id === split.destination.id
+        ? `You are looking at ${pool.name}, the destination: what clients get first.`
+        : pool.id === split.source.id
+          ? `You are looking at ${pool.name}, the source: the fallback copy.`
+          : `You are looking at ${pool.name}, which is neither of them: clients do not get this from here.`;
+    return (
+      <Notice
+        tone="warn"
+        title={`Being moved from ${split.source.name} to ${split.destination.name} (migration #${split.migration_id})`}
+        actions={
+          pool &&
+          pool.id !== split.destination.id && (
+            <Button size="sm" variant="primary" onClick={() => onSwitch(split.destination.id)}>
+              Switch to {split.destination.name}
+            </Button>
+          )
+        }
+      >
+        Split routing is active for {what} on <Mono>{vhost?.server_name}</Mono>: clients read{" "}
+        <Mono>{split.destination.name}</Mono> first and fall back to <Mono>{split.source.name}</Mono> for objects not
+        copied yet; they write to <Mono>{split.destination.name}</Mono> only. An object can be on either pool. {looking}
       </Notice>
     );
   }

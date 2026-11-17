@@ -11,6 +11,9 @@ import pytest
 from tests.api_state import audit, break_inserts, conf, managed_files, sidecar, sql
 from tests.conftest import create_member, create_pool, create_route, create_vhost
 
+# The pools here are only addresses: asked whether a bucket has objects, they say it is empty.
+pytestmark = pytest.mark.usefixtures("empty_buckets")
+
 
 async def _pools(client):
     return (await client.get("/api/pools")).json()

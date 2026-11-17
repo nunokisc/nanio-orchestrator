@@ -462,6 +462,7 @@ class TestLocate:
         assert body["vhost"] == {"id": vhost["id"], "server_name": "s3.test"}
         assert (body["bucket"], body["prefix"], body["route"]) == (bucket, prefix, route)
         assert body["pool"] == {"id": cluster["a" if pool == "pool-a" else "b"]["id"], "name": pool, "type": "nanio"}
+        assert body["split"] is None
 
     async def test_vhost_that_does_not_serve_the_bucket_says_so(self, client, cluster):
         vhost = cluster["vhost"]
@@ -480,3 +481,84 @@ class TestLocate:
     async def test_bucket_is_required_and_must_be_a_bucket_name(self, client, cluster, query):
         resp = await client.get(f"/api/explorer/vhosts/{cluster['vhost']['id']}/locate?{query}")
         assert resp.status_code == 422
+
+
+# ── While a migration has split routing active ────────────────────────────────
+
+
+async def split(
+    cluster, bucket: str, folder: str, src: str, dst: str, active: int = 1, phase: str = "verifying"
+) -> int:
+    from tests.api_state import sql
+
+    await sql(
+        """INSERT INTO migrations (vhost_id, bucket, folder, src_pool_id, dst_pool_id, phase, split_routing)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (cluster["vhost"]["id"], bucket, folder, cluster[src]["id"], cluster[dst]["id"], phase, active),
+    )
+    return (await sql("SELECT MAX(id) AS id FROM migrations"))[0]["id"]
+
+
+class TestSplitRouting:
+    async def test_bucket_being_moved_is_served_by_the_destination(self, client, cluster):
+        """/logs/ still names pool-b, but the split sends clients to pool-a first."""
+        a, b, vhost = cluster["a"], cluster["b"], cluster["vhost"]
+        mid = await split(cluster, "logs", "", "b", "a")
+
+        body = (await client.get(f"/api/explorer/vhosts/{vhost['id']}/locate?bucket=logs&prefix=app/")).json()
+
+        assert body["route"] == "/logs/"
+        assert body["pool"] == {"id": a["id"], "name": "pool-a", "type": "nanio"}
+        assert body["split"] == {
+            "migration_id": mid,
+            "source": {"id": b["id"], "name": "pool-b"},
+            "destination": {"id": a["id"], "name": "pool-a"},
+        }
+
+    async def test_folder_being_moved_is_served_by_the_destination(self, client, cluster):
+        vhost = cluster["vhost"]
+        await split(cluster, "photos", "2025/", "b", "a", phase="error")  # a split left by a failed move
+
+        inside = (await client.get(f"/api/explorer/vhosts/{vhost['id']}/locate?bucket=photos&prefix=2025/x/")).json()
+        assert (inside["route"], inside["pool"]["name"]) == ("/photos/2025/", "pool-a")
+        assert (inside["split"]["source"]["name"], inside["split"]["destination"]["name"]) == ("pool-b", "pool-a")
+        # the rest of the bucket, and a deeper folder with its own route, are not part of that split
+        rest = (await client.get(f"/api/explorer/vhosts/{vhost['id']}/locate?bucket=photos&prefix=2024/")).json()
+        assert (rest["pool"]["name"], rest["split"]) == ("pool-a", None)
+        deep = (
+            await client.get(f"/api/explorer/vhosts/{vhost['id']}/locate?bucket=photos&prefix=2025/q1/deep/")
+        ).json()
+        assert (deep["route"], deep["pool"]["name"], deep["split"]) == ("/photos/2025/q1/deep/", "pool-b", None)
+
+    async def test_listing_marks_the_folder_with_the_pool_that_answers_during_the_split(self, client, cluster, s3):
+        a, b, vhost = cluster["a"], cluster["b"], cluster["vhost"]
+        await split(cluster, "photos", "2025/", "b", "a")
+        s3.page = {"folders": ["2025/"], "objects": [], "next_token": None}
+
+        on_a = await client.get(f"/api/explorer/pools/{a['id']}/buckets/photos/objects?vhost_id={vhost['id']}")
+        on_b = await client.get(f"/api/explorer/pools/{b['id']}/buckets/photos/objects?vhost_id={vhost['id']}")
+
+        # pool-a is where clients go first now: there the folder is an ordinary folder
+        assert on_a.json()["folders"] == [{"prefix": "2025/", "routed_pool": None}]
+        # on pool-b, the source, it is marked as served by pool-a
+        assert on_b.json()["folders"] == [{"prefix": "2025/", "routed_pool": {"id": a["id"], "name": "pool-a"}}]
+
+    async def test_once_the_split_is_over_the_route_decides_again(self, client, cluster):
+        vhost = cluster["vhost"]
+        await split(cluster, "logs", "", "b", "a", active=0, phase="done")
+        body = (await client.get(f"/api/explorer/vhosts/{vhost['id']}/locate?bucket=logs")).json()
+        assert (body["pool"]["name"], body["split"]) == ("pool-b", None)
+
+    async def test_split_of_another_vhost_does_not_count(self, client, cluster):
+        from tests.api_state import sql
+
+        other = (
+            await client.post("/api/vhosts", json={"server_name": "other.test", "ssl": False, "listen_port": 8082})
+        ).json()
+        await sql(
+            """INSERT INTO migrations (vhost_id, bucket, src_pool_id, dst_pool_id, phase, split_routing)
+               VALUES (?, 'logs', ?, ?, 'verifying', 1)""",
+            (other["id"], cluster["b"]["id"], cluster["a"]["id"]),
+        )
+        body = (await client.get(f"/api/explorer/vhosts/{cluster['vhost']['id']}/locate?bucket=logs")).json()
+        assert (body["pool"]["name"], body["split"]) == ("pool-b", None)

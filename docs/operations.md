@@ -201,6 +201,28 @@ With `ssl: true` both certificate paths are required. Optional fields:
 - `ip_rule_mode` (`allow` or `deny`) with `ip_rule_ips`: an allowlist or denylist for the whole
   vhost. IPv4, IPv6 and CIDR are accepted.
 
+### Take a vhost out of service
+
+Disabling a vhost stops nginx answering for that hostname without deleting anything:
+
+```bash
+curl -s -X PUT $ORCH/api/vhosts/1 -H "X-Orchestrator-Key: $KEY" -H 'Content-Type: application/json' \
+  -d '{"enabled": false}'
+```
+
+Web panel: **Vhosts** → *Disable* (the confirmation names the hostname), later *Enable*.
+
+The server block is kept on disk, with the same content, as `vhosts/<hostname>.conf.disabled`.
+nginx includes only `*.conf`, so it is no longer loaded; the vhost keeps its routes, its bucket
+list and its sidecar, and a database rebuild from disk brings it back as disabled. Like every
+change it is validated by `nginx -t` and takes effect at the next reload, so it shows as a change
+not applied until then. After the reload clients of that hostname get connection errors (when
+nothing else listens on its port) or the answer of whichever server block nginx falls back to.
+
+Disabling is refused (HTTP 409) while a migration is moving one of the vhost's buckets or has
+left split routing active on it. Enabling writes the file back as `<hostname>.conf`; if nginx
+rejects the configuration, nothing changes.
+
 ### Send a bucket to another pool (sharding)
 
 The **Buckets** screen lists the buckets found on the vhost's default pool. For each one you can:
@@ -214,6 +236,15 @@ The **Buckets** screen lists the buckets found on the vhost's default pool. For 
 | **Sync now** | Asks the default pool for its buckets now instead of at the next discovery. |
 
 **Vhosts** → *Add route* with a path `/bucket/` leads to the same choice.
+
+The rule behind all of them: **a change that takes a bucket away from the pool that holds its
+objects is refused.** That covers adding a bucket route (the bucket leaves the default pool),
+removing or disabling one (it leaves the route's pool) and enabling one again (it leaves the
+default pool). If the bucket has objects on the pool it would leave, the answer is 409; if that
+pool cannot be asked, 502. A bucket that does not exist on the pool has no objects, so cleaning
+up the route of a deleted bucket is not refused. `allow_orphan` (`"allow_orphan": true` in the
+body, `?allow_orphan=true` on a `DELETE`) is the explicit way through; in the panel it is a
+separate, hand-ticked step under the refusal.
 
 ```bash
 # Route the bucket and move its objects
@@ -371,6 +402,10 @@ answer through the gateway: *which pool* holds this.
   switches to that pool. Choosing another pool by hand shows what *that* pool holds under the
   same path, with a warning that clients are not served from it: this is how you look at an old
   copy.
+- **During a migration.** While split routing is active on a bucket or folder, the Explorer says
+  that it is being moved from pool X to pool Y: clients read Y first and fall back to X for
+  objects not copied yet, and write to Y only. It opens on Y, the destination; an object can be
+  on either pool until the migration is done.
 - **Object details**: size, modification time, ETag and content type.
 - **Download** of a single object up to 64 MiB. Larger objects are refused: fetch them with an
   S3 client through the gateway. Each download is recorded in the audit log; browsing is not.

@@ -14,17 +14,20 @@ from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator.models import ConfigFileStatus, ConfigStatus, NginxResult
 from nanio_orchestrator.nginx import applied
 from nanio_orchestrator.nginx.apply import (
-    apply_config_file,
+    apply_config_files,
     rebuild_all_configs,
     reload_nginx_locked,
     remove_config_file_checked,
 )
 from nanio_orchestrator.nginx.executor import test_config
 from nanio_orchestrator.nginx.generator import (
+    DISABLED_SUFFIX,
     generate_pool_config,
     generate_vhost_config,
+    other_vhost_variant,
     record_file_state,
     sha256_str,
+    vhost_config_paths,
 )
 
 router = APIRouter(prefix="/api/config", tags=["config"])
@@ -166,15 +169,18 @@ async def rebuild_all():
 
 def _require_managed_config_path(path: str) -> str:
     """Resolve `path` and require it to be a .conf file directly inside the managed pools/ or
-    vhosts/ directory. The endpoint reads the file and stores its content in the database, so
-    anything else would let a caller copy arbitrary files readable by the service."""
+    vhosts/ directory, or the `.conf.disabled` file of a disabled vhost. The endpoint reads the
+    file and stores its content in the database, so anything else would let a caller copy
+    arbitrary files readable by the service."""
     s = get_settings()
     try:
         resolved = Path(path).resolve()
     except (OSError, ValueError):
         raise HTTPException(400, "Invalid path") from None
-    allowed = {s.pools_dir.resolve(), s.vhosts_dir.resolve()}
-    if resolved.suffix != ".conf" or resolved.parent not in allowed:
+    pools_dir, vhosts_dir = s.pools_dir.resolve(), s.vhosts_dir.resolve()
+    is_conf = resolved.suffix == ".conf" and resolved.parent in (pools_dir, vhosts_dir)
+    is_disabled_vhost = resolved.name.endswith(".conf" + DISABLED_SUFFIX) and resolved.parent == vhosts_dir
+    if not (is_conf or is_disabled_vhost):
         raise HTTPException(400, "Not a managed nginx config file")
     return str(resolved)
 
@@ -246,7 +252,8 @@ async def rewrite_file(path: str = Body(..., embed=True)):
         vhosts = await db.execute_fetchall("SELECT id, server_name FROM vhosts")
 
     pool_match = next((p for p in pools if str(s.pools_dir / f"{p['name']}.conf") == path), None)
-    vhost_match = next((v for v in vhosts if str(s.vhosts_dir / f"{v['server_name']}.conf") == path), None)
+    # either file of the vhost: the one it should have is what gets written
+    vhost_match = next((v for v in vhosts if path in vhost_config_paths(v["server_name"])), None)
 
     if pool_match:
         filepath, content = await generate_pool_config(pool_match["id"])
@@ -264,14 +271,18 @@ async def rewrite_file(path: str = Body(..., embed=True)):
     else:
         raise HTTPException(404, f"No pool or vhost found matching path: {path}")
 
-    # Write, nginx -t, reload — the previous file is restored if either step fails
-    result = await apply_config_file(filepath, content, reload=True)
+    # Write, nginx -t, reload — the previous files are restored if either step fails. A vhost
+    # has one file: the variant of its other state (enabled ↔ disabled) goes.
+    stale = [other_vhost_variant(filepath)] if vhost_match else []
+    result = await apply_config_files([(filepath, content)], remove=stale, reload=True)
     if result.stage == "test" and not result.ok:
         return {"ok": False, "output": result.output}
 
     async with get_db_ctx() as db:
         if result.ok:
             await record_file_state(db, filepath, content)
+            for gone in stale:
+                await db.execute("DELETE FROM config_files WHERE path = ?", (gone,))
         await log_audit(db, "rewrite_file", "config", None, reload_ok=result.ok, reload_output=result.output)
         await db.commit()
 
@@ -364,10 +375,10 @@ def _mask(value, is_secret: bool) -> str | None:
     return (s[:4] + "****") if len(s) > 4 else "****"
 
 
-# Settings that name the binary the service executes or the directories it writes to. Changing
-# them is equivalent to shell access as the service user, so the API (reachable with just the
-# panel key) does not accept them; the CLI on the host does.
-_HOST_ONLY_SETTINGS = frozenset({"rclone_path", "db_path", "db_backup_path", "nginx_config_dir"})
+# Settings that name the binary the service executes or the files and directories it writes to.
+# Changing them is equivalent to shell access as the service user, so the API (reachable with
+# just the panel key) does not accept them; the CLI on the host does.
+_HOST_ONLY_SETTINGS = frozenset({"rclone_path", "db_path", "db_backup_path", "nginx_config_dir", "log_file"})
 
 
 @router.get("/settings")

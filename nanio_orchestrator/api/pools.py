@@ -1,4 +1,4 @@
-"""Pools CRUD API with nginx config generation (manual apply via Config tab)."""
+"""Pools CRUD API with nginx config generation (applied by an explicit nginx reload)."""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ router = APIRouter(prefix="/api/pools", tags=["pools"])
 
 async def _write_pool_config(pool_id: int, db, renamed_from: Optional[str] = None) -> tuple:
     """Generate, test, write config to disk, record in DB. Returns (ok, output).
-    Does NOT reload nginx — the operator applies changes via the Config tab.
+    Does NOT reload nginx — the operator applies changes with *Reload nginx*.
     If the pool has no members the config file is removed instead of written.
 
     A renamed pool is one change for nginx: the upstream under its new name, every vhost that

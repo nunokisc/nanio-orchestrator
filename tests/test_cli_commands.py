@@ -438,6 +438,24 @@ def test_config_set_writes_the_value_to_the_config_file(env):
     assert env.config_file.read_text() == "NANIO_ORCHESTRATOR_LOG_LEVEL=debug\n"
 
 
+@pytest.mark.parametrize(
+    "key, value",
+    [("s3_request_timeout", "120"), ("migration_max_copy_passes", "20"), ("log_file", "/var/log/nanio/o.log")],
+)
+def test_settings_that_were_only_readable_can_be_set_shown_and_read_back(env, monkeypatch, key, value):
+    """On the host every setting can be set, the ones the API refuses included (log_file)."""
+    result = run("config", "set", key, value)
+
+    assert result.exit_code == 0
+    assert env.config_file.read_text() == f"{PREFIX}{key.upper()}={value}\n"
+
+    monkeypatch.setattr(cfg_mod, "settings", None)
+    monkeypatch.setenv(PREFIX + key.upper(), value)
+    assert run("config", "get", key).output == f"{value}\n"
+    shown = [ln for ln in run("config", "show").output.splitlines() if ln.split()[:1] == [key]]
+    assert len(shown) == 1 and shown[0].split()[1] == value
+
+
 def test_config_set_accepts_the_full_name_and_does_not_echo_a_secret(env):
     env.config_file.write_text("NANIO_ORCHESTRATOR_API_KEY=old\n")
 

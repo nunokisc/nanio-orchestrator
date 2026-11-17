@@ -1,4 +1,4 @@
-"""Vhosts + Routes CRUD API with nginx config generation (manual apply via Config tab)."""
+"""Vhosts + Routes CRUD API with nginx config generation (applied by an explicit nginx reload)."""
 
 from __future__ import annotations
 
@@ -11,9 +11,8 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 
 from nanio_orchestrator import s3client, subfolders
-from nanio_orchestrator.api.common import reject_if_refused
+from nanio_orchestrator.api.common import refuse_to_leave_objects_behind, reject_if_refused
 from nanio_orchestrator.audit_log import log_audit
-from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.credentials import get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator.models import (
@@ -32,6 +31,7 @@ from nanio_orchestrator.nginx.generator import (
     is_subfolder_prefix,
     path_segments,
     remove_config_file,
+    vhost_config_paths,
 )
 from nanio_orchestrator.s3client import count_objects
 from nanio_orchestrator.sidecar import delete_vhost_sidecar as _delete_vhost_sidecar_sync
@@ -130,10 +130,30 @@ async def _get_pool_name(db, pool_id: int | None) -> str | None:
     return rows[0]["name"] if rows else None
 
 
+async def _default_pool_id(db, vhost_id: int) -> int | None:
+    rows = await db.execute_fetchall("SELECT default_pool_id FROM vhosts WHERE id = ?", (vhost_id,))
+    return rows[0]["default_pool_id"] if rows else None
+
+
 async def _get_pool_type(db, pool_id: int) -> str | None:
     """Return the type of the given pool, or None if there is no such pool."""
     rows = await db.execute_fetchall("SELECT type FROM pools WHERE id = ?", (pool_id,))
     return rows[0]["type"] if rows else None
+
+
+async def _refuse_while_moving(db, vhost_id: int) -> None:
+    """409 while a migration is moving a bucket of this vhost or has left a split active on it."""
+    busy = await db.execute_fetchall(
+        """SELECT id, bucket FROM migrations WHERE vhost_id = ? AND (split_routing = 1
+           OR phase IN ('pending','copying','write_routing','verifying','switching'))""",
+        (vhost_id,),
+    )
+    if busy:
+        raise HTTPException(
+            409,
+            f"Migration {busy[0]['id']} is still moving bucket '{busy[0]['bucket']}' of this vhost. "
+            "Finish or cancel it first.",
+        )
 
 
 def _serialize_extra_blocks(blocks: list | None) -> str | None:
@@ -270,6 +290,10 @@ async def update_vhost(vhost_id: int, body: VhostUpdate):
         if not updates:
             return _enrich_vhost(before)
 
+        # Disabling stops nginx answering for the hostname: not while its routing is mid-move
+        if updates.get("enabled") is False and before["enabled"]:
+            await _refuse_while_moving(db, vhost_id)
+
         # Validate SSL cert requirement when enabling SSL
         effective_ssl = updates.get("ssl", bool(before.get("ssl")))
         effective_cert = updates.get("ssl_cert_path", before.get("ssl_cert_path"))
@@ -331,7 +355,7 @@ async def update_vhost(vhost_id: int, body: VhostUpdate):
 
         # A renamed vhost is one change for nginx: the new file written, the old one gone
         renamed_from = before["server_name"] if after["server_name"] != before["server_name"] else None
-        old_file = [str(get_settings().vhosts_dir / f"{renamed_from}.conf")] if renamed_from else []
+        old_file = vhost_config_paths(renamed_from) if renamed_from else []
         ok, output = await write_configs(db, vhost_ids=[vhost_id], remove=old_file)
         await reject_if_refused(db, ok, output)
         await log_audit(db, "update", "vhost", vhost_id, before=before, after=after, reload_ok=ok, reload_output=output)
@@ -361,17 +385,7 @@ async def delete_vhost(vhost_id: int):
             raise HTTPException(404, "Vhost not found")
         vhost = dict(rows[0])
 
-        busy = await db.execute_fetchall(
-            """SELECT id, bucket FROM migrations WHERE vhost_id = ? AND (split_routing = 1
-               OR phase IN ('pending','copying','write_routing','verifying','switching'))""",
-            (vhost_id,),
-        )
-        if busy:
-            raise HTTPException(
-                409,
-                f"Migration {busy[0]['id']} is still moving bucket '{busy[0]['bucket']}' of this vhost. "
-                "Finish or cancel it first.",
-            )
+        await _refuse_while_moving(db, vhost_id)
 
         # Cascade: migrations (they reference the routes), routes and bucket_sync are children of the vhost
         await db.execute("DELETE FROM migrations WHERE vhost_id = ?", (vhost_id,))
@@ -379,12 +393,10 @@ async def delete_vhost(vhost_id: int):
         await db.execute("DELETE FROM bucket_sync WHERE vhost_id = ?", (vhost_id,))
         await db.execute("DELETE FROM vhosts WHERE id = ?", (vhost_id,))
 
-        from nanio_orchestrator.config import get_settings
-
-        s = get_settings()
-        filepath = str(s.vhosts_dir / f"{vhost['server_name']}.conf")
-        await remove_config_file(filepath)
-        await db.execute("DELETE FROM config_files WHERE path = ?", (filepath,))
+        # Enabled or disabled, whichever file it has
+        for filepath in vhost_config_paths(vhost["server_name"]):
+            await remove_config_file(filepath)
+            await db.execute("DELETE FROM config_files WHERE path = ?", (filepath,))
 
         await log_audit(db, "delete", "vhost", vhost_id, before=vhost)
         await db.commit()
@@ -447,6 +459,16 @@ async def create_route(vhost_id: int, body: RouteCreate):
         # A folder of a bucket on an S3 pool: checks + bucket on the target pool, before anything is written
         is_folder_route = route_pool["type"] == "nanio" and is_subfolder_prefix(body.path_prefix)
         subfolder = await _prepare_subfolder_route(db, vhost_row, body, route_pool) if is_folder_route else None
+        # A whole bucket: until this route exists its requests go to the default pool
+        if not is_folder_route and body.enabled:
+            await refuse_to_leave_objects_behind(
+                db,
+                path_segments(body.path_prefix)[0],
+                vhost_default_pool_id,
+                body.pool_id,
+                allow_orphan=body.allow_orphan,
+                change=f"Routing it to pool '{route_pool['name']}'",
+            )
 
     # The S3 bucket name is the first path segment (e.g. /photos/2025/ → bucket=photos)
     bucket_segment = body.path_prefix.strip("/").split("/")[0]
@@ -555,6 +577,23 @@ async def update_route(vhost_id: int, route_id: int, body: RouteUpdate):
         )
     if "enabled" in updates:
         updates["enabled"] = 1 if updates["enabled"] else 0
+        # Switching a bucket route on or off moves the bucket's requests between the route's pool
+        # and the default pool. (A folder route has its own guards; '/' is not a bucket.)
+        is_bucket_route = len(path_segments(before["path_prefix"])) == 1
+        if is_bucket_route and updates["enabled"] != before["enabled"]:
+            async with get_db_ctx() as db:
+                default_pool_id = await _default_pool_id(db, vhost_id)
+                leaving, going = (
+                    (default_pool_id, before["pool_id"]) if updates["enabled"] else (before["pool_id"], default_pool_id)
+                )
+                await refuse_to_leave_objects_behind(
+                    db,
+                    path_segments(before["path_prefix"])[0],
+                    leaving,
+                    going,
+                    allow_orphan=allow_orphan,
+                    change="Enabling its route" if updates["enabled"] else "Disabling its route",
+                )
 
     # ── Scenario 2: pool change on a bucket route → migration ────────────────
     # If pool changes, bucket is not a sub-path, and source has data, start
@@ -706,6 +745,16 @@ async def delete_route(vhost_id: int, route_id: int, allow_orphan: bool = False)
                 http_changed, _ = await subfolders.sync_http_routes(
                     db, bucket, before["path_prefix"], parent["id"], None
                 )
+        elif before["enabled"]:
+            # A bucket route: without it the bucket's requests go to the default pool
+            await refuse_to_leave_objects_behind(
+                db,
+                path_segments(before["path_prefix"])[0],
+                before["pool_id"],
+                await _default_pool_id(db, vhost_id),
+                allow_orphan=allow_orphan,
+                change="Deleting its route",
+            )
 
         # Null-out route_id in any migrations that reference this route
         # to avoid FK constraint failures (route_id has no ON DELETE SET NULL)

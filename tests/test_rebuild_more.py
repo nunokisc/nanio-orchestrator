@@ -746,6 +746,7 @@ class TestDryRun:
         assert result["vhosts"] == [
             {
                 "server_name": "a.example.com",
+                "enabled": True,
                 "routes": 2,
                 "has_default_pool": True,
                 "has_extra_blocks": False,
@@ -754,6 +755,7 @@ class TestDryRun:
             },
             {
                 "server_name": "b.example.com",
+                "enabled": True,
                 "routes": 0,
                 "has_default_pool": True,  # known by name only
                 "has_extra_blocks": True,
@@ -762,6 +764,7 @@ class TestDryRun:
             },
             {
                 "server_name": "c.example.com",
+                "enabled": True,
                 "routes": 0,
                 "has_default_pool": False,
                 "has_extra_blocks": False,

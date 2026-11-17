@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 from nanio_orchestrator.config import get_settings
-from nanio_orchestrator.nginx.generator import sha256_str
+from nanio_orchestrator.nginx.generator import DISABLED_SUFFIX, other_vhost_variant, sha256_str
 from nanio_orchestrator.nginx.parser import (
     is_managed_file,
     parse_upstream_block,
@@ -46,13 +47,47 @@ def _read_managed(conf_path) -> Optional[str]:
     return content if is_managed_file(content) else None
 
 
+def _vhost_files(s, vhost_sidecars: dict[str, dict], warnings: list[str]) -> list[tuple[Path, str, dict, bool]]:
+    """Every managed vhost on disk as (path, content, parsed, enabled).
+
+    A vhost is enabled when its file is ``<name>.conf`` and disabled when it is
+    ``<name>.conf.disabled`` (nginx does not load that one). The file name decides: a sidecar
+    that says otherwise is reported. If both files exist, the one nginx loads wins.
+    """
+    found: list[tuple[Path, str, dict, bool]] = []
+    seen: set[str] = set()
+    for pattern, enabled in (("*.conf", True), (f"*.conf{DISABLED_SUFFIX}", False)):
+        for conf_path in sorted(s.vhosts_dir.glob(pattern)):
+            content = _read_managed(conf_path)
+            parsed = parse_vhost_block(content) if content else None
+            if not parsed or not parsed["server_name"]:
+                continue
+            name = parsed["server_name"]
+            if name in seen:
+                warnings.append(
+                    f"Vhost '{name}': both {name}.conf and {conf_path.name} exist; the vhost is taken as "
+                    f"enabled and {conf_path.name} is ignored"
+                )
+                continue
+            seen.add(name)
+            in_sidecar = vhost_sidecars.get(name, {}).get("enabled")
+            if in_sidecar is not None and bool(in_sidecar) != enabled:
+                warnings.append(
+                    f"Vhost '{name}': its sidecar says {'enabled' if in_sidecar else 'disabled'} but its file is "
+                    f"{conf_path.name}; taken as {'enabled' if enabled else 'disabled'}"
+                )
+            found.append((conf_path, content, parsed, enabled))
+    return found
+
+
 async def import_configs(db, warnings: list[str]) -> dict[str, Any]:
     """Upsert the pools, members, credentials, vhosts and routes found on disk. Never deletes.
 
     The one disk → DB importer: a full import on an empty database (``rebuild_from_disk``),
     an additive one on a live database (``POST /api/config/sync``).
 
-    What the ``.conf`` files define (members, ports, TLS, routes) is always taken from disk.
+    What the ``.conf`` files define (members, ports, TLS, routes) is always taken from disk,
+    and so is whether a vhost is enabled: that is its file name (see ``_vhost_files``).
     What only the sidecars know (pool type, description, credentials, default pool, extra
     blocks, IP rules) fills new rows; on existing rows the database stays authoritative,
     except pool type/description and the default pool, which follow a sidecar that is present.
@@ -181,12 +216,7 @@ async def import_configs(db, warnings: list[str]) -> dict[str, Any]:
             )
 
     # ── Vhosts and routes ────────────────────────────────────────────────────
-    for conf_path in sorted(s.vhosts_dir.glob("*.conf")):
-        content = _read_managed(conf_path)
-        parsed = parse_vhost_block(content) if content else None
-        if not parsed or not parsed["server_name"]:
-            continue
-
+    for conf_path, content, parsed, enabled in _vhost_files(s, vhost_sidecars, warnings):
         server_name = parsed["server_name"]
         sidecar = vhost_sidecars.get(server_name, {})
         default_pool_id = pool_name_to_id.get(sidecar.get("default_pool_name") or "")
@@ -196,10 +226,10 @@ async def import_configs(db, warnings: list[str]) -> dict[str, Any]:
         if existing:
             vhost_id = existing[0]["id"]
             await db.execute(
-                """UPDATE vhosts SET listen_port=?, ssl=?, ssl_cert_path=?, ssl_key_path=?,
+                """UPDATE vhosts SET listen_port=?, ssl=?, ssl_cert_path=?, ssl_key_path=?, enabled=?,
                    default_pool_id=COALESCE(?, default_pool_id), updated_at=datetime('now')
                    WHERE id=?""",
-                (*from_conf, default_pool_id, vhost_id),
+                (*from_conf, 1 if enabled else 0, default_pool_id, vhost_id),
             )
             counts["vhosts_updated"] += 1
         else:
@@ -211,7 +241,7 @@ async def import_configs(db, warnings: list[str]) -> dict[str, Any]:
                 (
                     server_name,
                     *from_conf,
-                    0 if sidecar.get("enabled") is False else 1,
+                    1 if enabled else 0,
                     default_pool_id,
                     sidecar.get("extra_blocks_json"),
                     sidecar.get("ip_rule_mode"),
@@ -252,6 +282,8 @@ async def import_configs(db, warnings: list[str]) -> dict[str, Any]:
 
         h = sha256_str(content)
         await db.execute(_RECORD_FILE_SQL, (str(conf_path), h, h, content, now))
+        # the record of the file it had in its other state, if it was switched by hand
+        await db.execute("DELETE FROM config_files WHERE path = ?", (other_vhost_variant(str(conf_path)),))
         counts["files"] += 1
 
     return {**counts, "pool_name_to_id": pool_name_to_id}
@@ -522,21 +554,19 @@ async def _dry_run_report(
                 }
             )
 
-    for conf_path in sorted(s.vhosts_dir.glob("*.conf")):
-        content = _read_managed(conf_path)
-        parsed = parse_vhost_block(content) if content else None
-        if parsed and parsed["server_name"]:
-            sidecar = vhost_sidecars.get(parsed["server_name"], {})
-            vhosts.append(
-                {
-                    "server_name": parsed["server_name"],
-                    "routes": len(parsed["routes"]),
-                    "has_default_pool": bool(sidecar.get("default_pool_id") or sidecar.get("default_pool_name")),
-                    "has_extra_blocks": bool(sidecar.get("extra_blocks_json")),
-                    "has_ip_rules": bool(sidecar.get("ip_rule_mode")),
-                    "has_sidecar": bool(sidecar),
-                }
-            )
+    for _path, _content, parsed, enabled in _vhost_files(s, vhost_sidecars, warnings):
+        sidecar = vhost_sidecars.get(parsed["server_name"], {})
+        vhosts.append(
+            {
+                "server_name": parsed["server_name"],
+                "enabled": enabled,
+                "routes": len(parsed["routes"]),
+                "has_default_pool": bool(sidecar.get("default_pool_id") or sidecar.get("default_pool_name")),
+                "has_extra_blocks": bool(sidecar.get("extra_blocks_json")),
+                "has_ip_rules": bool(sidecar.get("ip_rule_mode")),
+                "has_sidecar": bool(sidecar),
+            }
+        )
 
     return {
         "dry_run": True,

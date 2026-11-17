@@ -29,6 +29,8 @@ from nanio_orchestrator.nginx.generator import (
     generate_all_configs,
     generate_pool_config,
     generate_vhost_config,
+    is_vhost_config_path,
+    other_vhost_variant,
     record_file_state,
     remove_config_file,
 )
@@ -165,7 +167,7 @@ async def reload_nginx_locked() -> executor.NginxExecResult:
 async def write_vhost_config(vhost_id: int, db) -> tuple:
     """Generate a vhost config from DB state, apply it and record it. Returns (ok, output).
 
-    Does NOT reload nginx — the operator applies changes via the Config tab.
+    Does NOT reload nginx — the operator applies changes with *Reload nginx*.
     """
     return await write_configs(db, vhost_ids=[vhost_id])
 
@@ -179,7 +181,7 @@ async def write_configs(
     Accepted by nginx: the files are recorded and ``db`` is committed. Refused: every file is
     back as it was and nothing is committed; the caller rolls back (``reject_if_refused``).
     A pool without members has no upstream block, so its file is removed instead of written.
-    Does NOT reload nginx — the operator applies changes via the Config tab.
+    Does NOT reload nginx — the operator applies changes with *Reload nginx*.
     """
     files: list[tuple[str, str]] = []
     gone = list(remove)
@@ -192,7 +194,10 @@ async def write_configs(
         else:
             files.append((filepath, content))
     for vhost_id in vhost_ids:
-        files.append(await generate_vhost_config(vhost_id, db))
+        filepath, content = await generate_vhost_config(vhost_id, db)
+        files.append((filepath, content))
+        # A vhost has one file: enabling or disabling it writes one variant and removes the other
+        gone.append(other_vhost_variant(filepath))
 
     result = await apply_config_files(files, remove=gone)
     if not result.ok:
@@ -213,7 +218,7 @@ async def write_configs(
         await write_pool_sidecar_from_db(db, pool_id)
     for vhost_id in vhost_ids:
         await write_vhost_sidecar_from_db(db, vhost_id)
-    return True, f"nginx -t: {result.output} (config written — apply via Config tab)"
+    return True, f"nginx -t: {result.output} (config written — apply with Reload nginx)"
 
 
 async def rebuild_all_configs() -> dict[str, object]:
@@ -228,6 +233,9 @@ async def rebuild_all_configs() -> dict[str, object]:
     configs = await generate_all_configs()
     to_write = [(fp, ct) for fp, ct in configs if ct is not None]
     removed: list[str] = []
+    # The file a vhost would have in its other state (enabled ↔ disabled) must not stay behind
+    stale = [other_vhost_variant(fp) for fp, _ in to_write if is_vhost_config_path(fp)]
+    stale_on_disk = [fp for fp in stale if os.path.exists(fp)]
 
     # A pool without members has no upstream block, so it must not have a file either
     async with get_db_ctx() as db:
@@ -239,15 +247,18 @@ async def rebuild_all_configs() -> dict[str, object]:
                 await db.execute("DELETE FROM config_files WHERE path = ?", (filepath,))
         await db.commit()
 
-    result = await apply_config_files(to_write, reload=True)
+    result = await apply_config_files(to_write, remove=stale, reload=True)
     written: list[str] = []
     if result.ok:
         async with get_db_ctx() as db:
             for filepath, content in to_write:
                 await record_file_state(db, filepath, content)
+            for filepath in stale:
+                await db.execute("DELETE FROM config_files WHERE path = ?", (filepath,))
             await write_all_sidecars(db)
             await db.commit()
         written = [fp for fp, _ in to_write]
+        removed += stale_on_disk
     return {"ok": result.ok, "stage": result.stage, "output": result.output, "written": written, "removed": removed}
 
 
