@@ -34,7 +34,8 @@ make test-cov       # with coverage; fails below 100%
 ```
 
 Coverage of statements and branches is **100% and enforced** in CI (`fail_under = 100` in
-`pyproject.toml`). A change that adds code adds the tests that exercise it.
+`pyproject.toml`) on Python 3.11 and 3.12. On 3.9 the whole suite must pass, but the threshold
+is not applied: that version's tracer misreports `continue` lines and `async for` exits. A change that adds code adds the tests that exercise it.
 
 - Test the behaviour, not the line: assert on the response and on the resulting state (database
   rows through the API, generated nginx files, sidecars, the S3 or rclone calls issued).

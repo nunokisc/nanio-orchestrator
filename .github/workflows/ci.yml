@@ -47,7 +47,10 @@ jobs:
         run: uv run ruff format --check nanio_orchestrator/ tests/
 
       - name: Run tests
-        run: uv run pytest -q --tb=short --cov --cov-report=term
+        # 100% of statements and branches is required. Python 3.9's tracer misreports
+        # `continue` lines and the exit of `async for` loops, so there the tests must pass
+        # but the threshold is not applied.
+        run: uv run pytest -q --tb=short --cov --cov-report=term ${{ matrix.python-version == '3.9' && '--cov-fail-under=0' || '' }}
 
   install:
     name: Installer on a real host
