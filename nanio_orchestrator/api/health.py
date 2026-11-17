@@ -17,6 +17,7 @@ async def health():
     s = get_settings()
     db_ok = True
     drift_alerts = 0
+    missing_buckets = 0
 
     try:
         async with get_db_ctx() as db:
@@ -28,6 +29,8 @@ async def health():
             for r in rows:
                 if r["sha256_disk"] != r["sha256_db"]:
                     drift_alerts += 1
+            row = await db.execute_fetchall("SELECT COUNT(*) AS cnt FROM bucket_sync WHERE missing_since IS NOT NULL")
+            missing_buckets = row[0]["cnt"]
     except Exception:
         db_ok = False
 
@@ -38,4 +41,5 @@ async def health():
         db_ok=db_ok,
         nginx_config_dir=s.nginx_config_dir,
         drift_alerts=drift_alerts,
+        missing_buckets=missing_buckets,
     )

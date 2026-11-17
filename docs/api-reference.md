@@ -30,12 +30,13 @@ restored and the response carries the nginx output.
 `GET /api/health`
 
 ```json
-{"status": "ok", "version": "0.4.1", "dev_mode": false, "db_ok": true,
- "nginx_config_dir": "/etc/nginx/nanio", "drift_alerts": 0}
+{"status": "ok", "version": "0.5.0", "dev_mode": false, "db_ok": true,
+ "nginx_config_dir": "/etc/nginx/nanio", "drift_alerts": 0, "missing_buckets": 0}
 ```
 
 `status` is `degraded` when the database cannot be read. `drift_alerts` is the number of
-managed files that differ from what the orchestrator wrote.
+managed files that differ from what the orchestrator wrote. `missing_buckets` is the number of
+routed buckets whose pool reports that the bucket does not exist.
 
 ---
 
@@ -188,7 +189,7 @@ Only for vhosts whose default pool is of type `nanio`.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/vhosts/{id}/buckets` | Discovered buckets with status. `?fetch_counts=true` adds object counts. |
+| GET | `/api/vhosts/{id}/buckets` | Discovered buckets with status. `missing_since` is set when a routed bucket does not exist on its pool. `?fetch_counts=true` adds object counts. |
 | POST | `/api/vhosts/{id}/buckets/sync` | Discover buckets now |
 | POST | `/api/vhosts/{id}/buckets/{bucket}/promote` | Route the bucket to a pool, optionally migrating it |
 | POST | `/api/vhosts/{id}/buckets/{bucket}/migrate` | Start or restart the migration of a routed bucket |

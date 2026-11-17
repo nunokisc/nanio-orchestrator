@@ -107,6 +107,7 @@ CREATE TABLE IF NOT EXISTS bucket_sync (
     status          TEXT NOT NULL DEFAULT 'unrouted'
                     CHECK (status IN ('unrouted','routed','migrating','ignored','deleted')),
     routed_pool_id  INTEGER REFERENCES pools(id),
+    missing_since   TEXT,
     UNIQUE(vhost_id, bucket)
 );
 
@@ -273,6 +274,11 @@ async def _run_migrations_async(db) -> None:
         await db.execute("DROP TABLE bucket_sync")
         await db.execute("ALTER TABLE bucket_sync_new RENAME TO bucket_sync")
         await db.execute("PRAGMA foreign_keys=ON")
+
+    # bucket_sync.missing_since (routed bucket not found on its pool — flagged, never auto-removed)
+    info = await db.execute_fetchall("PRAGMA table_info(bucket_sync)")
+    if "missing_since" not in {r["name"] for r in info}:
+        await db.execute("ALTER TABLE bucket_sync ADD COLUMN missing_since TEXT")
 
     # Migration: rename pool type 'cold' → 'http' (cold was an alias with no functional difference)
     await db.execute("UPDATE pools SET type = 'http' WHERE type = 'cold'")

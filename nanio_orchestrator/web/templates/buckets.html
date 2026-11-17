@@ -22,7 +22,7 @@
     <label style="margin-left:auto;font-size:0.9rem;color:var(--text-muted)">
         Filter:
         <select id="status-filter" onchange="applyFilter()" style="margin-left:0.4rem">
-            <option value="needs-attention" selected>Unrouted + Deleted</option>
+            <option value="needs-attention" selected>Needs attention</option>
             <option value="unrouted">Unrouted</option>
             <option value="deleted">Deleted</option>
             <option value="routed">Routed</option>
@@ -48,7 +48,7 @@
         </thead>
         <tbody id="buckets-{{ v.id }}">
         {% for b in v.buckets %}
-            <tr class="bucket-row" data-status="{{ b.status }}">
+            <tr class="bucket-row" data-status="{{ b.status }}" data-missing="{{ '1' if b.missing_since else '' }}">
                 <td><code>{{ b.bucket }}</code></td>
                 <td>
                     {% if b.status == 'unrouted' %}<span class="badge warn">unrouted</span>
@@ -57,6 +57,8 @@
                     {% elif b.status == 'ignored' %}<span class="badge">ignored</span>
                     {% elif b.status == 'deleted' %}<span class="badge" style="background:var(--danger,#c0392b);color:#fff">deleted</span>
                     {% else %}<span class="badge">{{ b.status }}</span>{% endif %}
+                    {% if b.missing_since %}<span class="badge" style="background:var(--danger,#c0392b);color:#fff"
+                          title="The pool answers that this bucket does not exist (since {{ b.missing_since }}). The route is kept: check the pool's storage before removing it.">missing on pool</span>{% endif %}
                 </td>
                 <td>{{ b.pool_name or '—' }}</td>
                 <td>{{ b.discovered_at or '—' }}</td>
@@ -69,7 +71,7 @@
                     <button class="btn btn-xs"
                             onclick="ignoreBucket({{ v.id }}, '{{ b.bucket }}')">Ignore</button>
                     {% endif %}
-                    {% if b.status == 'deleted' and b.routed_pool_id %}
+                    {% if (b.status == 'deleted' and b.routed_pool_id) or b.missing_since %}
                     <button class="btn btn-xs btn-danger"
                             onclick="removeRoute({{ v.id }}, '{{ b.bucket }}')">Remove Route</button>
                     {% endif %}
@@ -250,7 +252,7 @@ function applyFilter() {
         const status = row.dataset.status;
         let show;
         if (filter === 'all') show = true;
-        else if (filter === 'needs-attention') show = status === 'unrouted' || status === 'deleted';
+        else if (filter === 'needs-attention') show = status === 'unrouted' || status === 'deleted' || row.dataset.missing === '1';
         else show = status === filter;
         row.style.display = show ? '' : 'none';
     });

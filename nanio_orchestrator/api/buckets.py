@@ -85,7 +85,7 @@ async def list_vhost_buckets(vhost_id: int, fetch_counts: bool = False):
         default_member = await _first_enabled_member(vhost["default_pool_id"], db)
 
         rows = await db.execute_fetchall(
-            """SELECT bs.bucket, bs.status, bs.discovered_at, bs.routed_pool_id,
+            """SELECT bs.bucket, bs.status, bs.discovered_at, bs.routed_pool_id, bs.missing_since,
                       p.name as pool_name
                FROM bucket_sync bs
                LEFT JOIN pools p ON bs.routed_pool_id = p.id
@@ -117,6 +117,7 @@ async def list_vhost_buckets(vhost_id: int, fetch_counts: bool = False):
                 "routed_pool_id": rd.get("routed_pool_id"),
                 "object_count": obj_count,
                 "discovered_at": rd["discovered_at"],
+                "missing_since": rd.get("missing_since"),
             }
         )
         if last_synced is None or (rd["discovered_at"] and rd["discovered_at"] > last_synced):
@@ -531,7 +532,7 @@ async def remove_bucket_route(vhost_id: int, bucket: str):
             )
         else:
             await db.execute(
-                """UPDATE bucket_sync SET status = 'unrouted', routed_pool_id = NULL
+                """UPDATE bucket_sync SET status = 'unrouted', routed_pool_id = NULL, missing_since = NULL
                    WHERE vhost_id = ? AND bucket = ?""",
                 (vhost_id, bucket),
             )

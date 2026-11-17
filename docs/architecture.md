@@ -50,9 +50,8 @@ Renders Jinja2 templates to produce nginx config text. Two template types:
 restore the previous content on failure (nginx only includes `*.conf`, so a `.tmp` candidate would
 not be validated). CRUD operations (pools, vhosts, routes, members) write and validate the config but do
 **not** reload nginx — the operator applies pending changes explicitly via `POST /api/config/reload`
-or the Config tab in the Web UI. Two things reload nginx on their own: the migration engine during
-the `write_routing` and `switching` phases, and the bucket-sync reconcile when it removes a route
-whose bucket no longer exists on its pool.
+or the Config tab in the Web UI. Only the migration engine reloads nginx on its own, during
+the `write_routing` and `switching` phases.
 
 ### Sidecar files (`sidecar.py`)
 
@@ -125,7 +124,10 @@ cancelled, until a migration between the same two pools completes.
 
 Background task that runs every `BUCKET_SYNC_INTERVAL` seconds. For each vhost with a
 `nanio` default pool, it calls `ListBuckets` and records discovered buckets in the `bucket_sync`
-table with status `unrouted`, `routed`, `migrating`, or `ignored`.
+table with status `unrouted`, `routed`, `migrating`, `ignored` or `deleted`.
+
+It also checks that each routed bucket exists on its target pool. One that does not is flagged
+(`missing_since`); the route is never removed automatically.
 
 Only `nanio` pools have S3 semantics — `http` pools are silently skipped.
 

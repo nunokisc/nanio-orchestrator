@@ -124,8 +124,9 @@ Schema upgrades live only in `db._run_migrations_async()`; `init_db_sync()` just
    validates nothing. Never write a managed `.conf` any other way. `_write_vhost_config()` /
    `_write_pool_config()` are thin wrappers over it and do **not**
    reload nginx — the operator applies changes explicitly via the Config tab (`POST /api/config/reload`).
-   Two things reload on their own: the migration engine (it must apply its own routing steps) and
-   the bucket-sync reconcile that removes a route whose bucket no longer exists on its pool.
+   Only the migration engine reloads on its own (it must apply its own routing steps). Background
+   tasks never change routing: bucket sync only *flags* a routed bucket missing on its pool
+   (`bucket_sync.missing_since`) — a node with unmounted storage answers "no such bucket" too.
 
 4. **HTTP pools are second-class.** They have no S3 credentials, no bucket sync, no migration.
    Filter them out in bucket-related endpoints — see `bucket_sync.py` and `api/pools.py`.

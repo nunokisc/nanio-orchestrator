@@ -16,7 +16,7 @@ curl -s http://localhost:8080/api/health            # no authentication needed
 sudo nginx -t
 ```
 
-`/api/health` returns `status`, `db_ok`, `drift_alerts` and the version. Remember that client
+`/api/health` returns `status`, `db_ok`, `drift_alerts`, `missing_buckets` and the version. Remember that client
 traffic does not depend on the orchestrator: if clients are failing, look at nginx and the
 storage nodes first.
 
@@ -138,6 +138,13 @@ listen port.
 - The orchestrator machine cannot reach the member's `host:port`.
 
 Trigger a sync by hand to see the error: `POST /api/vhosts/{id}/buckets/sync`.
+
+### A bucket is marked "missing on pool"
+
+The pool the bucket is routed to answers that the bucket does not exist. Nothing was changed:
+the route is still in place. Check the node first (is its data directory mounted? `ls` it on
+the node); if several buckets of the same pool are marked at once, it is almost certainly the
+node and not the buckets. See [operations.md](operations.md#bucket-discovery).
 
 ### Credentials API returns an error about the secret
 

@@ -247,7 +247,7 @@ async def buckets_page():
         vhosts = []
         for v in vhost_rows:
             buckets = await db.execute_fetchall(
-                """SELECT bs.bucket, bs.status, bs.discovered_at, bs.routed_pool_id,
+                """SELECT bs.bucket, bs.status, bs.discovered_at, bs.routed_pool_id, bs.missing_since,
                           p.name as pool_name
                    FROM bucket_sync bs
                    LEFT JOIN pools p ON bs.routed_pool_id = p.id
