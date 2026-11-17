@@ -96,11 +96,14 @@ def _subfolder_listings(vhost: Dict[str, Any], routes: List[Dict[str, Any]]) -> 
             continue
         folders = sorted(by_bucket[bucket], key=lambda r: len(r["path_prefix"]), reverse=True)
         owner_pool = owner.get("migration_dst_pool_name") or owner["pool_name"]
+        # A folder being migrated lives on two pools until it switches: its listing is answered
+        # by the destination (authoritative), a multi-delete must reach both.
         mirrors, seen = [], {owner["pool_name"], owner_pool}
         for route in folders:
-            if route["pool_name"] not in seen:
-                seen.add(route["pool_name"])
-                mirrors.append({"id": route["id"], "pool_name": route["pool_name"]})
+            for suffix, pool_name in (("", route["pool_name"]), ("d", route.get("migration_dst_pool_name"))):
+                if pool_name and pool_name not in seen:
+                    seen.add(pool_name)
+                    mirrors.append({"id": f"{route['id']}{suffix}", "pool_name": pool_name})
         digest = hashlib.sha256(f"{vhost.get('server_name')}/{bucket}".encode()).hexdigest()[:12]
         listings.append(
             {
@@ -108,7 +111,10 @@ def _subfolder_listings(vhost: Dict[str, Any], routes: List[Dict[str, Any]]) -> 
                 "var": f"$nanio_list_{digest}",
                 "default_pool": owner_pool,
                 "entries": [
-                    {"regex": _prefix_query_regex(path_segments(r["path_prefix"])[1:]), "pool_name": r["pool_name"]}
+                    {
+                        "regex": _prefix_query_regex(path_segments(r["path_prefix"])[1:]),
+                        "pool_name": r.get("migration_dst_pool_name") or r["pool_name"],
+                    }
                     for r in folders
                 ],
                 "mirrors": mirrors,
@@ -274,7 +280,7 @@ async def generate_vhost_config(vhost_id: int) -> tuple:
         # is split towards the http pool backed by B. Derived here so that it holds for every
         # regeneration (vhost edit, rebuild, restart), not only when the engine applies it.
         linked_rows = await db.execute_fetchall(
-            """SELECT m.bucket, sp.id AS http_src_pool_id, dp.name AS http_dst_pool_name
+            """SELECT m.bucket, m.folder, sp.id AS http_src_pool_id, dp.name AS http_dst_pool_name
                FROM migrations m
                JOIN pools sp ON sp.source_nanio_pool_id = m.src_pool_id AND sp.type = 'http'
                JOIN pools dp ON dp.source_nanio_pool_id = m.dst_pool_id AND dp.type = 'http'
@@ -283,7 +289,8 @@ async def generate_vhost_config(vhost_id: int) -> tuple:
         )
         linked = {}
         for row in linked_rows:
-            linked.setdefault((f"/{row['bucket']}/", row["http_src_pool_id"]), row["http_dst_pool_name"])
+            path = f"/{row['bucket']}/{row['folder']}"
+            linked.setdefault((path, row["http_src_pool_id"]), row["http_dst_pool_name"])
         for route in routes:
             if not route["migration_dst_pool_name"]:
                 route["migration_dst_pool_name"] = linked.get((route["path_prefix"], route["pool_id"]))

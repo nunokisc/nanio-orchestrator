@@ -300,13 +300,19 @@ async def count_objects(
     access_key: Optional[str] = None,
     secret_key: Optional[str] = None,
     region: str = "us-east-1",
+    prefix: str = "",
 ) -> int:
-    """Return number of objects in bucket (paginates to count all objects)."""
+    """Return number of objects in bucket (paginates to count all objects).
+
+    With ``prefix`` only keys starting with it are counted.
+    """
     total = 0
     continuation_token = ""
 
     while True:
         query = "list-type=2&max-keys=1000"
+        if prefix:
+            query += "&prefix=" + urllib.parse.quote(prefix, safe="")
         if continuation_token:
             query += "&continuation-token=" + urllib.parse.quote(continuation_token)
 

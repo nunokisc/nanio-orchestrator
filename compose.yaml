@@ -1,0 +1,63 @@
+# Deployment with Docker: the gateway (nginx) and the orchestrator as two containers of the
+# same image. Copy this file next to a `.env` holding the two secrets and run:
+#
+#   docker compose up -d
+#
+# .env:
+#   NANIO_ORCHESTRATOR_API_KEY=<long random value>      # panel login and API key
+#   NANIO_ORCHESTRATOR_SECRET=<Fernet key>              # encrypts the stored pool credentials
+#
+# Generate them with:
+#   docker run --rm ghcr.io/nunokisc/nanio-orchestrator config generate-secret
+#   openssl rand -base64 32
+
+name: nanio-orchestrator
+
+services:
+  # Serves client traffic. Does not depend on the orchestrator being up.
+  gateway:
+    image: ghcr.io/nunokisc/nanio-orchestrator:latest
+    entrypoint: ["nginx", "-g", "daemon off;"]
+    stop_signal: SIGQUIT
+    restart: unless-stopped
+    ports:
+      # Publish every port your vhosts listen on.
+      - "80:80"
+      - "443:443"
+    volumes:
+      - nginx-config:/etc/nginx/nanio
+      - nginx-run:/run
+      # TLS certificates referenced by your vhosts: mount them at the same path in BOTH
+      # services, the orchestrator needs them to validate the config.
+      # - /etc/ssl/s3:/etc/ssl/s3:ro
+
+  # The control plane: writes the config, validates it and asks the gateway to reload.
+  orchestrator:
+    image: ghcr.io/nunokisc/nanio-orchestrator:latest
+    restart: unless-stopped
+    depends_on:
+      - gateway
+    # Shares the gateway's process namespace and /run so that `nginx -s reload` reaches it.
+    pid: "service:gateway"
+    environment:
+      NANIO_ORCHESTRATOR_API_KEY: ${NANIO_ORCHESTRATOR_API_KEY:?set NANIO_ORCHESTRATOR_API_KEY in .env}
+      NANIO_ORCHESTRATOR_SECRET: ${NANIO_ORCHESTRATOR_SECRET:?set NANIO_ORCHESTRATOR_SECRET in .env}
+    ports:
+      # The panel. Keep it off the public interface.
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - nginx-config:/etc/nginx/nanio
+      - nginx-run:/run
+      - data:/data
+      # - /etc/ssl/s3:/etc/ssl/s3:ro
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  nginx-config:   # /etc/nginx/nanio — back this up: the database can be rebuilt from it
+  nginx-run:
+  data:           # database, its backups and migration state

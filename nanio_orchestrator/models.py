@@ -315,8 +315,24 @@ class CredentialOut(BaseModel):
 
 class RcloneMigrationCreate(BaseModel):
     bucket: str = Field(..., min_length=1)
-    src_pool_id: int
+    # The pool that serves the data now. Required to move a whole bucket; for a folder it is
+    # worked out from the routes and, if given, must agree with them.
+    src_pool_id: Optional[int] = None
     dst_pool_id: int
+    # Move only this folder of the bucket (e.g. "2025/" or "2025/q1/"). Empty = the whole bucket.
+    folder: str = ""
+    # Needed only when the bucket's vhost cannot be worked out (several vhosts, bucket not synced yet)
+    vhost_id: Optional[int] = None
+
+    @field_validator("folder")
+    @classmethod
+    def normalize_folder(cls, v: str) -> str:
+        v = v.strip().strip("/")
+        if not v:
+            return ""
+        if not _PATH_PREFIX_RE.match(f"/{v}/"):
+            raise ValueError("folder may contain letters, digits and . _ @ - separated by /")
+        return v + "/"
 
 
 class RcloneMigrationOut(BaseModel):
@@ -338,6 +354,7 @@ class RcloneMigrationOut(BaseModel):
     orphaned_source_prefix: Optional[str] = None
     orphaned_at: Optional[str] = None
     split_routing: bool = False  # nginx is serving this bucket through the live-migration split
+    folder: str = ""  # "" = whole bucket, otherwise the folder being moved
     cascade_warnings: Optional[List[str]] = None
 
 

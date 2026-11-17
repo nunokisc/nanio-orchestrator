@@ -40,14 +40,15 @@ import re
 import shutil
 import tempfile
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
+from nanio_orchestrator import s3client, subfolders
 from nanio_orchestrator.audit_log import log_audit
 from nanio_orchestrator.config import get_settings
 from nanio_orchestrator.credentials import get_pool_credentials, get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
 from nanio_orchestrator.nginx.apply import apply_config_file
-from nanio_orchestrator.nginx.generator import generate_vhost_config, record_file_state
+from nanio_orchestrator.nginx.generator import SUBFOLDER_MARKER, generate_vhost_config, record_file_state
 from nanio_orchestrator.s3client import (
     bucket_exists,
     bucket_has_objects,
@@ -60,6 +61,7 @@ from nanio_orchestrator.sidecar import (
     write_migration_completion,
     write_migration_state,
 )
+from nanio_orchestrator.subfolders import ensure_markers
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +77,7 @@ async def _cascade_http_write_routing(
     bucket: str,
     src_pool_id: int,
     dst_pool_id: int,
+    route_path: Optional[str] = None,
 ) -> None:
     """Apply write-routing split config to http vhosts backed by src nanio pool.
 
@@ -113,7 +116,7 @@ async def _cascade_http_write_routing(
                    FROM vhosts v
                    JOIN routes r ON r.vhost_id = v.id
                    WHERE r.pool_id = ? AND r.path_prefix = ?""",
-                (http_src_pool["id"], f"/{bucket}/"),
+                (http_src_pool["id"], route_path or f"/{bucket}/"),
             )
 
         for vr in route_rows:
@@ -163,6 +166,7 @@ async def _cascade_http_switching(
     bucket: str,
     src_pool_id: int,
     dst_pool_id: int,
+    route_path: Optional[str] = None,
 ) -> list:
     """After primary switch, update http vhosts to point directly to http dst pool.
 
@@ -202,7 +206,7 @@ async def _cascade_http_switching(
                    FROM vhosts v
                    JOIN routes r ON r.vhost_id = v.id
                    WHERE r.pool_id = ? AND r.path_prefix = ?""",
-                (http_src_pool["id"], f"/{bucket}/"),
+                (http_src_pool["id"], route_path or f"/{bucket}/"),
             )
 
         for rr in route_rows:
@@ -425,6 +429,7 @@ async def _write_state_sidecar(migration_id: int, db) -> None:
         "migration_id": m["id"],
         "vhost_id": m["vhost_id"],
         "bucket": m["bucket"],
+        "folder": m.get("folder") or "",
         "source_pool_id": m["src_pool_id"],
         "source_pool_name": m.get("source_pool_name"),
         "target_pool_id": m["dst_pool_id"],
@@ -721,8 +726,11 @@ async def _verify_destination(
     bucket: str,
     src_pool_id: int,
     dst_pool_id: int,
+    folder: str = "",
 ) -> tuple[bool, int]:
     """Verify that the destination holds everything the source has. Returns (ok, unresolved).
+
+    rclone reports keys relative to the remote, i.e. relative to ``folder`` when one is given.
 
     A source object missing from the destination, or unreadable, is always a failure. An object
     that differs is accepted only when the destination copy is strictly newer than the source
@@ -743,7 +751,8 @@ async def _verify_destination(
     dst_ak, dst_sk, _ = await get_pool_s3_params(dst_pool_id)
 
     stale = []
-    for key in report["differ"]:
+    for relative_key in report["differ"]:
+        key = folder + relative_key
         try:
             src_time = await object_last_modified(src_addr, bucket, key, access_key=src_ak, secret_key=src_sk)
             dst_time = await object_last_modified(dst_addr, bucket, key, access_key=dst_ak, secret_key=dst_sk)
@@ -809,6 +818,49 @@ def _parse_rclone_stats(line: str) -> Optional[dict]:
 # ── State machine: run a full migration ──────────────────────────────────────
 
 
+async def _finish_folder_move(vhost_id: int, route_id: Optional[int], route_path: str, dst_pool_id: int) -> List[str]:
+    """After a folder switched pools: drop its route if it is back on the bucket's own pool.
+
+    A folder route that points at the pool already serving the rest of the bucket does
+    nothing, so it is removed together with its marker and its http routes. Returns log lines.
+    """
+    notes: List[str] = []
+    changed: List[int] = []
+    marker = None
+    async with get_db_ctx() as db:
+        # the parent is looked up without this route in the way: it is the bucket's own pool
+        parent = await subfolders.parent_pool(db, vhost_id, route_path)
+        if not parent or parent["id"] != dst_pool_id or not route_id:
+            return notes
+        bucket = subfolders.path_segments(route_path)[0]
+        await db.execute("UPDATE migrations SET route_id = NULL WHERE route_id = ?", (route_id,))
+        await db.execute("DELETE FROM routes WHERE id = ?", (route_id,))
+        http_changed, _ = await subfolders.sync_http_routes(db, bucket, route_path, parent["id"], None)
+        await db.commit()
+        changed = [vhost_id] + http_changed
+        address = await subfolders.pool_endpoint(db, parent["id"])
+        if address:
+            marker = (address, bucket, subfolders.folder_key(route_path) + SUBFOLDER_MARKER, parent["id"])
+    for changed_vhost_id in changed:
+        filepath, content = await generate_vhost_config(changed_vhost_id)
+        result = await apply_config_file(filepath, content, reload=True)
+        if result.ok:
+            async with get_db_ctx() as db:
+                await record_file_state(db, filepath, content)
+                await db.commit()
+        else:
+            notes.append(f"WARNING: nginx {result.stage} failed while removing the folder route: {result.output}")
+    if marker:
+        address, bucket, key, parent_id = marker
+        try:
+            access_key, secret_key, _ = await get_pool_s3_params(parent_id)
+            await s3client.delete_object(address, bucket, key, access_key=access_key, secret_key=secret_key)
+        except Exception as exc:
+            notes.append(f"WARNING: could not remove the marker '{key}': {exc}")
+    notes.append(f"'{route_path}' is back on the bucket's own pool — its folder route was removed")
+    return notes
+
+
 async def run_migration(migration_id: int) -> None:
     """Execute the full migration state machine for a single migration."""
     config_dir = None
@@ -826,6 +878,10 @@ async def run_migration(migration_id: int) -> None:
         src_pool_id = m["src_pool_id"]
         dst_pool_id = m["dst_pool_id"]
         route_id = m.get("route_id")  # may be None for legacy migrations
+        # "" moves the whole bucket; "a/b/" moves only that folder, through its own route
+        folder = m.get("folder") or ""
+        what = f"folder '{folder}' of bucket '{bucket}'" if folder else f"bucket '{bucket}'"
+        route_path = f"/{bucket}/{folder}"
         # True once nginx routes this bucket through the split (set below, or inherited from
         # an interrupted run of this migration).
         split_active = bool(m.get("split_routing"))
@@ -859,12 +915,18 @@ async def run_migration(migration_id: int) -> None:
         # (and takes over the split); pointing the bucket anywhere else is not.
         async with get_db_ctx() as db:
             prior_rows = await db.execute_fetchall(
-                """SELECT id, src_pool_id, dst_pool_id FROM migrations
+                """SELECT id, src_pool_id, dst_pool_id, folder FROM migrations
                    WHERE vhost_id = ? AND bucket = ? AND split_routing = 1 AND id != ?""",
                 (m["vhost_id"], bucket, migration_id),
             )
             prior = [dict(r) for r in prior_rows]
-            mismatched = [p for p in prior if (p["src_pool_id"], p["dst_pool_id"]) != (src_pool_id, dst_pool_id)]
+            # One split at a time per bucket: only the very same move (same folder, same pools)
+            # may take it over.
+            mismatched = [
+                p
+                for p in prior
+                if (p["src_pool_id"], p["dst_pool_id"], p["folder"] or "") != (src_pool_id, dst_pool_id, folder)
+            ]
             if prior and not mismatched:
                 await db.execute(
                     f"UPDATE migrations SET split_routing = 0 WHERE id IN ({','.join('?' * len(prior))})",
@@ -900,18 +962,18 @@ async def run_migration(migration_id: int) -> None:
         # Restrict permissions on the config file
         os.chmod(config_path, 0o600)
 
-        src_remote = f"src:{bucket}"
-        dst_remote = f"dst:{bucket}"
+        src_remote = f"src:{bucket}/{folder}".rstrip("/")
+        dst_remote = f"dst:{bucket}/{folder}".rstrip("/")
 
         # ── Pre-flight: refuse to copy from an empty source ───────────────
         src_address = await _first_member_endpoint(src_pool_id)
         if src_address:
             ak, sk, _ = await get_pool_s3_params(src_pool_id)
             try:
-                src_count = await count_objects(src_address, bucket, access_key=ak, secret_key=sk)
+                src_count = await count_objects(src_address, bucket, access_key=ak, secret_key=sk, prefix=folder)
                 if src_count == 0:
                     msg = (
-                        f"Refusing to migrate: source bucket '{bucket}' is empty. "
+                        f"Refusing to migrate: source {what} is empty. "
                         "Copying from an empty source would erase any content already "
                         "present at the destination. Verify the source bucket and retry."
                     )
@@ -952,6 +1014,7 @@ async def run_migration(migration_id: int) -> None:
                         bucket,
                         access_key=dst_ak_pre,
                         secret_key=dst_sk_pre,
+                        prefix=folder,
                     ):
                         # copy mode is additive — destination objects are preserved
                         await _log(
@@ -1009,8 +1072,12 @@ async def run_migration(migration_id: int) -> None:
                 src_addr = await _first_member_endpoint(src_pool_id)
                 dst_addr = await _first_member_endpoint(dst_pool_id)
                 if src_addr and dst_addr:
-                    src_count = await count_objects(src_addr, bucket, access_key=src_ak, secret_key=src_sk)
-                    dst_count = await count_objects(dst_addr, bucket, access_key=dst_ak, secret_key=dst_sk)
+                    src_count = await count_objects(
+                        src_addr, bucket, access_key=src_ak, secret_key=src_sk, prefix=folder
+                    )
+                    dst_count = await count_objects(
+                        dst_addr, bucket, access_key=dst_ak, secret_key=dst_sk, prefix=folder
+                    )
                     await _log(
                         migration_id, "copying", f"{pass_label}: src={src_count} objects, dst={dst_count} objects"
                     )
@@ -1059,7 +1126,7 @@ async def run_migration(migration_id: int) -> None:
                 split_active = True
                 await _log(migration_id, "write_routing", "nginx reloaded with write-routing split config")
                 # Cascade write-routing to linked http vhosts
-                await _cascade_http_write_routing(migration_id, bucket, src_pool_id, dst_pool_id)
+                await _cascade_http_write_routing(migration_id, bucket, src_pool_id, dst_pool_id, route_path)
             else:
                 # The previous config file is back in place — the split never went live
                 async with get_db_ctx() as db:
@@ -1098,7 +1165,7 @@ async def run_migration(migration_id: int) -> None:
                 migration_id, "verifying", f"Verify pass {verify_pass}: rclone check — every source object at dst"
             )
             check_ok, diff_count = await _verify_destination(
-                migration_id, config_path, src_remote, dst_remote, bucket, src_pool_id, dst_pool_id
+                migration_id, config_path, src_remote, dst_remote, bucket, src_pool_id, dst_pool_id, folder
             )
             if check_ok:
                 await _log(migration_id, "verifying", f"Verify pass {verify_pass}: check passed — dst holds all of src")
@@ -1171,11 +1238,12 @@ async def run_migration(migration_id: int) -> None:
                 await _set_phase(migration_id, "error", msg)
                 return
 
-            await db.execute(
-                """UPDATE bucket_sync SET status = 'routed', routed_pool_id = ?
-                   WHERE vhost_id = ? AND bucket = ?""",
-                (dst_pool_id, vhost_id, bucket),
-            )
+            if not folder:
+                await db.execute(
+                    """UPDATE bucket_sync SET status = 'routed', routed_pool_id = ?
+                       WHERE vhost_id = ? AND bucket = ?""",
+                    (dst_pool_id, vhost_id, bucket),
+                )
             await db.execute("UPDATE migrations SET split_routing = 0 WHERE id = ?", (migration_id,))
             await db.commit()
 
@@ -1190,7 +1258,9 @@ async def run_migration(migration_id: int) -> None:
                 await db.commit()
             await _log(migration_id, "switching", "nginx reloaded with new route")
             # Cascade switching to linked http vhosts
-            swept_http_vhosts = await _cascade_http_switching(migration_id, bucket, src_pool_id, dst_pool_id)
+            swept_http_vhosts = await _cascade_http_switching(
+                migration_id, bucket, src_pool_id, dst_pool_id, route_path
+            )
         else:
             # nginx test/reload failed — the previous config file is back in place;
             # roll the DB route back to the source pool so DB and disk agree.
@@ -1211,11 +1281,12 @@ async def run_migration(migration_id: int) -> None:
                            WHERE vhost_id = ? AND path_prefix = ?""",
                         (src_pool_id, vhost_id, f"/{bucket}/"),
                     )
-                await db.execute(
-                    """UPDATE bucket_sync SET status = 'migrating', routed_pool_id = NULL
-                       WHERE vhost_id = ? AND bucket = ?""",
-                    (vhost_id, bucket),
-                )
+                if not folder:
+                    await db.execute(
+                        """UPDATE bucket_sync SET status = 'migrating', routed_pool_id = NULL
+                           WHERE vhost_id = ? AND bucket = ?""",
+                        (vhost_id, bucket),
+                    )
                 await db.execute("UPDATE migrations SET split_routing = 1 WHERE id = ?", (migration_id,))
                 await db.commit()
             await _set_phase(
@@ -1234,7 +1305,7 @@ async def run_migration(migration_id: int) -> None:
                    orphaned_source_prefix = ?,
                    orphaned_at = ?
                    WHERE id = ?""",
-                (src_pool_id, f"/{bucket}/", orphaned_at, migration_id),
+                (src_pool_id, route_path, orphaned_at, migration_id),
             )
             await db.commit()
             pool_rows = await db.execute_fetchall(
@@ -1248,6 +1319,7 @@ async def run_migration(migration_id: int) -> None:
                 "migration_id": migration_id,
                 "vhost_id": m["vhost_id"],
                 "bucket": bucket,
+                "folder": folder,
                 "source_pool_id": src_pool_id,
                 "source_pool_name": pool_names.get(src_pool_id),
                 "target_pool_id": dst_pool_id,
@@ -1255,18 +1327,26 @@ async def run_migration(migration_id: int) -> None:
                 "route_id": route_id,
                 "status": "done",
                 "orphaned_source_pool_id": src_pool_id,
-                "orphaned_source_prefix": f"/{bucket}/",
+                "orphaned_source_prefix": route_path,
                 "orphaned_at": orphaned_at,
                 "swept_http_vhosts": swept_http_vhosts,
             }
         )
+
+        # A folder that moved changes what its bucket needs around it (marker object, or no
+        # route at all when it went back to the bucket's own pool)
+        if folder:
+            for note in await _finish_folder_move(m["vhost_id"], route_id, route_path, dst_pool_id):
+                await _log(migration_id, "switching", note)
+        for warning in await ensure_markers(m["vhost_id"]):
+            await _log(migration_id, "switching", f"WARNING: {warning}")
 
         # ── Phase: done ───────────────────────────────────────────────────
         await _set_phase(migration_id, "done")
         await _log(
             migration_id,
             "done",
-            f"Migration completed: {bucket} moved to pool {dst_pool_id}. "
+            f"Migration completed: {what} moved to pool {dst_pool_id}. "
             f"Source data on pool {src_pool_id} is now orphaned — "
             "use GET /api/migrations/orphaned to track.",
         )
@@ -1315,6 +1395,7 @@ async def start_migration(
     src_pool_id: int,
     dst_pool_id: int,
     route_id: Optional[int] = None,
+    folder: str = "",
 ) -> int:
     """Create a migration record and launch the background task. Returns migration id.
 
@@ -1335,9 +1416,9 @@ async def start_migration(
         async with get_db_ctx() as db:
             cursor = await db.execute(
                 """INSERT INTO migrations
-                   (vhost_id, bucket, src_pool_id, dst_pool_id, phase, route_id)
-                   VALUES (?, ?, ?, ?, 'pending', ?)""",
-                (vhost_id, bucket, src_pool_id, dst_pool_id, route_id),
+                   (vhost_id, bucket, src_pool_id, dst_pool_id, phase, route_id, folder)
+                   VALUES (?, ?, ?, ?, 'pending', ?, ?)""",
+                (vhost_id, bucket, src_pool_id, dst_pool_id, route_id, folder),
             )
             migration_id = cursor.lastrowid
             await log_audit(
@@ -1347,6 +1428,7 @@ async def start_migration(
                 migration_id,
                 after={
                     "bucket": bucket,
+                    "folder": folder,
                     "src_pool_id": src_pool_id,
                     "dst_pool_id": dst_pool_id,
                     "vhost_id": vhost_id,

@@ -17,6 +17,7 @@ from typing import List
 
 from fastapi import APIRouter, HTTPException, Query
 
+from nanio_orchestrator import subfolders
 from nanio_orchestrator.audit_log import log_audit
 from nanio_orchestrator.credentials import get_pool_s3_params
 from nanio_orchestrator.db import get_db_ctx
@@ -31,6 +32,7 @@ from nanio_orchestrator.models import (
     RcloneMigrationOut,
     StaleMigrationOut,
 )
+from nanio_orchestrator.nginx.apply import write_vhost_config
 from nanio_orchestrator.s3client import bucket_exists, bucket_has_objects
 
 router = APIRouter(prefix="/api/migrations", tags=["migrations"])
@@ -39,7 +41,11 @@ logger = logging.getLogger(__name__)
 
 @router.post("", response_model=RcloneMigrationOut, status_code=201)
 async def create_migration(body: RcloneMigrationCreate):
-    """Start a new rclone-based migration."""
+    """Start a new rclone-based migration of a bucket, or of one folder of a bucket."""
+    if body.folder:
+        return await _create_folder_migration(body)
+    if body.src_pool_id is None:
+        raise HTTPException(422, "src_pool_id is required to migrate a whole bucket")
 
     # Validate pools exist and are distinct
     if body.src_pool_id == body.dst_pool_id:
@@ -252,6 +258,126 @@ async def create_migration(body: RcloneMigrationCreate):
     if cascade_warnings:
         out.cascade_warnings = cascade_warnings
     return out
+
+
+async def _create_folder_migration(body: RcloneMigrationCreate) -> RcloneMigrationOut:
+    """Move one folder of a bucket to another pool, with the same no-downtime split as a bucket.
+
+    The folder's current pool is its `/bucket/folder/` route, or — when the folder is still part
+    of the bucket — the bucket's own pool. In that second case the route is created here,
+    pointing at the pool that already serves the folder (which changes nothing), so that the
+    migration has a route of its own to split and switch.
+    """
+    bucket, folder = body.bucket, body.folder
+    route_path = f"/{bucket}/{folder}"
+
+    async with get_db_ctx() as db:
+        # Which vhost?
+        if body.vhost_id is not None:
+            vhost_rows = await db.execute_fetchall("SELECT id FROM vhosts WHERE id = ?", (body.vhost_id,))
+        else:
+            vhost_rows = await db.execute_fetchall(
+                "SELECT DISTINCT vhost_id AS id FROM bucket_sync WHERE bucket = ?", (bucket,)
+            ) or await db.execute_fetchall(
+                """SELECT v.id FROM vhosts v JOIN pools p ON p.id = v.default_pool_id WHERE p.type = 'nanio'"""
+            )
+        if len(vhost_rows) != 1:
+            raise HTTPException(
+                400,
+                f"Cannot tell which vhost serves bucket '{bucket}'. Send vhost_id.",
+            )
+        vhost_id = vhost_rows[0]["id"]
+
+        # Where does the folder live now?
+        route_rows = await db.execute_fetchall(
+            "SELECT id, pool_id FROM routes WHERE vhost_id = ? AND path_prefix = ?", (vhost_id, route_path)
+        )
+        parent = await subfolders.parent_pool(db, vhost_id, route_path)
+        if parent is None or parent["type"] != "nanio":
+            raise HTTPException(400, f"Bucket '{bucket}' is not served by an S3 pool on vhost {vhost_id}.")
+        src_pool_id = route_rows[0]["pool_id"] if route_rows else parent["id"]
+        if body.src_pool_id is not None and body.src_pool_id != src_pool_id:
+            raise HTTPException(
+                400,
+                f"Source pool mismatch: '{route_path}' is currently served by pool {src_pool_id}, "
+                f"not pool {body.src_pool_id}.",
+            )
+        if src_pool_id == body.dst_pool_id:
+            raise HTTPException(400, f"'{route_path}' is already on pool {src_pool_id}.")
+
+        dst_rows = await db.execute_fetchall("SELECT name, type FROM pools WHERE id = ?", (body.dst_pool_id,))
+        if not dst_rows:
+            raise HTTPException(400, f"Destination pool {body.dst_pool_id} not found")
+        if dst_rows[0]["type"] != "nanio":
+            raise HTTPException(400, "Migrations can only be performed between nanio pools.")
+        src_member = await subfolders.pool_endpoint(db, src_pool_id)
+        if not src_member or not await subfolders.pool_endpoint(db, body.dst_pool_id):
+            raise HTTPException(400, "Both pools need at least one enabled member.")
+
+        # One move at a time per bucket, folders included. The only exception is taking over
+        # the split that a failed or cancelled attempt at this very move left behind.
+        busy = await db.execute_fetchall(
+            """SELECT id, folder, src_pool_id, dst_pool_id, phase FROM migrations
+               WHERE bucket = ? AND (split_routing = 1
+                     OR phase IN ('pending','copying','write_routing','verifying','switching'))""",
+            (bucket,),
+        )
+        for row in busy:
+            finished = row["phase"] in ("error", "cancelled")
+            same_move = (row["folder"] or "", row["src_pool_id"], row["dst_pool_id"]) == (
+                folder,
+                src_pool_id,
+                body.dst_pool_id,
+            )
+            if not (finished and same_move):
+                moving = f"folder '{row['folder']}' of bucket '{bucket}'" if row["folder"] else f"bucket '{bucket}'"
+                raise HTTPException(
+                    409,
+                    f"Migration {row['id']} is still moving {moving} (pool {row['src_pool_id']} → "
+                    f"{row['dst_pool_id']}). Only one move at a time per bucket: finish that one first.",
+                )
+
+    src_ak, src_sk, _ = await get_pool_s3_params(src_pool_id)
+    try:
+        has_data = await bucket_has_objects(src_member, bucket, access_key=src_ak, secret_key=src_sk, prefix=folder)
+    except Exception as exc:
+        raise HTTPException(503, f"Cannot reach source pool {src_pool_id} to check '{route_path}': {exc}")
+    if not has_data:
+        raise HTTPException(
+            400,
+            f"'{folder}' of bucket '{bucket}' has no objects on pool {src_pool_id} — nothing to migrate. "
+            "For an empty folder, just add the route.",
+        )
+
+    async with get_db_ctx() as db:
+        if route_rows:
+            route_id = route_rows[0]["id"]
+        else:
+            cursor = await db.execute(
+                "INSERT INTO routes (vhost_id, path_prefix, pool_id, enabled) VALUES (?, ?, ?, 1)",
+                (vhost_id, route_path, src_pool_id),
+            )
+            route_id = cursor.lastrowid
+            # http vhosts serving this bucket get the folder route too, so they follow the move
+            http_changed, _ = await subfolders.sync_http_routes(db, bucket, route_path, parent["id"], src_pool_id)
+            await db.commit()
+            for changed_vhost_id in [vhost_id] + http_changed:
+                ok, output = await write_vhost_config(changed_vhost_id, db)
+                if not ok:
+                    await db.execute("DELETE FROM routes WHERE id = ?", (route_id,))
+                    await db.commit()
+                    raise HTTPException(400, f"nginx rejected the folder route: {output}")
+
+    try:
+        migration_id = await start_migration(
+            vhost_id, bucket, src_pool_id, body.dst_pool_id, route_id=route_id, folder=folder
+        )
+    except RuntimeError as e:
+        raise HTTPException(429, str(e))
+
+    async with get_db_ctx() as db:
+        rows = await db.execute_fetchall("SELECT * FROM migrations WHERE id = ?", (migration_id,))
+    return _to_out(dict(rows[0]))
 
 
 @router.get("/source-buckets")
@@ -506,4 +632,5 @@ def _to_out(m: dict) -> RcloneMigrationOut:
         orphaned_source_prefix=m.get("orphaned_source_prefix"),
         orphaned_at=m.get("orphaned_at"),
         split_routing=bool(m.get("split_routing")),
+        folder=m.get("folder") or "",
     )

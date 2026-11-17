@@ -59,14 +59,23 @@ def _nginx_bin() -> str:
     return _shutil.which("nginx") or "/usr/sbin/nginx"
 
 
+def _nginx_cmd(*args: str) -> list[str]:
+    """nginx through sudo (the installed service runs as its own user), or directly when
+    already root (a container)."""
+    import os
+
+    prefix = [] if os.geteuid() == 0 else ["sudo"]
+    return [*prefix, _nginx_bin(), *args]
+
+
 async def test_config() -> NginxExecResult:
     """Run nginx -t to validate configuration."""
-    return await _run_cmd(["sudo", _nginx_bin(), "-t"])
+    return await _run_cmd(_nginx_cmd("-t"))
 
 
 async def reload_nginx() -> NginxExecResult:
     """Run nginx -s reload to apply configuration."""
-    return await _run_cmd(["sudo", _nginx_bin(), "-s", "reload"])
+    return await _run_cmd(_nginx_cmd("-s", "reload"))
 
 
 def detect_nginx() -> dict:

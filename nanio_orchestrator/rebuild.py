@@ -230,6 +230,17 @@ async def import_configs(db, warnings: List[str]) -> Dict[str, Any]:
     return {**counts, "pool_name_to_id": pool_name_to_id}
 
 
+async def _route_id_for(db, vhost_id: int, state: dict) -> Optional[int]:
+    """The route a migration acts on, found by its path.
+
+    Route ids are reassigned by a rebuild, so the id stored in the state file is meaningless
+    afterwards; the path (`/bucket/` or `/bucket/folder/`) is what identifies the route.
+    """
+    path = f"/{state.get('bucket', '')}/{state.get('folder', '')}"
+    rows = await db.execute_fetchall("SELECT id FROM routes WHERE vhost_id = ? AND path_prefix = ?", (vhost_id, path))
+    return rows[0]["id"] if rows else None
+
+
 async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
     """Reconstruct the entire database from disk state.
 
@@ -308,21 +319,22 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
             await db.execute(
                 """INSERT INTO migrations
                    (vhost_id, bucket, src_pool_id, dst_pool_id, phase, route_id,
-                    objects_total, objects_done, bytes_total, bytes_done, split_routing)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    objects_total, objects_done, bytes_total, bytes_done, split_routing, folder)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     vhost_id_for_migration,
                     state.get("bucket", ""),
                     src_id,
                     dst_id,
                     phase,
-                    state.get("route_id"),
+                    await _route_id_for(db, vhost_id_for_migration, state),
                     state.get("total_objects", 0),
                     state.get("copied_objects", 0),
                     state.get("bytes_total", 0),
                     state.get("bytes_transferred", 0),
                     # Older state files have no split_routing key: fall back to nginx_state
                     1 if state.get("split_routing", state.get("nginx_state") == "split") else 0,
+                    state.get("folder", ""),
                 ),
             )
             migration_count += 1
@@ -359,17 +371,18 @@ async def rebuild_from_disk(dry_run: bool = False) -> Dict[str, Any]:
             await db.execute(
                 """INSERT INTO migrations
                    (vhost_id, bucket, src_pool_id, dst_pool_id, phase, route_id,
-                    orphaned_source_pool_id, orphaned_source_prefix, orphaned_at)
-                   VALUES (?, ?, ?, ?, 'done', ?, ?, ?, ?)""",
+                    orphaned_source_pool_id, orphaned_source_prefix, orphaned_at, folder)
+                   VALUES (?, ?, ?, ?, 'done', ?, ?, ?, ?, ?)""",
                 (
                     vhost_id_for_completion,
                     state.get("bucket", ""),
                     src_id,
                     dst_id,
-                    state.get("route_id"),
+                    await _route_id_for(db, vhost_id_for_completion, state),
                     state.get("orphaned_source_pool_id"),
                     state.get("orphaned_source_prefix"),
                     state.get("orphaned_at"),
+                    state.get("folder", ""),
                 ),
             )
             completion_count += 1

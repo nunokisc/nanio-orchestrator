@@ -138,6 +138,7 @@ CREATE TABLE IF NOT EXISTS migrations (
     orphaned_source_prefix  TEXT,
     orphaned_at             TEXT,
     split_routing           INTEGER NOT NULL DEFAULT 0,
+    folder                  TEXT NOT NULL DEFAULT '',
     created_at              TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -362,6 +363,12 @@ async def _run_migrations_async(db) -> None:
         await db.execute("ALTER TABLE migrations ADD COLUMN split_routing INTEGER NOT NULL DEFAULT 0")
         # Before this column existed the split was implied by these two phases
         await db.execute("UPDATE migrations SET split_routing = 1 WHERE phase IN ('write_routing', 'verifying')")
+        await db.commit()
+
+    # migrations.folder ('' = the whole bucket, 'a/b/' = only that folder of it)
+    info = await db.execute_fetchall("PRAGMA table_info(migrations)")
+    if "folder" not in {r["name"] for r in info}:
+        await db.execute("ALTER TABLE migrations ADD COLUMN folder TEXT NOT NULL DEFAULT ''")
         await db.commit()
 
 

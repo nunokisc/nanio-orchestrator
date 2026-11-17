@@ -13,81 +13,13 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from datetime import timedelta
 
 import pytest
-import pytest_asyncio
 
-from tests.conftest import create_member, create_pool, create_route, create_vhost
+from tests.conftest import T0, create_member, create_pool, create_route, create_vhost
 
-T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
-
-
-@pytest.fixture(autouse=True)
-def set_secret():
-    from cryptography.fernet import Fernet
-
-    os.environ["NANIO_ORCHESTRATOR_SECRET"] = Fernet.generate_key().decode()
-    import nanio_orchestrator.config as cfg_mod
-    import nanio_orchestrator.credentials as cred_mod
-
-    cfg_mod.settings = None
-    cred_mod.reset_fernet()
-    yield
-    os.environ.pop("NANIO_ORCHESTRATOR_SECRET", None)
-    cfg_mod.settings = None
-    cred_mod.reset_fernet()
-
-
-@pytest_asyncio.fixture(autouse=True)
-async def ensure_migrations_dir(tmp_dirs):
-    os.makedirs(str(Path(tmp_dirs["db_path"]).parent / "migrations"), exist_ok=True)
-
-
-class FakeRclone:
-    """Stands in for the rclone binary: records every command and lets a test decide what
-    `rclone check` reports (written to the --differ / --missing-on-dst / --error files)."""
-
-    def __init__(self):
-        self.commands: list[list[str]] = []
-        self.differ: list[str] = []
-        self.missing: list[str] = []
-
-    async def __call__(self, *cmd, **_kwargs):
-        cmd = [str(c) for c in cmd]
-        self.commands.append(cmd)
-        proc = AsyncMock()
-        proc.pid = 4242
-        proc.returncode = 0
-        if cmd[1] == "check":
-            for flag, keys in (("--differ", self.differ), ("--missing-on-dst", self.missing), ("--error", [])):
-                Path(cmd[cmd.index(flag) + 1]).write_text("".join(f"{k}\n" for k in keys))
-            proc.returncode = 1 if (self.differ or self.missing) else 0
-        return proc
-
-    def copies(self):
-        return [c for c in self.commands if c[1] == "copy"]
-
-
-@pytest.fixture
-def rclone():
-    fake = FakeRclone()
-    with patch("asyncio.create_subprocess_exec", new=fake):
-        yield fake
-
-
-@pytest.fixture
-def mtimes():
-    """Control the Last-Modified the engine sees per pool member address."""
-    times = {"10.0.0.1:9000": T0, "10.0.0.2:9000": T0, "10.0.0.3:9000": T0}
-
-    async def fake(address, bucket, key, **_):
-        return times[address]
-
-    with patch("nanio_orchestrator.migration_engine.object_last_modified", new=fake):
-        yield times
+pytestmark = pytest.mark.usefixtures("set_secret", "ensure_migrations_dir")
 
 
 async def _setup(client, mock_s3, bucket="safe-bk"):

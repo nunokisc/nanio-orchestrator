@@ -1,6 +1,7 @@
 # Migrations
 
-A migration moves one bucket from one `nanio` pool to another while clients keep using it.
+A migration moves one bucket, or one folder of a bucket, from one `nanio` pool to another while
+clients keep using it.
 The copy is done by [rclone](https://rclone.org), talking directly to the storage nodes; the
 orchestrator only drives rclone and changes the nginx routing at the right moments.
 
@@ -28,6 +29,35 @@ Follow it with `GET /api/migrations/{id}` and `GET /api/migrations/{id}/log`.
 To route a bucket and move it in one step, use promote with `"migrate": true`
 (see [operations.md](operations.md)).
 
+### Moving one folder of a bucket
+
+Add `folder`. The source pool is worked out for you: it is the pool the folder lives on now.
+
+```bash
+curl -s -X POST $ORCH/api/migrations -H "X-Orchestrator-Key: $KEY" -H 'Content-Type: application/json' \
+  -d '{"bucket": "photos", "folder": "2025/", "dst_pool_id": 2}'
+```
+
+Web UI: **Migrations** → fill in *Folder*.
+
+| The folder is… | Result |
+|----------------|--------|
+| Still part of its bucket | It is moved to the destination pool and gets its own route `/photos/2025/`. |
+| Already routed to a pool of its own | It is moved to the destination pool; its route follows. |
+| Moved back to the pool that holds the rest of the bucket | Its route is removed: the folder is part of the bucket again. |
+
+Everything on this page applies to a folder exactly as to a bucket: the same phases, the same
+split routing (for the folder only; the rest of the bucket is not touched), the same recovery.
+Two rules are specific:
+
+- **One move at a time per bucket.** While a bucket or any of its folders is being moved, or has
+  a split left active by a failed move, another move of that bucket is refused (HTTP 409).
+- `http` vhosts that serve the bucket get the folder's route and follow the move, provided an
+  `http` pool linked to the destination pool exists.
+
+What a folder on another pool means for clients is described in
+[operations.md](operations.md#send-one-folder-of-a-bucket-to-another-pool).
+
 ---
 
 ## What happens, phase by phase
@@ -45,7 +75,8 @@ pending → copying → write_routing → verifying → switching → done
 | `done` | Destination | Records the source copy as orphaned. Nothing is deleted. |
 
 Refusals before anything is copied: source and destination are the same pool, the source bucket
-is empty, the bucket is marked deleted.
+(or folder) is empty, the bucket is marked deleted, another move of the same bucket is in
+progress.
 
 ### Split routing
 

@@ -214,8 +214,9 @@ What the orchestrator does for you when the route is created:
    `http` pool linked to the folder's pool. If there is none you get a warning.
 
 Removing the route is refused (HTTP 409) while the folder still has objects on its pool: without
-the route they would be unreachable. Changing the pool of a folder route is refused for the same
-reason; delete the route and create it again.
+the route they would be unreachable. Changing the pool of a folder route by hand is refused for
+the same reason. To move a folder that holds data, to another pool or back into its bucket, use
+a migration: [migrations.md](migrations.md#moving-one-folder-of-a-bucket).
 
 Limits:
 
@@ -223,7 +224,7 @@ Limits:
 |-----------|--------|
 | Listing the **whole** bucket without a delimiter (recursive listing from the root) | Does not include the folder's objects. Browsing folder by folder works, and so does a recursive listing that starts inside the folder. |
 | Server-side copy (`CopyObject`) between the folder and the rest of the bucket | Fails with 404: the two sides are on different machines. The client must download and upload. |
-| A folder that already holds data | Cannot be routed yet; empty it first (or `"allow_orphan": true` to leave the objects behind, hidden). |
+| A folder that already holds data | Adding a route is refused. Move it with a migration instead: see [migrations.md](migrations.md#moving-one-folder-of-a-bucket). |
 | Credentials | Both pools must accept the credentials the clients use. |
 
 The first two cannot be removed without putting a component in the request path. What a client

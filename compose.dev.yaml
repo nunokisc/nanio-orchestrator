@@ -1,0 +1,76 @@
+# A complete cluster on one machine, for development and for the end-to-end test:
+#
+#   docker compose -f compose.dev.yaml up --build
+#
+#   panel      http://localhost:8080     API key: dev-key
+#   gateway    http://localhost:8081     (create a vhost that listens on 8081)
+#   nanio-a    nanio-a:9000              access key AKDEV / secret devsecretdevsecret
+#   nanio-b    nanio-b:9000              same credentials
+#
+# The orchestrator runs the code in ./nanio_orchestrator and reloads when a file changes.
+# nginx is real here (unlike `make run`, where it is a dry run), so routing, reloads and
+# migrations behave as in production.
+#
+# End-to-end test against this stack:
+#
+#   docker compose -f compose.dev.yaml exec -T orchestrator python /e2e/run.py
+
+name: nanio-orchestrator-dev
+
+x-nanio: &nanio
+  image: ghcr.io/apocas/nanio:latest
+  environment:
+    NANIO_ACCESS_KEY: AKDEV
+    NANIO_SECRET_KEY: devsecretdevsecret
+
+services:
+  nanio-a:
+    <<: *nanio
+  nanio-b:
+    <<: *nanio
+
+  gateway:
+    build: .
+    image: nanio-orchestrator:dev
+    entrypoint: ["nginx", "-g", "daemon off;"]
+    stop_signal: SIGQUIT
+    depends_on: [nanio-a, nanio-b]
+    ports:
+      - "8081:8081"
+    volumes:
+      - nginx-config:/etc/nginx/nanio
+      - nginx-run:/run
+
+  orchestrator:
+    build: .
+    image: nanio-orchestrator:dev
+    command: ["serve", "--reload"]
+    depends_on: [gateway]
+    pid: "service:gateway"
+    working_dir: /src
+    environment:
+      PYTHONPATH: /src                      # run the mounted source, not the installed copy
+      NANIO_ORCHESTRATOR_API_KEY: dev-key
+      # Development only. Never use this key anywhere else.
+      NANIO_ORCHESTRATOR_SECRET: ZGV2LW9ubHkta2V5LW5ldmVyLXVzZS1lbHNld2hlcmU=
+      NANIO_ORCHESTRATOR_LOG_LEVEL: info
+      NANIO_ORCHESTRATOR_BUCKET_SYNC_INTERVAL: "30"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./nanio_orchestrator:/src/nanio_orchestrator:ro
+      - ./tests/e2e:/e2e:ro
+      - nginx-config:/etc/nginx/nanio
+      - nginx-run:/run
+      - data:/data
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+volumes:
+  nginx-config:
+  nginx-run:
+  data:

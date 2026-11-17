@@ -93,6 +93,31 @@ jobs:
           test -f /etc/nginx/nanio/vhosts/s3.ci.test.conf
           sudo nginx -t
 
+  docker:
+    name: Docker image and end-to-end test
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start the development stack (gateway, orchestrator, two nanio servers)
+        run: docker compose -f compose.dev.yaml up -d --build --wait
+
+      # Real nginx, real nanio, real rclone: pools, vhost, bucket and folder migrations
+      - name: End-to-end test
+        run: docker compose -f compose.dev.yaml exec -T orchestrator python /e2e/run.py
+
+      - name: The gateway keeps serving when the orchestrator is stopped
+        run: |
+          docker compose -f compose.dev.yaml stop orchestrator
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/photos/2024/a.txt)
+          echo "gateway answered $code"
+          test "$code" = "403"   # unsigned request, refused by nanio: it went through nginx
+
+      - name: Logs on failure
+        if: failure()
+        run: docker compose -f compose.dev.yaml logs --tail 200
+
   build:
     name: Build wheel
     runs-on: ubuntu-latest

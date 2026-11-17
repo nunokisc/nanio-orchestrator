@@ -1,0 +1,12 @@
+# Allowlist: the image build needs exactly these inputs. README.md and LICENSE are
+# required because pyproject.toml declares them.
+*
+!pyproject.toml
+!README.md
+!LICENSE
+!nanio_orchestrator
+!docker
+
+# ...but never bytecode caches.
+**/__pycache__
+**/*.py[cod]

@@ -125,6 +125,60 @@ with an explanation instead of creating a service that cannot start.
 
 ---
 
+## Docker
+
+The image `ghcr.io/nunokisc/nanio-orchestrator` contains nginx, the orchestrator and rclone. It
+is run **twice**, as two containers:
+
+| Container | Runs | Role |
+|-----------|------|------|
+| `gateway` | nginx | Serves client traffic |
+| `orchestrator` | the control plane | Writes the config, validates it with `nginx -t`, asks the gateway to reload |
+
+They are separate so that the rule still holds in Docker: if the orchestrator stops, the
+gateway keeps serving. They are the same image so that the nginx that validates the config is
+exactly the nginx that serves it.
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/nunokisc/nanio-orchestrator/main/compose.yaml
+
+echo "NANIO_ORCHESTRATOR_API_KEY=$(openssl rand -base64 32)" > .env
+echo "NANIO_ORCHESTRATOR_SECRET=$(docker run --rm ghcr.io/nunokisc/nanio-orchestrator config generate-secret)" >> .env
+
+docker compose up -d
+```
+
+The panel is on `http://127.0.0.1:8080`; log in with the API key from `.env`. Keep a copy of
+`NANIO_ORCHESTRATOR_SECRET`: it encrypts the stored pool credentials.
+
+What to adapt in `compose.yaml`:
+
+- **Ports.** Publish, on the `gateway` service, every port your vhosts listen on.
+- **TLS certificates.** Mount them at the same path in both services; the orchestrator needs
+  them to validate the config.
+- **Settings.** Every setting of [configuration.md](configuration.md) is an environment
+  variable of the `orchestrator` service. There is no `config.env` in a container.
+
+How the two containers are tied together (already in `compose.yaml`):
+
+| Shared | Why |
+|--------|-----|
+| Volume `nginx-config` at `/etc/nginx/nanio` | The orchestrator writes the config, the gateway reads it. **Back it up**: the database can be rebuilt from it. |
+| Volume `nginx-run` at `/run`, and `pid: "service:gateway"` | So that `nginx -s reload` from the orchestrator reaches the gateway's nginx. |
+| Volume `data` at `/data` (orchestrator only) | Database, its backups, migration state. |
+
+Differences from a host install:
+
+- The storage nodes must be reachable from both containers by the addresses you give the pool
+  members.
+- The orchestrator container runs as root: it has to signal the gateway's nginx.
+- `install`, `doctor` and `remove` are for host installs; they are not used in containers.
+- Upgrade with `docker compose pull && docker compose up -d`. Recreating the `gateway`
+  container interrupts traffic for a moment; recreating only the orchestrator
+  (`docker compose up -d orchestrator`) does not.
+
+---
+
 ## Development
 
 ```bash
@@ -134,7 +188,18 @@ make install-dev          # creates .venv with the dev dependencies (uses uv whe
 make run                  # dev server, no root required
 ```
 
-The dev server:
+`make run` does not need nginx: nginx commands are printed, not executed. To work against a
+real cluster — nginx, two nanio servers and rclone — start the development stack instead:
+
+```bash
+make stack                # docker compose -f compose.dev.yaml up: panel on :8080, gateway on :8081
+make e2e                  # end-to-end test against it (pools, routes, bucket and folder migrations)
+make stack-down
+```
+
+The stack runs the code in your checkout and reloads when you edit it. The API key is `dev-key`.
+
+The dev server (`make run`):
 - Reads config from `dev.env` (copy `dev.env.example` to `dev.env` to customise)
 - Stores data in `dev-data/` (created automatically)
 - Uses `dev` as the API key

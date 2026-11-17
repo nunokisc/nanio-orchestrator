@@ -11,12 +11,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def _detect_dev_mode() -> bool:
-    """Dev mode when DEV=true env var is explicitly set, or no prod config file exists."""
-    if os.environ.get("DEV", "").lower() in ("1", "true", "yes"):
+    """Dev mode: nginx is never called and data lives under ./dev-data.
+
+    DEV=true forces it, DEV=false forces production mode (containers are configured through
+    environment variables and have no config file). With DEV unset, production mode is
+    assumed only where the installer has written the config file.
+    """
+    dev = os.environ.get("DEV", "").lower()
+    if dev in ("1", "true", "yes"):
         return True
-    if not Path("/etc/nanio-orchestrator/config.env").exists():
-        return True
-    return False
+    if dev in ("0", "false", "no"):
+        return False
+    return not Path("/etc/nanio-orchestrator/config.env").exists()
 
 
 DEV_MODE = _detect_dev_mode()

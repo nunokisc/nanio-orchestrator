@@ -58,6 +58,10 @@ nanio_orchestrator/
 tests/                  # pytest suite (asyncio_mode=auto)
 docs/                   # Detailed documentation
 install.sh              # One-command install/upgrade: venv in /opt + `nanio-orchestrator install`
+Dockerfile              # One image (nginx + orchestrator + rclone), run as two containers
+compose.yaml            # Deployment: gateway + orchestrator
+compose.dev.yaml        # Dev/e2e stack: gateway + orchestrator (live code) + two nanio servers
+tests/e2e/run.py        # End-to-end test, run inside the dev stack (`make e2e`)
 ```
 
 ## Key concepts
@@ -92,6 +96,9 @@ authoritative** (writes → dst, reads → dst with 404-fallback to src, DELETE 
 mirrored to src). `http` vhosts linked to the source pool get the same split, derived in
 `generate_vhost_config()`. Rules:
 
+- `migrations.folder` is `''` for a whole bucket or `a/b/` for one folder of it. A folder move runs
+  the same state machine on the folder's own route (`/bucket/a/b/`), created pointing at its
+  current pool when the folder was still part of the bucket. One move at a time per bucket.
 - The split is recorded in `migrations.split_routing`, never derived from the phase. It survives
   error/cancel/restart/rebuild until a migration between the same two pools finishes the move.
 - Once the split is active every `rclone copy` uses `--update`, and verification is a one-way check
@@ -185,7 +192,18 @@ make fmt                   # ruff format
 
 # Build wheel
 make build                 # uv build or python -m build
+
+# Real cluster in Docker (nginx, two nanio servers, rclone) and the end-to-end test
+make stack                 # panel :8080 (API key dev-key), gateway :8081
+make e2e
 ```
+
+Unit tests mock nginx and S3. Anything touching routing, the nginx templates or the migration
+engine must also pass `make e2e`: that is where real nginx and nanio behaviour shows up.
+
+Modes: `DEV=true` → dev (nginx is a dry run); `DEV=false` → production configured by environment
+(containers); unset → production only where `/etc/nanio-orchestrator/config.env` exists. nginx is
+called through `sudo` unless the process is root.
 
 ## Dev environment setup
 
