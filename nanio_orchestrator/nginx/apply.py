@@ -24,7 +24,12 @@ from dataclasses import dataclass
 from typing import AsyncIterator, Dict, List, Optional, Sequence, Tuple
 
 from nanio_orchestrator.nginx import executor
-from nanio_orchestrator.nginx.generator import generate_vhost_config, record_file_state
+from nanio_orchestrator.nginx.generator import (
+    generate_all_configs,
+    generate_vhost_config,
+    record_file_state,
+    remove_config_file,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -142,11 +147,47 @@ async def write_vhost_config(vhost_id: int, db) -> tuple:
     return True, f"nginx -t: {result.output} (config written — apply via Config tab)"
 
 
+async def rebuild_all_configs() -> Dict[str, object]:
+    """Regenerate every managed file and every sidecar from the DB, validate and reload.
+
+    Returns {"ok", "stage", "output", "written", "removed"}. On failure the previous
+    ``.conf`` files are back in place and nothing is recorded.
+    """
+    from nanio_orchestrator.db import get_db_ctx
+    from nanio_orchestrator.sidecar import write_all_sidecars
+
+    configs = await generate_all_configs()
+    to_write = [(fp, ct) for fp, ct in configs if ct is not None]
+    removed: List[str] = []
+
+    # A pool without members has no upstream block, so it must not have a file either
+    async with get_db_ctx() as db:
+        for filepath, content in configs:
+            if content is None:
+                if os.path.exists(filepath):
+                    removed.append(filepath)
+                await remove_config_file(filepath)
+                await db.execute("DELETE FROM config_files WHERE path = ?", (filepath,))
+        await db.commit()
+
+    result = await apply_config_files(to_write, reload=True)
+    written: List[str] = []
+    if result.ok:
+        async with get_db_ctx() as db:
+            for filepath, content in to_write:
+                await record_file_state(db, filepath, content)
+            await write_all_sidecars(db)
+            await db.commit()
+        written = [fp for fp, _ in to_write]
+    return {"ok": result.ok, "stage": result.stage, "output": result.output, "written": written, "removed": removed}
+
+
 __all__: List[str] = [
     "ApplyResult",
     "apply_config_file",
     "apply_config_files",
     "nginx_lock",
+    "rebuild_all_configs",
     "reload_nginx_locked",
     "write_vhost_config",
 ]

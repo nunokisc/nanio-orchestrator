@@ -188,8 +188,8 @@ it wrote. A file changed by hand shows up as *drifted* on the dashboard, in `GET
 |----------|----|
 | Keep the manual edit | Config tab → *Absorb*, or `POST /api/config/absorb-file` with `{"path": "..."}` |
 | Discard the manual edit | Config tab → *Rewrite from DB*, or `POST /api/config/rewrite-file` with `{"path": "..."}` |
-| Import everything found on disk into the DB | Config tab → *Sync from Disk*, or `POST /api/config/sync` (adds and updates, never deletes) |
-| Regenerate every file from the DB | Config tab → *Rebuild All*, `POST /api/config/rebuild` or `nanio-orchestrator config rebuild` |
+| Import everything found on disk into the DB | Config tab → *Sync from Disk*, or `POST /api/config/sync` (adds and updates, never deletes). Uses the same importer as `rebuild-db`. |
+| Regenerate every file and sidecar from the DB | Config tab → *Rebuild All*, `POST /api/config/rebuild` or `nanio-orchestrator config rebuild` |
 
 *Absorb* only records the file as accepted; it does not parse it into pools and routes. If you
 added a server or a location by hand, use *sync*.
@@ -258,7 +258,7 @@ nanio-orchestrator config generate-secret   Generate a Fernet key (--set writes 
 nanio-orchestrator config edit              Open the config file in $EDITOR
 nanio-orchestrator config validate          nginx -t
 nanio-orchestrator config reload            nginx -s reload
-nanio-orchestrator config rebuild           Regenerate every config file from the DB and reload
+nanio-orchestrator config rebuild           Regenerate every config file and sidecar from the DB and reload
 
 nanio-orchestrator orphaned list            Source data left behind by completed migrations
 ```

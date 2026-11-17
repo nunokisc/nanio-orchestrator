@@ -131,9 +131,9 @@ sudo chown -R nanio-orchestrator: /etc/nginx/nanio              # the command ra
 or, with the service running, Config tab → *Rebuild All* (no ownership fix needed). Every file is written, validated with `nginx -t` and nginx is
 reloaded; if validation fails the previous files are put back.
 
-This regenerates the `.conf` files only. A sidecar is rewritten the next time its pool or vhost
-is saved, so after losing the directory open and save each pool and vhost once (or restore the
-`.meta.json` files from backup). Until then the database is your only copy of that information.
+The `.meta.json` sidecars are rewritten too (pool type, encrypted credentials, vhost default
+pool, extra blocks, IP rules), so after this the directory is again enough to rebuild the
+database from.
 
 ### 4. `config.env` is lost
 
