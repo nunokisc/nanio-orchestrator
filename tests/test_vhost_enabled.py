@@ -481,3 +481,27 @@ class TestSync:
         assert result["warnings"] == []
         assert (await client.get(f"/api/vhosts/{c['vhost']['id']}")).json()["enabled"] is False
         assert len((await client.get(f"/api/vhosts/{c['vhost']['id']}/routes")).json()) == 2
+
+
+async def test_migration_is_refused_on_a_disabled_vhost(client, mock_nginx, mock_s3, tmp_dirs):
+    """Its routing steps would go to a file nginx does not load: clients would never be switched."""
+    from tests.conftest import create_member, create_pool, create_route, create_vhost
+
+    src = await create_pool(client, "mig-src")
+    await create_member(client, src["id"], "10.0.0.1:9000")
+    dst = await create_pool(client, "mig-dst")
+    await create_member(client, dst["id"], "10.0.0.2:9000")
+    vhost = await create_vhost(client, "off.example.com", default_pool_id=src["id"])
+    mock_s3["list_buckets"].return_value = [{"name": "photos", "created": "2025-01-01"}]
+    await client.post(f"/api/vhosts/{vhost['id']}/buckets/sync")
+    await create_route(client, vhost["id"], "photos", src["id"])
+    disabled = await client.put(f"/api/vhosts/{vhost['id']}", json={"enabled": False})
+    assert disabled.status_code == 200, disabled.text
+
+    resp = await client.post(
+        "/api/migrations", json={"bucket": "photos", "src_pool_id": src["id"], "dst_pool_id": dst["id"]}
+    )
+
+    assert resp.status_code == 409
+    assert "is disabled" in resp.json()["detail"] and "Enable the vhost first" in resp.json()["detail"]
+    assert (await client.get("/api/migrations")).json() == []

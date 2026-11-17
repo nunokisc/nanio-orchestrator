@@ -233,7 +233,7 @@ async def create_migration(body: RcloneMigrationCreate):
             route_id=resolved_route_id,
         )
     except RuntimeError as e:
-        raise HTTPException(429, str(e)) from e
+        raise HTTPException(getattr(e, "status", 429), str(e)) from e
 
     # Return the created migration
     async with get_db_ctx() as db:
@@ -370,7 +370,7 @@ async def _create_folder_migration(body: RcloneMigrationCreate) -> RcloneMigrati
             vhost_id, bucket, src_pool_id, body.dst_pool_id, route_id=route_id, folder=folder
         )
     except RuntimeError as e:
-        raise HTTPException(429, str(e)) from e
+        raise HTTPException(getattr(e, "status", 429), str(e)) from e
 
     async with get_db_ctx() as db:
         rows = await db.execute_fetchall("SELECT * FROM migrations WHERE id = ?", (migration_id,))

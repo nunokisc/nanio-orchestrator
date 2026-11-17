@@ -81,7 +81,7 @@ pending → copying → write_routing → verifying → switching → done
 
 Refusals before anything is copied: source and destination are the same pool, the source bucket
 (or folder) is empty, the bucket is marked deleted, another move of the same bucket is in
-progress.
+progress, the vhost is disabled (nginx does not load it, so its traffic could not be switched).
 
 ### Split routing
 

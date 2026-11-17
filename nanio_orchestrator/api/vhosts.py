@@ -667,7 +667,7 @@ async def update_route(vhost_id: int, route_id: int, body: RouteUpdate):
                     )
                 except RuntimeError as exc:
                     # Repointing the route now would hide the objects that could not be moved
-                    raise HTTPException(429, str(exc)) from exc
+                    raise HTTPException(getattr(exc, "status", 429), str(exc)) from exc
 
     async with get_db_ctx() as db:
         if updates:

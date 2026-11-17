@@ -1387,6 +1387,14 @@ async def run_migration(migration_id: int) -> None:
 # ── Public API ────────────────────────────────────────────────────────────────
 
 
+class MigrationRefused(RuntimeError):
+    """A migration that cannot be started now. ``status`` is the HTTP status the API answers with."""
+
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
+
+
 async def start_migration(
     vhost_id: int,
     bucket: str,
@@ -1397,7 +1405,7 @@ async def start_migration(
 ) -> int:
     """Create a migration record and launch the background task. Returns migration id.
 
-    Raises RuntimeError if the max parallel migration limit is reached.
+    Raises MigrationRefused when no slot is free (429) or the vhost is disabled (409).
 
     route_id: if set, the switching phase updates this specific route instead of
               looking up by '/{bucket}/' path_prefix. Required when the route
@@ -1406,9 +1414,21 @@ async def start_migration(
     s = get_settings()
     async with _start_lock():
         if get_active_count() >= s.migration_max_parallel:
-            raise RuntimeError(
+            raise MigrationRefused(
+                429,
                 f"Max parallel migrations reached ({s.migration_max_parallel}). "
-                "Wait for a running migration to finish or cancel one."
+                "Wait for a running migration to finish or cancel one.",
+            )
+
+        async with get_db_ctx() as db:
+            vhost = await db.execute_fetchall("SELECT server_name, enabled FROM vhosts WHERE id = ?", (vhost_id,))
+        if vhost and not vhost[0]["enabled"]:
+            # Its routing steps would be written to a file nginx does not load: clients would
+            # never be switched, and the split would protect nothing.
+            raise MigrationRefused(
+                409,
+                f"Vhost '{vhost[0]['server_name']}' is disabled: nginx does not serve it, so a migration "
+                "could not switch its traffic. Enable the vhost first.",
             )
 
         async with get_db_ctx() as db:

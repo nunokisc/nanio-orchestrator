@@ -36,7 +36,7 @@ async def _start_or_429(*args, **kwargs) -> int:
     try:
         return await engine_start_migration(*args, **kwargs)
     except RuntimeError as exc:
-        raise HTTPException(429, str(exc)) from None
+        raise HTTPException(getattr(exc, "status", 429), str(exc)) from None
 
 
 logger = logging.getLogger(__name__)
