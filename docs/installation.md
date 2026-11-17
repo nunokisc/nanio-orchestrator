@@ -47,7 +47,7 @@ It encrypts the pool credentials; see [disaster-recovery.md](disaster-recovery.m
 
 ```bash
 # A specific release
-curl -fsSL .../install.sh | sudo bash -s -- --version 0.5.0
+curl -fsSL .../install.sh | sudo bash -s -- --version 0.6.0
 
 # Install everything but do not start the service
 curl -fsSL .../install.sh | sudo bash -s -- --no-start

@@ -39,7 +39,7 @@ the response carries the nginx output.
 `GET /api/health`
 
 ```json
-{"status": "ok", "version": "0.5.0", "dev_mode": false, "db_ok": true,
+{"status": "ok", "version": "0.6.0", "dev_mode": false, "db_ok": true,
  "nginx_config_dir": "/etc/nginx/nanio", "drift_alerts": 0, "missing_buckets": 0}
 ```
 
