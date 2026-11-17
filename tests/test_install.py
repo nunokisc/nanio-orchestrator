@@ -5,7 +5,6 @@ from __future__ import annotations
 import subprocess
 
 from click.testing import CliRunner
-
 from nanio_orchestrator import install
 from nanio_orchestrator.cli import main
 

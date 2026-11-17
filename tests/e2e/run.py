@@ -130,7 +130,10 @@ async def main() -> None:
     check(await keys(NODE_B, "photos") == ["2025/b.txt", "2025/deep/c.txt"], "the folder's objects are on pool-b")
     routes = {r["path_prefix"]: r["pool_name"] for r in api("GET", f"/api/vhosts/{vhost['id']}/routes", expect=200)}
     check(routes.get("/photos/2025/") == "pool-b", "route /photos/2025/ points at pool-b")
-    check(await s3client.get_object(GATEWAY, "photos", "2025/deep/c.txt", **AUTH) == b"2025/deep/c.txt", "read via gateway")
+    check(
+        await s3client.get_object(GATEWAY, "photos", "2025/deep/c.txt", **AUTH) == b"2025/deep/c.txt",
+        "read via gateway",
+    )
     await put(GATEWAY, "photos", "2025/new.txt", b"new")
     check("2025/new.txt" in await keys(NODE_B, "photos"), "a new object in the folder lands on pool-b")
     check("2025/new.txt" not in await keys(NODE_A, "photos"), "and not on pool-a")
@@ -144,7 +147,9 @@ async def main() -> None:
     )
 
     step("Routing over a folder that has data is refused")
-    status, body = api("POST", f"/api/vhosts/{vhost['id']}/routes", {"path_prefix": "/photos/2024/", "pool_id": pools["pool-b"]})
+    status, body = api(
+        "POST", f"/api/vhosts/{vhost['id']}/routes", {"path_prefix": "/photos/2024/", "pool_id": pools["pool-b"]}
+    )
     check(status == 409, f"409 for a route over a non-empty folder (got {status})")
 
     step("Move a whole bucket to pool-b")
@@ -180,7 +185,10 @@ async def main() -> None:
     check(migration["phase"] == "done", f"migration finished: {migration['phase']} {migration.get('error_msg') or ''}")
     routes = [r["path_prefix"] for r in api("GET", f"/api/vhosts/{vhost['id']}/routes", expect=200)]
     check("/photos/2025/" not in routes, "the folder route is gone")
-    check(await s3client.get_object(GATEWAY, "photos", "2025/new.txt", **AUTH) == b"new", "its objects are served again by pool-a")
+    check(
+        await s3client.get_object(GATEWAY, "photos", "2025/new.txt", **AUTH) == b"new",
+        "its objects are served again by pool-a",
+    )
     await put(GATEWAY, "photos", "2025/back.txt", b"back")
     check("2025/back.txt" in await keys(NODE_A, "photos"), "new objects in the folder land on pool-a")
 

@@ -15,7 +15,7 @@ import http.client
 import urllib.parse
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Optional
 
 from nanio_orchestrator.config import get_settings
 
@@ -55,15 +55,15 @@ def _make_auth_headers(
     access_key: str,
     secret_key: str,
     region: str,
-    extra_headers: Optional[Dict[str, str]] = None,
-) -> Dict[str, str]:
+    extra_headers: Optional[dict[str, str]] = None,
+) -> dict[str, str]:
     """Return headers dict with x-amz-date, x-amz-content-sha256, Authorization."""
     now = datetime.now(timezone.utc)
     amz_date = now.strftime("%Y%m%dT%H%M%SZ")
     date_stamp = now.strftime("%Y%m%d")
     body_hash = _sha256_hex(body)
 
-    signed_hdrs: Dict[str, str] = {
+    signed_hdrs: dict[str, str] = {
         "host": host,
         "x-amz-content-sha256": body_hash,
         "x-amz-date": amz_date,
@@ -117,7 +117,7 @@ def _make_auth_headers(
 # ── Core HTTP request ─────────────────────────────────────────────────────────
 
 
-def _parse_address(address: str) -> Tuple[str, int]:
+def _parse_address(address: str) -> tuple[str, int]:
     """Parse 'host:port' → (host, port). Falls back to port 80."""
     host, _, port_str = address.rpartition(":")
     if not host:
@@ -137,13 +137,13 @@ def _do_request(
     access_key: Optional[str] = None,
     secret_key: Optional[str] = None,
     region: str = "us-east-1",
-    extra_headers: Optional[Dict[str, str]] = None,
-) -> Tuple[int, bytes]:
+    extra_headers: Optional[dict[str, str]] = None,
+) -> tuple[int, bytes]:
     """Synchronous HTTP request — run via asyncio.to_thread()."""
     host, port = _parse_address(address)
     full_host = f"{host}:{port}"
 
-    headers: Dict[str, str] = {
+    headers: dict[str, str] = {
         "Host": full_host,
         "Content-Length": str(len(body)),
     }
@@ -192,7 +192,7 @@ async def list_buckets(
     access_key: Optional[str] = None,
     secret_key: Optional[str] = None,
     region: str = "us-east-1",
-) -> List[Dict[str, str]]:
+) -> list[dict[str, str]]:
     """Return list of buckets: [{"name": str, "created": str}]."""
     status, body = await asyncio.to_thread(_do_request, "GET", address, "/", "", b"", access_key, secret_key, region)
     if status not in (200, 206):
@@ -215,7 +215,7 @@ async def create_bucket(
     access_key: Optional[str] = None,
     secret_key: Optional[str] = None,
     region: str = "us-east-1",
-) -> Tuple[bool, str]:
+) -> tuple[bool, str]:
     """Create a bucket. Returns (ok, message). 409 = already exists (treated as ok)."""
     status, body = await asyncio.to_thread(
         _do_request, "PUT", address, f"/{bucket}", "", b"", access_key, secret_key, region
@@ -231,7 +231,7 @@ async def delete_bucket(
     access_key: Optional[str] = None,
     secret_key: Optional[str] = None,
     region: str = "us-east-1",
-) -> Tuple[bool, str]:
+) -> tuple[bool, str]:
     """Delete an empty bucket. Returns (ok, message). 404 = already gone (treated as ok)."""
     status, body = await asyncio.to_thread(
         _do_request, "DELETE", address, f"/{bucket}", "", b"", access_key, secret_key, region
@@ -360,9 +360,9 @@ async def list_objects(
     access_key: Optional[str] = None,
     secret_key: Optional[str] = None,
     region: str = "us-east-1",
-) -> List[str]:
+) -> list[str]:
     """Return all object keys in bucket (paginates automatically)."""
-    keys: List[str] = []
+    keys: list[str] = []
     continuation_token = ""
 
     while True:
@@ -420,13 +420,13 @@ def _head_last_modified(
     access_key: Optional[str],
     secret_key: Optional[str],
     region: str,
-) -> Tuple[int, Optional[datetime]]:
+) -> tuple[int, Optional[datetime]]:
     """Synchronous HEAD — returns (status, Last-Modified as an aware datetime or None)."""
     from email.utils import parsedate_to_datetime
 
     host, port = _parse_address(address)
     full_host = f"{host}:{port}"
-    headers: Dict[str, str] = {"Host": full_host}
+    headers: dict[str, str] = {"Host": full_host}
     if access_key and secret_key:
         headers.update(_make_auth_headers("HEAD", full_host, path, "", b"", access_key, secret_key, region))
     conn = http.client.HTTPConnection(host, port, timeout=get_settings().s3_request_timeout)

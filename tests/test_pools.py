@@ -141,11 +141,13 @@ class TestPoolBucketStatus:
         assert resp.status_code == 400
 
     async def test_unrouted_bucket(self, client, mock_nginx):
-        pool, vh = await self._setup(client, mock_nginx, "bs-unrouted", "bs-unrouted.example.com")
+        pool, _vh = await self._setup(client, mock_nginx, "bs-unrouted", "bs-unrouted.example.com")
         buckets_mock = AsyncMock(return_value=[{"name": "lonely", "created": "2025-01-01"}])
         creds_mock = AsyncMock(return_value=("ak", "sk", None))
-        with patch("nanio_orchestrator.api.pools.s3_list_buckets", new=buckets_mock), \
-             patch("nanio_orchestrator.api.pools.get_pool_s3_params", new=creds_mock):
+        with (
+            patch("nanio_orchestrator.api.pools.s3_list_buckets", new=buckets_mock),
+            patch("nanio_orchestrator.api.pools.get_pool_s3_params", new=creds_mock),
+        ):
             resp = await client.get(f"/api/pools/{pool['id']}/buckets/status")
         assert resp.status_code == 200
         data = resp.json()
@@ -156,14 +158,19 @@ class TestPoolBucketStatus:
     async def test_routed_bucket(self, client, mock_nginx):
         pool, vh = await self._setup(client, mock_nginx, "bs-routed", "bs-routed.example.com")
         # Create a dedicated route for the bucket
-        await client.post(f"/api/vhosts/{vh['id']}/routes", json={
-            "path_prefix": "/my-bucket/",
-            "pool_id": pool["id"],
-        })
+        await client.post(
+            f"/api/vhosts/{vh['id']}/routes",
+            json={
+                "path_prefix": "/my-bucket/",
+                "pool_id": pool["id"],
+            },
+        )
         buckets_mock = AsyncMock(return_value=[{"name": "my-bucket", "created": "2025-01-01"}])
         creds_mock = AsyncMock(return_value=("ak", "sk", None))
-        with patch("nanio_orchestrator.api.pools.s3_list_buckets", new=buckets_mock), \
-             patch("nanio_orchestrator.api.pools.get_pool_s3_params", new=creds_mock):
+        with (
+            patch("nanio_orchestrator.api.pools.s3_list_buckets", new=buckets_mock),
+            patch("nanio_orchestrator.api.pools.get_pool_s3_params", new=creds_mock),
+        ):
             resp = await client.get(f"/api/pools/{pool['id']}/buckets/status")
         assert resp.status_code == 200
         bucket = next(b for b in resp.json()["buckets"] if b["bucket"] == "my-bucket")
@@ -180,13 +187,17 @@ class TestPoolBucketStatus:
         vh = await create_vhost(client, "bs-pri.example.com", default_pool_id=src["id"])
 
         # Create route pointing to src (so src is the "routed" pool)
-        await client.post(f"/api/vhosts/{vh['id']}/routes", json={
-            "path_prefix": "/priority-bk/",
-            "pool_id": src["id"],
-        })
+        await client.post(
+            f"/api/vhosts/{vh['id']}/routes",
+            json={
+                "path_prefix": "/priority-bk/",
+                "pool_id": src["id"],
+            },
+        )
 
         # Inject a migration row marking src as orphaned source
         from nanio_orchestrator.db import get_db_ctx
+
         async with get_db_ctx() as db:
             await db.execute(
                 """INSERT INTO migrations (bucket, src_pool_id, dst_pool_id, vhost_id,
@@ -198,8 +209,10 @@ class TestPoolBucketStatus:
 
         buckets_mock = AsyncMock(return_value=[{"name": "priority-bk", "created": "2025-01-01"}])
         creds_mock = AsyncMock(return_value=("ak", "sk", None))
-        with patch("nanio_orchestrator.api.pools.s3_list_buckets", new=buckets_mock), \
-             patch("nanio_orchestrator.api.pools.get_pool_s3_params", new=creds_mock):
+        with (
+            patch("nanio_orchestrator.api.pools.s3_list_buckets", new=buckets_mock),
+            patch("nanio_orchestrator.api.pools.get_pool_s3_params", new=creds_mock),
+        ):
             resp = await client.get(f"/api/pools/{src['id']}/buckets/status")
         assert resp.status_code == 200
         bucket = next(b for b in resp.json()["buckets"] if b["bucket"] == "priority-bk")
@@ -214,6 +227,7 @@ class TestPoolBucketStatus:
 
         # No route to src; mark src as orphaned source
         from nanio_orchestrator.db import get_db_ctx
+
         async with get_db_ctx() as db:
             await db.execute(
                 """INSERT INTO migrations (bucket, src_pool_id, dst_pool_id, vhost_id,
@@ -225,8 +239,10 @@ class TestPoolBucketStatus:
 
         buckets_mock = AsyncMock(return_value=[{"name": "orphan-bk", "created": "2025-01-01"}])
         creds_mock = AsyncMock(return_value=("ak", "sk", None))
-        with patch("nanio_orchestrator.api.pools.s3_list_buckets", new=buckets_mock), \
-             patch("nanio_orchestrator.api.pools.get_pool_s3_params", new=creds_mock):
+        with (
+            patch("nanio_orchestrator.api.pools.s3_list_buckets", new=buckets_mock),
+            patch("nanio_orchestrator.api.pools.get_pool_s3_params", new=creds_mock),
+        ):
             resp = await client.get(f"/api/pools/{src['id']}/buckets/status")
         assert resp.status_code == 200
         bucket = next(b for b in resp.json()["buckets"] if b["bucket"] == "orphan-bk")
@@ -236,8 +252,10 @@ class TestPoolBucketStatus:
         pool, _ = await self._setup(client, mock_nginx, "bs-err", "bs-err.example.com")
         buckets_mock = AsyncMock(side_effect=Exception("conn refused"))
         creds_mock = AsyncMock(return_value=("ak", "sk", None))
-        with patch("nanio_orchestrator.api.pools.s3_list_buckets", new=buckets_mock), \
-             patch("nanio_orchestrator.api.pools.get_pool_s3_params", new=creds_mock):
+        with (
+            patch("nanio_orchestrator.api.pools.s3_list_buckets", new=buckets_mock),
+            patch("nanio_orchestrator.api.pools.get_pool_s3_params", new=creds_mock),
+        ):
             resp = await client.get(f"/api/pools/{pool['id']}/buckets/status")
         assert resp.status_code == 502
 
@@ -263,8 +281,10 @@ class TestPoolBucketObjects:
     async def test_returns_object_list(self, client, mock_nginx):
         pool = await create_pool(client, "obj-list-pool")
         await create_member(client, pool["id"], "10.0.0.1:9000")
-        with patch("nanio_orchestrator.api.pools.list_objects", new=AsyncMock(return_value=["a.txt", "b.txt"])), \
-             patch("nanio_orchestrator.api.pools.get_pool_s3_params", new=AsyncMock(return_value=("ak", "sk", None))):
+        with (
+            patch("nanio_orchestrator.api.pools.list_objects", new=AsyncMock(return_value=["a.txt", "b.txt"])),
+            patch("nanio_orchestrator.api.pools.get_pool_s3_params", new=AsyncMock(return_value=("ak", "sk", None))),
+        ):
             resp = await client.get(f"/api/pools/{pool['id']}/buckets/mybucket/objects")
         assert resp.status_code == 200
         data = resp.json()
@@ -275,8 +295,10 @@ class TestPoolBucketObjects:
     async def test_s3_error_returns_502(self, client, mock_nginx):
         pool = await create_pool(client, "obj-err-pool")
         await create_member(client, pool["id"], "10.0.0.1:9000")
-        with patch("nanio_orchestrator.api.pools.list_objects", new=AsyncMock(side_effect=Exception("timeout"))), \
-             patch("nanio_orchestrator.api.pools.get_pool_s3_params", new=AsyncMock(return_value=("ak", "sk", None))):
+        with (
+            patch("nanio_orchestrator.api.pools.list_objects", new=AsyncMock(side_effect=Exception("timeout"))),
+            patch("nanio_orchestrator.api.pools.get_pool_s3_params", new=AsyncMock(return_value=("ak", "sk", None))),
+        ):
             resp = await client.get(f"/api/pools/{pool['id']}/buckets/mybucket/objects")
         assert resp.status_code == 502
 
@@ -302,9 +324,11 @@ class TestPoolBucketPurge:
     async def test_purge_deletes_objects(self, client, mock_nginx):
         pool = await create_pool(client, "purge-ok-pool")
         await create_member(client, pool["id"], "10.0.0.1:9000")
-        with patch("nanio_orchestrator.api.pools.list_objects", new=AsyncMock(return_value=["x.txt", "y.txt"])), \
-             patch("nanio_orchestrator.api.pools.delete_object", new=AsyncMock(return_value=True)), \
-             patch("nanio_orchestrator.api.pools.get_pool_s3_params", new=AsyncMock(return_value=("ak", "sk", None))):
+        with (
+            patch("nanio_orchestrator.api.pools.list_objects", new=AsyncMock(return_value=["x.txt", "y.txt"])),
+            patch("nanio_orchestrator.api.pools.delete_object", new=AsyncMock(return_value=True)),
+            patch("nanio_orchestrator.api.pools.get_pool_s3_params", new=AsyncMock(return_value=("ak", "sk", None))),
+        ):
             resp = await client.post(f"/api/pools/{pool['id']}/buckets/to-purge/purge")
         assert resp.status_code == 200
         data = resp.json()
@@ -316,8 +340,10 @@ class TestPoolBucketPurge:
     async def test_purge_empty_bucket(self, client, mock_nginx):
         pool = await create_pool(client, "purge-empty-pool")
         await create_member(client, pool["id"], "10.0.0.1:9000")
-        with patch("nanio_orchestrator.api.pools.list_objects", new=AsyncMock(return_value=[])), \
-             patch("nanio_orchestrator.api.pools.get_pool_s3_params", new=AsyncMock(return_value=("ak", "sk", None))):
+        with (
+            patch("nanio_orchestrator.api.pools.list_objects", new=AsyncMock(return_value=[])),
+            patch("nanio_orchestrator.api.pools.get_pool_s3_params", new=AsyncMock(return_value=("ak", "sk", None))),
+        ):
             resp = await client.post(f"/api/pools/{pool['id']}/buckets/empty-bk/purge")
         assert resp.status_code == 200
         data = resp.json()
@@ -328,8 +354,10 @@ class TestPoolBucketPurge:
     async def test_s3_list_error_returns_502(self, client, mock_nginx):
         pool = await create_pool(client, "purge-listerr-pool")
         await create_member(client, pool["id"], "10.0.0.1:9000")
-        with patch("nanio_orchestrator.api.pools.list_objects", new=AsyncMock(side_effect=Exception("timeout"))), \
-             patch("nanio_orchestrator.api.pools.get_pool_s3_params", new=AsyncMock(return_value=("ak", "sk", None))):
+        with (
+            patch("nanio_orchestrator.api.pools.list_objects", new=AsyncMock(side_effect=Exception("timeout"))),
+            patch("nanio_orchestrator.api.pools.get_pool_s3_params", new=AsyncMock(return_value=("ak", "sk", None))),
+        ):
             resp = await client.post(f"/api/pools/{pool['id']}/buckets/err-bk/purge")
         assert resp.status_code == 502
 
@@ -339,11 +367,14 @@ class TestSourceNanioPoolId:
 
     async def test_create_http_pool_with_valid_source(self, client):
         nanio_pool = await create_pool(client, "snp-nanio-src", pool_type="nanio")
-        resp = await client.post("/api/pools", json={
-            "name": "snp-http-pool",
-            "type": "http",
-            "source_nanio_pool_id": nanio_pool["id"],
-        })
+        resp = await client.post(
+            "/api/pools",
+            json={
+                "name": "snp-http-pool",
+                "type": "http",
+                "source_nanio_pool_id": nanio_pool["id"],
+            },
+        )
         assert resp.status_code == 201
         data = resp.json()
         assert data["source_nanio_pool_id"] == nanio_pool["id"]
@@ -355,46 +386,61 @@ class TestSourceNanioPoolId:
 
     async def test_create_nanio_pool_with_source_rejected(self, client):
         nanio_pool = await create_pool(client, "snp-other-nanio", pool_type="nanio")
-        resp = await client.post("/api/pools", json={
-            "name": "snp-bad-nanio",
-            "type": "nanio",
-            "source_nanio_pool_id": nanio_pool["id"],
-        })
+        resp = await client.post(
+            "/api/pools",
+            json={
+                "name": "snp-bad-nanio",
+                "type": "nanio",
+                "source_nanio_pool_id": nanio_pool["id"],
+            },
+        )
         assert resp.status_code == 422
 
     async def test_source_pointing_to_nonexistent_pool_rejected(self, client):
-        resp = await client.post("/api/pools", json={
-            "name": "snp-bad-ref",
-            "type": "http",
-            "source_nanio_pool_id": 99999,
-        })
+        resp = await client.post(
+            "/api/pools",
+            json={
+                "name": "snp-bad-ref",
+                "type": "http",
+                "source_nanio_pool_id": 99999,
+            },
+        )
         assert resp.status_code in (400, 422)
 
     async def test_source_pointing_to_http_pool_rejected(self, client):
         http_pool = await create_pool(client, "snp-http-ref", pool_type="http")
-        resp = await client.post("/api/pools", json={
-            "name": "snp-bad-http-ref",
-            "type": "http",
-            "source_nanio_pool_id": http_pool["id"],
-        })
+        resp = await client.post(
+            "/api/pools",
+            json={
+                "name": "snp-bad-http-ref",
+                "type": "http",
+                "source_nanio_pool_id": http_pool["id"],
+            },
+        )
         assert resp.status_code in (400, 422)
 
     async def test_update_http_pool_set_source(self, client):
         nanio_pool = await create_pool(client, "snp-upd-nanio", pool_type="nanio")
         http_pool = await create_pool(client, "snp-upd-http", pool_type="http")
-        resp = await client.put(f"/api/pools/{http_pool['id']}", json={
-            "source_nanio_pool_id": nanio_pool["id"],
-        })
+        resp = await client.put(
+            f"/api/pools/{http_pool['id']}",
+            json={
+                "source_nanio_pool_id": nanio_pool["id"],
+            },
+        )
         assert resp.status_code == 200
         assert resp.json()["source_nanio_pool_id"] == nanio_pool["id"]
 
     async def test_update_http_pool_clear_source(self, client):
         nanio_pool = await create_pool(client, "snp-clr-nanio", pool_type="nanio")
-        resp = await client.post("/api/pools", json={
-            "name": "snp-clr-http",
-            "type": "http",
-            "source_nanio_pool_id": nanio_pool["id"],
-        })
+        resp = await client.post(
+            "/api/pools",
+            json={
+                "name": "snp-clr-http",
+                "type": "http",
+                "source_nanio_pool_id": nanio_pool["id"],
+            },
+        )
         pool_id = resp.json()["id"]
         resp2 = await client.put(f"/api/pools/{pool_id}", json={"source_nanio_pool_id": None})
         assert resp2.status_code == 200
@@ -402,11 +448,14 @@ class TestSourceNanioPoolId:
 
     async def test_deleting_nanio_pool_clears_source(self, client, mock_nginx):
         nanio_pool = await create_pool(client, "snp-del-nanio", pool_type="nanio")
-        resp = await client.post("/api/pools", json={
-            "name": "snp-del-http",
-            "type": "http",
-            "source_nanio_pool_id": nanio_pool["id"],
-        })
+        resp = await client.post(
+            "/api/pools",
+            json={
+                "name": "snp-del-http",
+                "type": "http",
+                "source_nanio_pool_id": nanio_pool["id"],
+            },
+        )
         http_pool_id = resp.json()["id"]
         await client.delete(f"/api/pools/{nanio_pool['id']}")
         resp2 = await client.get(f"/api/pools/{http_pool_id}")
@@ -417,19 +466,20 @@ class TestSourceNanioPoolId:
 class TestSourceNanioPoolSidecar:
     """Tests that source_nanio_pool_id is correctly stored in and cleared from the pool sidecar."""
 
-    async def test_sidecar_written_with_source_nanio_pool_id(
-        self, client, app, mock_nginx, tmp_dirs
-    ):
+    async def test_sidecar_written_with_source_nanio_pool_id(self, client, app, mock_nginx, tmp_dirs):
         """Creating an http pool with source_nanio_pool_id writes it to the sidecar."""
         import json
         from pathlib import Path
 
         nanio_pool = await create_pool(client, "snps-nanio", pool_type="nanio")
-        resp = await client.post("/api/pools", json={
-            "name": "snps-http",
-            "type": "http",
-            "source_nanio_pool_id": nanio_pool["id"],
-        })
+        resp = await client.post(
+            "/api/pools",
+            json={
+                "name": "snps-http",
+                "type": "http",
+                "source_nanio_pool_id": nanio_pool["id"],
+            },
+        )
         assert resp.status_code == 201
 
         sidecar_path = Path(tmp_dirs["nginx_dir"]) / "pools" / "snps-http.meta.json"
@@ -439,19 +489,20 @@ class TestSourceNanioPoolSidecar:
             "source_nanio_pool_id must be persisted in the pool sidecar"
         )
 
-    async def test_sidecar_updated_when_source_cleared(
-        self, client, app, mock_nginx, tmp_dirs
-    ):
+    async def test_sidecar_updated_when_source_cleared(self, client, app, mock_nginx, tmp_dirs):
         """Setting source_nanio_pool_id to null removes it from the sidecar."""
         import json
         from pathlib import Path
 
         nanio_pool = await create_pool(client, "snps-clr-nanio", pool_type="nanio")
-        resp = await client.post("/api/pools", json={
-            "name": "snps-clr-http",
-            "type": "http",
-            "source_nanio_pool_id": nanio_pool["id"],
-        })
+        resp = await client.post(
+            "/api/pools",
+            json={
+                "name": "snps-clr-http",
+                "type": "http",
+                "source_nanio_pool_id": nanio_pool["id"],
+            },
+        )
         pool_id = resp.json()["id"]
 
         # Now clear the field
@@ -460,13 +511,9 @@ class TestSourceNanioPoolSidecar:
 
         sidecar_path = Path(tmp_dirs["nginx_dir"]) / "pools" / "snps-clr-http.meta.json"
         data = json.loads(sidecar_path.read_text())
-        assert "source_nanio_pool_id" not in data, (
-            "source_nanio_pool_id must be removed from sidecar when cleared"
-        )
+        assert "source_nanio_pool_id" not in data, "source_nanio_pool_id must be removed from sidecar when cleared"
 
-    async def test_nanio_pool_sidecar_never_contains_source_field(
-        self, client, app, mock_nginx, tmp_dirs
-    ):
+    async def test_nanio_pool_sidecar_never_contains_source_field(self, client, app, mock_nginx, tmp_dirs):
         """nanio pool sidecars must not contain source_nanio_pool_id."""
         import json
         from pathlib import Path
@@ -474,8 +521,5 @@ class TestSourceNanioPoolSidecar:
         pool = await create_pool(client, "snps-nanio-clean", pool_type="nanio")
         sidecar_path = Path(tmp_dirs["nginx_dir"]) / "pools" / "snps-nanio-clean.meta.json"
         data = json.loads(sidecar_path.read_text())
-        assert "source_nanio_pool_id" not in data, (
-            "source_nanio_pool_id must only appear on http pool sidecars"
-        )
+        assert "source_nanio_pool_id" not in data, "source_nanio_pool_id must only appear on http pool sidecars"
         assert pool["source_nanio_pool_id"] is None
-

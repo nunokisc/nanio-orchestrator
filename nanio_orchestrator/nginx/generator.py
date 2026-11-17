@@ -8,7 +8,7 @@ import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from jinja2 import Environment, FileSystemLoader
 
@@ -42,7 +42,7 @@ def sha256_str(content: str) -> str:
 # ── Upstream block rendering ─────────────────────────────────────────────────
 
 
-def render_upstream(pool: Dict[str, Any], members: List[Dict[str, Any]]) -> str:
+def render_upstream(pool: dict[str, Any], members: list[dict[str, Any]]) -> str:
     """Render an upstream config block for a pool."""
     env = _get_jinja_env()
     tpl = env.get_template("upstream.conf.j2")
@@ -54,7 +54,7 @@ def render_upstream(pool: Dict[str, Any], members: List[Dict[str, Any]]) -> str:
 SUBFOLDER_MARKER = ".nanio-shard"
 
 
-def path_segments(path_prefix: str) -> List[str]:
+def path_segments(path_prefix: str) -> list[str]:
     return [seg for seg in path_prefix.strip("/").split("/") if seg]
 
 
@@ -63,7 +63,7 @@ def is_subfolder_prefix(path_prefix: str) -> bool:
     return len(path_segments(path_prefix)) >= 2
 
 
-def _prefix_query_regex(folder_segments: List[str]) -> str:
+def _prefix_query_regex(folder_segments: list[str]) -> str:
     """Regex for the raw `prefix=` query value of a listing inside this folder.
 
     Clients may send the value percent-encoded or not, so `/` and `@` match both forms.
@@ -73,7 +73,7 @@ def _prefix_query_regex(folder_segments: List[str]) -> str:
     return "^" + slash.join(parts) + slash
 
 
-def _subfolder_listings(vhost: Dict[str, Any], routes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _subfolder_listings(vhost: dict[str, Any], routes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Per bucket that has sub-folder routes: how bucket-level requests must be handled.
 
     `location /bucket/folder/` already sends object requests to the folder's pool. Requests that
@@ -84,7 +84,7 @@ def _subfolder_listings(vhost: Dict[str, Any], routes: List[Dict[str, Any]]) -> 
     """
     enabled = [r for r in routes if r.get("enabled", True)]
     by_path = {r["path_prefix"]: r for r in enabled}
-    by_bucket: Dict[str, List[Dict[str, Any]]] = {}
+    by_bucket: dict[str, list[dict[str, Any]]] = {}
     for route in enabled:
         if is_subfolder_prefix(route["path_prefix"]) and route.get("pool_type", "nanio") == "nanio":
             by_bucket.setdefault(path_segments(route["path_prefix"])[0], []).append(route)
@@ -126,7 +126,7 @@ def _subfolder_listings(vhost: Dict[str, Any], routes: List[Dict[str, Any]]) -> 
     return listings
 
 
-def render_vhost(vhost: Dict[str, Any], routes: List[Dict[str, Any]]) -> str:
+def render_vhost(vhost: dict[str, Any], routes: list[dict[str, Any]]) -> str:
     """Render a server block for a vhost with all its routes."""
     import json as _json
 
@@ -272,8 +272,8 @@ async def generate_vhost_config(vhost_id: int, db=None) -> tuple:
             (vhost_id,),
         )
         # Build two lookup maps: precise (by route_id) and legacy (by bucket name)
-        migration_by_route_id: Dict[int, str] = {}
-        migration_by_bucket: Dict[str, str] = {}
+        migration_by_route_id: dict[int, str] = {}
+        migration_by_bucket: dict[str, str] = {}
         for row in mig_rows:
             if row["route_id"]:
                 migration_by_route_id[row["route_id"]] = row["dst_pool_name"]
@@ -312,7 +312,7 @@ async def generate_vhost_config(vhost_id: int, db=None) -> tuple:
     return filepath, content
 
 
-async def generate_all_configs() -> List[tuple]:
+async def generate_all_configs() -> list[tuple]:
     """Generate all pool and vhost configs. Returns list of (filepath, content)."""
     results = []
     async with get_db_ctx() as db:
@@ -347,7 +347,7 @@ def render_node_config(
     access_key: Optional[str] = None,
     secret_key: Optional[str] = None,
     nanio_bin: str = "/opt/nanio/bin/nanio",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Render everything a storage node needs to serve as `member_address`.
 
     Returns {"files": [{path, content}], "instructions": str, "warnings": [str]}.
@@ -358,7 +358,7 @@ def render_node_config(
     """
     env = _get_jinja_env()
     member_port = _address_port(member_address)
-    warnings: List[str] = []
+    warnings: list[str] = []
 
     if node_type == "nanio-only":
         if nanio_port is None:
@@ -396,7 +396,7 @@ def render_node_config(
         secret_key=secret_key,
         nanio_bin=nanio_bin,
     )
-    files: List[Dict[str, str]] = []
+    files: list[dict[str, str]] = []
 
     if node_type in ("nanio-only", "nginx-nanio"):
         files.append(
@@ -425,7 +425,7 @@ def render_node_config(
     return {"files": files, "instructions": _node_instructions(node_type, ctx), "warnings": warnings}
 
 
-def _node_instructions(node_type: str, ctx: Dict[str, Any]) -> str:
+def _node_instructions(node_type: str, ctx: dict[str, Any]) -> str:
     """Step-by-step setup of the node, in the order the commands have to run."""
     nanio_steps = f"""\
 1. Install nanio (needs Python 3.11 or newer) and create its user:

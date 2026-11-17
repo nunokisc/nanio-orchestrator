@@ -69,9 +69,12 @@ class TestBucketSync:
         ]
         await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
 
-        resp = await client.post(f"/api/vhosts/{vh['id']}/buckets/promoted/promote", json={
-            "pool_id": dst_pool["id"],
-        })
+        resp = await client.post(
+            f"/api/vhosts/{vh['id']}/buckets/promoted/promote",
+            json={
+                "pool_id": dst_pool["id"],
+            },
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["ok"] is True
@@ -95,10 +98,13 @@ class TestBucketSync:
         mock_s3["count_objects"].return_value = 5  # non-empty source
         await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
 
-        resp = await client.post(f"/api/vhosts/{vh['id']}/buckets/big-bucket/promote", json={
-            "pool_id": dst_pool["id"],
-            "migrate": True,
-        })
+        resp = await client.post(
+            f"/api/vhosts/{vh['id']}/buckets/big-bucket/promote",
+            json={
+                "pool_id": dst_pool["id"],
+                "migrate": True,
+            },
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["ok"] is True
@@ -123,9 +129,7 @@ class TestBucketSync:
             "users must not see files disappear while copy is running"
         )
 
-    async def test_promote_with_migrate_passes_route_id(
-        self, client, mock_s3, mock_nginx, mock_rclone
-    ):
+    async def test_promote_with_migrate_passes_route_id(self, client, mock_s3, mock_nginx, mock_rclone):
         """promote(migrate=True) must bind route_id so switching is precise."""
         src = await create_pool(client, "routeid-src")
         await create_member(client, src["id"], "10.0.0.1:9000")
@@ -145,16 +149,12 @@ class TestBucketSync:
         mig_id = resp.json()["migration_id"]
 
         from nanio_orchestrator.db import get_db_ctx
-        async with get_db_ctx() as db:
-            rows = await db.execute_fetchall(
-                "SELECT route_id FROM migrations WHERE id = ?", (mig_id,)
-            )
-        assert rows[0]["route_id"] is not None, \
-            "migration record must have route_id bound so switching is precise"
 
-    async def test_promote_without_migrate_blocked_when_bucket_has_data(
-        self, client, mock_s3, mock_nginx
-    ):
+        async with get_db_ctx() as db:
+            rows = await db.execute_fetchall("SELECT route_id FROM migrations WHERE id = ?", (mig_id,))
+        assert rows[0]["route_id"] is not None, "migration record must have route_id bound so switching is precise"
+
+    async def test_promote_without_migrate_blocked_when_bucket_has_data(self, client, mock_s3, mock_nginx):
         """Routing a bucket that has data without migrate=True must be refused (data loss prevention)."""
         src = await create_pool(client, "block-src")
         await create_member(client, src["id"], "10.0.0.1:9000")
@@ -174,9 +174,7 @@ class TestBucketSync:
         assert resp.status_code == 400
         assert "migrate" in resp.json()["detail"].lower()
 
-    async def test_promote_without_migrate_allowed_when_bucket_is_empty(
-        self, client, mock_s3, mock_nginx
-    ):
+    async def test_promote_without_migrate_allowed_when_bucket_is_empty(self, client, mock_s3, mock_nginx):
         """Routing an empty bucket without migrate=True is allowed."""
         src = await create_pool(client, "empty-src")
         await create_member(client, src["id"], "10.0.0.1:9000")
@@ -207,31 +205,26 @@ class TestMigrationRouteValidation:
         vh = await create_vhost(client, vh_name, default_pool_id=src["id"])
         return src, dst, vh
 
-    async def test_migration_rejected_when_no_route_exists(
-        self, client, mock_nginx, mock_s3
-    ):
+    async def test_migration_rejected_when_no_route_exists(self, client, mock_nginx, mock_s3):
         """create_migration must fail if no route exists for the bucket."""
-        src, dst, vh = await self._setup(
-            client, mock_nginx, mock_s3, "rv-src1", "rv-dst1", "rv1.example.com"
-        )
+        src, dst, vh = await self._setup(client, mock_nginx, mock_s3, "rv-src1", "rv-dst1", "rv1.example.com")
         mock_s3["list_buckets"].return_value = [{"name": "no-route-bk", "created": "2025-01-01"}]
         await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
 
-        resp = await client.post("/api/migrations", json={
-            "bucket": "no-route-bk",
-            "src_pool_id": src["id"],
-            "dst_pool_id": dst["id"],
-        })
+        resp = await client.post(
+            "/api/migrations",
+            json={
+                "bucket": "no-route-bk",
+                "src_pool_id": src["id"],
+                "dst_pool_id": dst["id"],
+            },
+        )
         assert resp.status_code == 400
         assert "route" in resp.json()["detail"].lower()
 
-    async def test_migration_rejected_when_src_pool_mismatches_route(
-        self, client, mock_nginx, mock_s3, mock_rclone
-    ):
+    async def test_migration_rejected_when_src_pool_mismatches_route(self, client, mock_nginx, mock_s3, mock_rclone):
         """create_migration must fail if src_pool_id != route's current pool."""
-        src, dst, vh = await self._setup(
-            client, mock_nginx, mock_s3, "rv-src2", "rv-dst2", "rv2.example.com"
-        )
+        src, dst, vh = await self._setup(client, mock_nginx, mock_s3, "rv-src2", "rv-dst2", "rv2.example.com")
         other = await create_pool(client, "rv-other2")
         await create_member(client, other["id"], "10.0.0.3:9000")
 
@@ -246,21 +239,20 @@ class TestMigrationRouteValidation:
         )
 
         # Try to migrate with src=other (route points to dst, not other)
-        resp = await client.post("/api/migrations", json={
-            "bucket": "mismatch-bk",
-            "src_pool_id": other["id"],
-            "dst_pool_id": src["id"],
-        })
+        resp = await client.post(
+            "/api/migrations",
+            json={
+                "bucket": "mismatch-bk",
+                "src_pool_id": other["id"],
+                "dst_pool_id": src["id"],
+            },
+        )
         assert resp.status_code == 400
         assert "source pool mismatch" in resp.json()["detail"].lower()
 
-    async def test_migration_accepted_and_route_id_bound(
-        self, client, mock_nginx, mock_s3, mock_rclone
-    ):
+    async def test_migration_accepted_and_route_id_bound(self, client, mock_nginx, mock_s3, mock_rclone):
         """create_migration succeeds when route exists, src matches, and route_id is stored."""
-        src, dst, vh = await self._setup(
-            client, mock_nginx, mock_s3, "rv-src3", "rv-dst3", "rv3.example.com"
-        )
+        src, dst, vh = await self._setup(client, mock_nginx, mock_s3, "rv-src3", "rv-dst3", "rv3.example.com")
         mock_s3["list_buckets"].return_value = [{"name": "ok-bk", "created": "2025-01-01"}]
         await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
 
@@ -272,22 +264,23 @@ class TestMigrationRouteValidation:
         )
 
         # Migrate from dst -> src (route currently points to dst = correct src)
-        resp = await client.post("/api/migrations", json={
-            "bucket": "ok-bk",
-            "src_pool_id": dst["id"],
-            "dst_pool_id": src["id"],
-        })
+        resp = await client.post(
+            "/api/migrations",
+            json={
+                "bucket": "ok-bk",
+                "src_pool_id": dst["id"],
+                "dst_pool_id": src["id"],
+            },
+        )
         assert resp.status_code == 201
         mig = resp.json()
         assert mig["bucket"] == "ok-bk"
 
         from nanio_orchestrator.db import get_db_ctx
+
         async with get_db_ctx() as db:
-            rows = await db.execute_fetchall(
-                "SELECT route_id FROM migrations WHERE id = ?", (mig["id"],)
-            )
-        assert rows[0]["route_id"] is not None, \
-            "migration record must have route_id bound"
+            rows = await db.execute_fetchall("SELECT route_id FROM migrations WHERE id = ?", (mig["id"],))
+        assert rows[0]["route_id"] is not None, "migration record must have route_id bound"
 
 
 class TestOrphanScanAndPurge:
@@ -307,10 +300,12 @@ class TestOrphanScanAndPurge:
         assert resp.status_code == 400
 
     async def test_orphan_scan_no_routed_buckets(self, client, mock_nginx, mock_s3):
-        pool, dst, vh = await self._setup(client, mock_nginx, mock_s3, "orp-empty")
+        _pool, _dst, vh = await self._setup(client, mock_nginx, mock_s3, "orp-empty")
         # No routed buckets → orphan scan returns empty list
-        with patch("nanio_orchestrator.api.buckets.count_objects", new=AsyncMock(return_value=0)), \
-             patch("nanio_orchestrator.api.buckets.get_pool_s3_params", new=AsyncMock(return_value=("ak", "sk", None))):
+        with (
+            patch("nanio_orchestrator.api.buckets.count_objects", new=AsyncMock(return_value=0)),
+            patch("nanio_orchestrator.api.buckets.get_pool_s3_params", new=AsyncMock(return_value=("ak", "sk", None))),
+        ):
             resp = await client.get(f"/api/vhosts/{vh['id']}/buckets/orphans")
         assert resp.status_code == 200
         data = resp.json()
@@ -318,17 +313,23 @@ class TestOrphanScanAndPurge:
         assert data["checked"] == 0
 
     async def test_orphan_scan_finds_stale_objects(self, client, mock_nginx, mock_s3):
-        pool, dst, vh = await self._setup(client, mock_nginx, mock_s3, "orp-found")
+        _pool, dst, vh = await self._setup(client, mock_nginx, mock_s3, "orp-found")
         # Sync + promote bucket to dst (creates a routed bucket_sync entry)
         mock_s3["list_buckets"].return_value = [{"name": "stale-bk", "created": "2025-01-01"}]
         mock_s3["promote_src_has_objects"].return_value = False
         await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
-        await client.post(f"/api/vhosts/{vh['id']}/buckets/stale-bk/promote", json={
-            "pool_id": dst["id"], "migrate": False,
-        })
+        await client.post(
+            f"/api/vhosts/{vh['id']}/buckets/stale-bk/promote",
+            json={
+                "pool_id": dst["id"],
+                "migrate": False,
+            },
+        )
         # Orphan scan: default pool still has objects in stale-bk
-        with patch("nanio_orchestrator.api.buckets.count_objects", new=AsyncMock(return_value=3)), \
-             patch("nanio_orchestrator.api.buckets.get_pool_s3_params", new=AsyncMock(return_value=("ak", "sk", None))):
+        with (
+            patch("nanio_orchestrator.api.buckets.count_objects", new=AsyncMock(return_value=3)),
+            patch("nanio_orchestrator.api.buckets.get_pool_s3_params", new=AsyncMock(return_value=("ak", "sk", None))),
+        ):
             resp = await client.get(f"/api/vhosts/{vh['id']}/buckets/orphans")
         assert resp.status_code == 200
         data = resp.json()
@@ -338,38 +339,50 @@ class TestOrphanScanAndPurge:
         assert data["orphans"][0]["objects"] == 3
 
     async def test_orphan_scan_skips_clean_buckets(self, client, mock_nginx, mock_s3):
-        pool, dst, vh = await self._setup(client, mock_nginx, mock_s3, "orp-clean")
+        _pool, dst, vh = await self._setup(client, mock_nginx, mock_s3, "orp-clean")
         mock_s3["list_buckets"].return_value = [{"name": "clean-bk", "created": "2025-01-01"}]
         mock_s3["promote_src_has_objects"].return_value = False
         await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
-        await client.post(f"/api/vhosts/{vh['id']}/buckets/clean-bk/promote", json={
-            "pool_id": dst["id"], "migrate": False,
-        })
+        await client.post(
+            f"/api/vhosts/{vh['id']}/buckets/clean-bk/promote",
+            json={
+                "pool_id": dst["id"],
+                "migrate": False,
+            },
+        )
         # Default pool is empty → not in orphan list
-        with patch("nanio_orchestrator.api.buckets.count_objects", new=AsyncMock(return_value=0)), \
-             patch("nanio_orchestrator.api.buckets.get_pool_s3_params", new=AsyncMock(return_value=("ak", "sk", None))):
+        with (
+            patch("nanio_orchestrator.api.buckets.count_objects", new=AsyncMock(return_value=0)),
+            patch("nanio_orchestrator.api.buckets.get_pool_s3_params", new=AsyncMock(return_value=("ak", "sk", None))),
+        ):
             resp = await client.get(f"/api/vhosts/{vh['id']}/buckets/orphans")
         assert resp.status_code == 200
         assert resp.json()["orphans"] == []
 
     async def test_purge_orphan_requires_routed_bucket(self, client, mock_nginx, mock_s3):
-        pool, dst, vh = await self._setup(client, mock_nginx, mock_s3, "orp-purgereq")
+        _pool, _dst, vh = await self._setup(client, mock_nginx, mock_s3, "orp-purgereq")
         # Bucket not in bucket_sync at all → 400
         with patch("nanio_orchestrator.api.buckets.get_pool_s3_params", new=AsyncMock(return_value=("ak", "sk", None))):
             resp = await client.post(f"/api/vhosts/{vh['id']}/buckets/nonexistent/purge-orphan")
         assert resp.status_code == 400
 
     async def test_purge_orphan_deletes_objects(self, client, mock_nginx, mock_s3):
-        pool, dst, vh = await self._setup(client, mock_nginx, mock_s3, "orp-purge")
+        _pool, dst, vh = await self._setup(client, mock_nginx, mock_s3, "orp-purge")
         mock_s3["list_buckets"].return_value = [{"name": "purge-bk", "created": "2025-01-01"}]
         mock_s3["promote_src_has_objects"].return_value = False
         await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
-        await client.post(f"/api/vhosts/{vh['id']}/buckets/purge-bk/promote", json={
-            "pool_id": dst["id"], "migrate": False,
-        })
-        with patch("nanio_orchestrator.api.buckets.list_objects", new=AsyncMock(return_value=["f1.dat", "f2.dat"])), \
-             patch("nanio_orchestrator.api.buckets.delete_object", new=AsyncMock(return_value=True)), \
-             patch("nanio_orchestrator.api.buckets.get_pool_s3_params", new=AsyncMock(return_value=("ak", "sk", None))):
+        await client.post(
+            f"/api/vhosts/{vh['id']}/buckets/purge-bk/promote",
+            json={
+                "pool_id": dst["id"],
+                "migrate": False,
+            },
+        )
+        with (
+            patch("nanio_orchestrator.api.buckets.list_objects", new=AsyncMock(return_value=["f1.dat", "f2.dat"])),
+            patch("nanio_orchestrator.api.buckets.delete_object", new=AsyncMock(return_value=True)),
+            patch("nanio_orchestrator.api.buckets.get_pool_s3_params", new=AsyncMock(return_value=("ak", "sk", None))),
+        ):
             resp = await client.post(f"/api/vhosts/{vh['id']}/buckets/purge-bk/purge-orphan")
         assert resp.status_code == 200
         data = resp.json()
@@ -377,15 +390,21 @@ class TestOrphanScanAndPurge:
         assert data["deleted"] == 2
 
     async def test_purge_orphan_empty_bucket(self, client, mock_nginx, mock_s3):
-        pool, dst, vh = await self._setup(client, mock_nginx, mock_s3, "orp-purgeempty")
+        _pool, dst, vh = await self._setup(client, mock_nginx, mock_s3, "orp-purgeempty")
         mock_s3["list_buckets"].return_value = [{"name": "emptypurge-bk", "created": "2025-01-01"}]
         mock_s3["promote_src_has_objects"].return_value = False
         await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
-        await client.post(f"/api/vhosts/{vh['id']}/buckets/emptypurge-bk/promote", json={
-            "pool_id": dst["id"], "migrate": False,
-        })
-        with patch("nanio_orchestrator.api.buckets.list_objects", new=AsyncMock(return_value=[])), \
-             patch("nanio_orchestrator.api.buckets.get_pool_s3_params", new=AsyncMock(return_value=("ak", "sk", None))):
+        await client.post(
+            f"/api/vhosts/{vh['id']}/buckets/emptypurge-bk/promote",
+            json={
+                "pool_id": dst["id"],
+                "migrate": False,
+            },
+        )
+        with (
+            patch("nanio_orchestrator.api.buckets.list_objects", new=AsyncMock(return_value=[])),
+            patch("nanio_orchestrator.api.buckets.get_pool_s3_params", new=AsyncMock(return_value=("ak", "sk", None))),
+        ):
             resp = await client.post(f"/api/vhosts/{vh['id']}/buckets/emptypurge-bk/purge-orphan")
         assert resp.status_code == 200
         data = resp.json()
@@ -396,9 +415,7 @@ class TestOrphanScanAndPurge:
 class TestBucketDeletedStatus:
     """Bucket marked 'deleted' when it disappears from S3 ListBuckets."""
 
-    async def test_bucket_marked_deleted_when_missing_from_list(
-        self, client, mock_s3, mock_nginx
-    ):
+    async def test_bucket_marked_deleted_when_missing_from_list(self, client, mock_s3, mock_nginx):
         """A bucket previously discovered but absent from the next sync becomes 'deleted'."""
         pool = await create_pool(client, "del-status-pool")
         await create_member(client, pool["id"], "10.0.0.1:9000")
@@ -417,9 +434,7 @@ class TestBucketDeletedStatus:
         buckets = resp.json()["buckets"]
         vanishing = next((b for b in buckets if b["name"] == "vanishing"), None)
         assert vanishing is not None, "Deleted bucket must still appear in bucket list"
-        assert vanishing["status"] == "deleted", (
-            "Bucket missing from ListBuckets must be marked 'deleted'"
-        )
+        assert vanishing["status"] == "deleted", "Bucket missing from ListBuckets must be marked 'deleted'"
 
     async def test_ignored_bucket_not_marked_deleted(self, client, mock_s3, mock_nginx):
         """An ignored bucket stays 'ignored' even when absent from the next sync."""
@@ -541,17 +556,15 @@ class TestHttpBucketRoutes:
         await create_member(client, nanio_pool["id"], "10.0.0.1:9000")
 
         http_pool = await create_pool(
-            client, f"{prefix}-http", pool_type="http",
+            client,
+            f"{prefix}-http",
+            pool_type="http",
             source_nanio_pool_id=nanio_pool["id"],
         )
         await create_member(client, http_pool["id"], "192.168.1.10:80", role="primary")
 
-        nanio_vh = await create_vhost(
-            client, f"{prefix}-nanio.example.com", default_pool_id=nanio_pool["id"]
-        )
-        http_vh = await create_vhost(
-            client, f"{prefix}-http.example.com", default_pool_id=http_pool["id"]
-        )
+        nanio_vh = await create_vhost(client, f"{prefix}-nanio.example.com", default_pool_id=nanio_pool["id"])
+        http_vh = await create_vhost(client, f"{prefix}-http.example.com", default_pool_id=http_pool["id"])
 
         mock_s3["list_buckets"].return_value = [
             {"name": "photos", "created": "2025-01-01"},
@@ -577,9 +590,7 @@ class TestHttpBucketRoutes:
         """POST creates a /{bucket}/ route on the http vhost."""
         _, http_pool, _, http_vh = await self._setup(client, mock_s3, mock_nginx, "hbra")
 
-        resp = await client.post(
-            f"/api/vhosts/{http_vh['id']}/http-bucket-routes/photos"
-        )
+        resp = await client.post(f"/api/vhosts/{http_vh['id']}/http-bucket-routes/photos")
         assert resp.status_code == 201
         data = resp.json()
         assert data["ok"] is True
@@ -613,18 +624,14 @@ class TestHttpBucketRoutes:
         """Removing a route that was never created returns 404."""
         _, _, _, http_vh = await self._setup(client, mock_s3, mock_nginx, "hbr404")
 
-        resp = await client.delete(
-            f"/api/vhosts/{http_vh['id']}/http-bucket-routes/missing"
-        )
+        resp = await client.delete(f"/api/vhosts/{http_vh['id']}/http-bucket-routes/missing")
         assert resp.status_code == 404
 
     async def test_nanio_vhost_rejected(self, client, mock_nginx):
         """http-bucket-routes endpoints are only available on http vhosts with source link."""
         nanio_pool = await create_pool(client, "hbrn-nanio", pool_type="nanio")
         await create_member(client, nanio_pool["id"], "10.0.0.1:9000")
-        nanio_vh = await create_vhost(
-            client, "hbrn-nanio.example.com", default_pool_id=nanio_pool["id"]
-        )
+        nanio_vh = await create_vhost(client, "hbrn-nanio.example.com", default_pool_id=nanio_pool["id"])
         resp = await client.get(f"/api/vhosts/{nanio_vh['id']}/http-bucket-routes")
         assert resp.status_code == 400
 
@@ -632,9 +639,7 @@ class TestHttpBucketRoutes:
         """http vhost without source_nanio_pool_id returns 400."""
         http_pool = await create_pool(client, "hbrns-http", pool_type="http")
         await create_member(client, http_pool["id"], "192.168.1.10:80", role="primary")
-        http_vh = await create_vhost(
-            client, "hbrns-http.example.com", default_pool_id=http_pool["id"]
-        )
+        http_vh = await create_vhost(client, "hbrns-http.example.com", default_pool_id=http_pool["id"])
         resp = await client.get(f"/api/vhosts/{http_vh['id']}/http-bucket-routes")
         assert resp.status_code == 400
 
@@ -648,4 +653,3 @@ class TestHttpBucketRoutes:
         buckets = {b["bucket"]: b for b in resp.json()["linked_nanio_buckets"]}
         assert buckets["photos"]["has_route"] is True
         assert buckets["videos"]["has_route"] is False
-

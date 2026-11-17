@@ -19,15 +19,18 @@ class TestDatabaseBackup:
     async def test_backup_creates_file(self, tmp_dirs):
         """Backup creates a .bak file."""
         import nanio_orchestrator.config as cfg_mod
+
         cfg_mod.settings = None
 
         os.environ["NANIO_ORCHESTRATOR_DB_PATH"] = tmp_dirs["db_path"]
 
         from nanio_orchestrator.db import init_db, set_db_path
+
         set_db_path(tmp_dirs["db_path"])
         await init_db()
 
         from nanio_orchestrator.backup import backup_database
+
         result = await backup_database()
         assert result is not None
         assert os.path.exists(result)
@@ -38,16 +41,19 @@ class TestDatabaseBackup:
     async def test_backup_rotation(self, tmp_dirs):
         """Multiple backups rotate files correctly."""
         import nanio_orchestrator.config as cfg_mod
+
         cfg_mod.settings = None
 
         os.environ["NANIO_ORCHESTRATOR_DB_PATH"] = tmp_dirs["db_path"]
         os.environ["NANIO_ORCHESTRATOR_DB_BACKUP_ROTATE"] = "3"
 
         from nanio_orchestrator.db import init_db, set_db_path
+
         set_db_path(tmp_dirs["db_path"])
         await init_db()
 
         from nanio_orchestrator.backup import backup_database
+
         bak_path = await backup_database()
         assert os.path.exists(bak_path)
 
@@ -124,10 +130,12 @@ class TestSidecarFiles:
     async def test_pool_sidecar_atomic_write(self, tmp_dirs):
         """Sidecar writes are atomic (no .tmp files left behind)."""
         import nanio_orchestrator.config as cfg_mod
+
         cfg_mod.settings = None
         os.environ["NANIO_ORCHESTRATOR_NGINX_CONFIG_DIR"] = tmp_dirs["nginx_dir"]
 
         from nanio_orchestrator.sidecar import write_pool_sidecar
+
         write_pool_sidecar(1, "test-atomic", "nanio", "test desc")
 
         pool_dir = os.path.join(tmp_dirs["nginx_dir"], "pools")
@@ -142,8 +150,10 @@ class TestSidecarFiles:
         os.environ["NANIO_ORCHESTRATOR_SECRET"] = "ASsfJ7RCxJiOrjeD9KX0LPlMe-EJtA2lKIh2yk-D6U0="
 
         import nanio_orchestrator.config as cfg_mod
+
         cfg_mod.settings = None  # force re-read of env vars
         from nanio_orchestrator.credentials import reset_fernet
+
         reset_fernet()
 
         pool = await create_pool(client, name="cred-pool")
@@ -169,8 +179,10 @@ class TestSidecarFiles:
         os.environ["NANIO_ORCHESTRATOR_SECRET"] = "ASsfJ7RCxJiOrjeD9KX0LPlMe-EJtA2lKIh2yk-D6U0="
 
         import nanio_orchestrator.config as cfg_mod
+
         cfg_mod.settings = None
         from nanio_orchestrator.credentials import reset_fernet
+
         reset_fernet()
 
         pool = await create_pool(client, name="cred-del-pool")
@@ -219,9 +231,7 @@ upstream pool-default {
             "description": "Default storage pool",
             "updated_at": "2026-04-16T10:00:00Z",
         }
-        Path(os.path.join(pools_dir, "pool-default.meta.json")).write_text(
-            json.dumps(pool_sidecar)
-        )
+        Path(os.path.join(pools_dir, "pool-default.meta.json")).write_text(json.dumps(pool_sidecar))
 
         # Write a vhost config
         vhost_conf = """# managed by nanio-orchestrator
@@ -252,9 +262,7 @@ server {
             "default_pool_name": "pool-default",
             "updated_at": "2026-04-16T10:00:00Z",
         }
-        Path(os.path.join(vhosts_dir, "s3.example.com.meta.json")).write_text(
-            json.dumps(vhost_sidecar)
-        )
+        Path(os.path.join(vhosts_dir, "s3.example.com.meta.json")).write_text(json.dumps(vhost_sidecar))
 
         return {"pools_dir": pools_dir, "vhosts_dir": vhosts_dir, "migrations_dir": migrations_dir}
 
@@ -263,6 +271,7 @@ server {
         """Rebuild recovers pool from nginx config."""
         import nanio_orchestrator.config as cfg_mod
         import nanio_orchestrator.db as db_mod
+
         cfg_mod.settings = None
         db_mod._db_path = None
 
@@ -270,6 +279,7 @@ server {
         os.environ["NANIO_ORCHESTRATOR_NGINX_CONFIG_DIR"] = tmp_dirs["nginx_dir"]
 
         from nanio_orchestrator.db import set_db_path
+
         set_db_path(tmp_dirs["db_path"])
 
         # Delete existing DB to simulate loss
@@ -278,6 +288,7 @@ server {
 
         with patch("nanio_orchestrator.s3client.list_buckets", new_callable=AsyncMock, return_value=[]):
             from nanio_orchestrator.rebuild import rebuild_from_disk
+
             result = await rebuild_from_disk()
 
         assert result["pools_imported"] == 1
@@ -285,6 +296,7 @@ server {
 
         # Verify in DB
         from nanio_orchestrator.db import get_db_ctx
+
         async with get_db_ctx() as db:
             pools = await db.execute_fetchall("SELECT * FROM pools")
             assert len(pools) == 1
@@ -300,6 +312,7 @@ server {
         """Rebuild recovers vhosts and routes."""
         import nanio_orchestrator.config as cfg_mod
         import nanio_orchestrator.db as db_mod
+
         cfg_mod.settings = None
         db_mod._db_path = None
 
@@ -307,6 +320,7 @@ server {
         os.environ["NANIO_ORCHESTRATOR_NGINX_CONFIG_DIR"] = tmp_dirs["nginx_dir"]
 
         from nanio_orchestrator.db import set_db_path
+
         set_db_path(tmp_dirs["db_path"])
 
         if os.path.exists(tmp_dirs["db_path"]):
@@ -314,12 +328,14 @@ server {
 
         with patch("nanio_orchestrator.s3client.list_buckets", new_callable=AsyncMock, return_value=[]):
             from nanio_orchestrator.rebuild import rebuild_from_disk
+
             result = await rebuild_from_disk()
 
         assert result["vhosts_imported"] == 1
         assert result["routes_imported"] == 1
 
         from nanio_orchestrator.db import get_db_ctx
+
         async with get_db_ctx() as db:
             vhosts = await db.execute_fetchall("SELECT * FROM vhosts")
             assert len(vhosts) == 1
@@ -338,6 +354,7 @@ server {
         """Pool type (nanio/http) is recovered from sidecar."""
         import nanio_orchestrator.config as cfg_mod
         import nanio_orchestrator.db as db_mod
+
         cfg_mod.settings = None
         db_mod._db_path = None
 
@@ -345,6 +362,7 @@ server {
         os.environ["NANIO_ORCHESTRATOR_NGINX_CONFIG_DIR"] = tmp_dirs["nginx_dir"]
 
         from nanio_orchestrator.db import set_db_path
+
         set_db_path(tmp_dirs["db_path"])
 
         if os.path.exists(tmp_dirs["db_path"]):
@@ -352,9 +370,11 @@ server {
 
         with patch("nanio_orchestrator.s3client.list_buckets", new_callable=AsyncMock, return_value=[]):
             from nanio_orchestrator.rebuild import rebuild_from_disk
+
             await rebuild_from_disk()
 
         from nanio_orchestrator.db import get_db_ctx
+
         async with get_db_ctx() as db:
             pools = await db.execute_fetchall("SELECT type FROM pools WHERE name = 'pool-default'")
             assert pools[0]["type"] == "nanio"
@@ -367,6 +387,7 @@ server {
         """Vhost default_pool_id is recovered from sidecar."""
         import nanio_orchestrator.config as cfg_mod
         import nanio_orchestrator.db as db_mod
+
         cfg_mod.settings = None
         db_mod._db_path = None
 
@@ -374,6 +395,7 @@ server {
         os.environ["NANIO_ORCHESTRATOR_NGINX_CONFIG_DIR"] = tmp_dirs["nginx_dir"]
 
         from nanio_orchestrator.db import set_db_path
+
         set_db_path(tmp_dirs["db_path"])
 
         if os.path.exists(tmp_dirs["db_path"]):
@@ -381,9 +403,11 @@ server {
 
         with patch("nanio_orchestrator.s3client.list_buckets", new_callable=AsyncMock, return_value=[]):
             from nanio_orchestrator.rebuild import rebuild_from_disk
+
             await rebuild_from_disk()
 
         from nanio_orchestrator.db import get_db_ctx
+
         async with get_db_ctx() as db:
             vhosts = await db.execute_fetchall("SELECT default_pool_id FROM vhosts")
             assert vhosts[0]["default_pool_id"] is not None
@@ -396,6 +420,7 @@ server {
         """Pool credentials (encrypted) are recovered from sidecar."""
         import nanio_orchestrator.config as cfg_mod
         import nanio_orchestrator.db as db_mod
+
         cfg_mod.settings = None
         db_mod._db_path = None
 
@@ -404,6 +429,7 @@ server {
         os.environ["NANIO_ORCHESTRATOR_SECRET"] = "ASsfJ7RCxJiOrjeD9KX0LPlMe-EJtA2lKIh2yk-D6U0="
 
         from nanio_orchestrator.credentials import encrypt, reset_fernet
+
         reset_fernet()
 
         # Add credentials to sidecar
@@ -418,6 +444,7 @@ server {
         Path(sidecar_path).write_text(json.dumps(data))
 
         from nanio_orchestrator.db import set_db_path
+
         set_db_path(tmp_dirs["db_path"])
 
         if os.path.exists(tmp_dirs["db_path"]):
@@ -425,6 +452,7 @@ server {
 
         with patch("nanio_orchestrator.s3client.list_buckets", new_callable=AsyncMock, return_value=[]):
             from nanio_orchestrator.rebuild import rebuild_from_disk
+
             result = await rebuild_from_disk()
 
         assert result["credentials_recovered"] == 1
@@ -432,6 +460,7 @@ server {
         # Verify credentials are decryptable
         from nanio_orchestrator.credentials import get_pool_credentials
         from nanio_orchestrator.db import get_db_ctx
+
         async with get_db_ctx() as db:
             pool = await db.execute_fetchall("SELECT id FROM pools WHERE name = 'pool-default'")
         creds = await get_pool_credentials(pool[0]["id"])
@@ -447,6 +476,7 @@ server {
         """In-progress migration is recovered from .state.json."""
         import nanio_orchestrator.config as cfg_mod
         import nanio_orchestrator.db as db_mod
+
         cfg_mod.settings = None
         db_mod._db_path = None
 
@@ -464,9 +494,7 @@ upstream pool-2025 {
 """
         Path(os.path.join(tmp_dirs["nginx_dir"], "pools", "pool-2025.conf")).write_text(pool2_conf)
         pool2_sidecar = {"pool_id": 2, "name": "pool-2025", "type": "nanio"}
-        Path(os.path.join(tmp_dirs["nginx_dir"], "pools", "pool-2025.meta.json")).write_text(
-            json.dumps(pool2_sidecar)
-        )
+        Path(os.path.join(tmp_dirs["nginx_dir"], "pools", "pool-2025.meta.json")).write_text(json.dumps(pool2_sidecar))
 
         # Create migration state file (lives alongside the DB, not in nginx dir)
         migrations_dir = str(Path(tmp_dirs["db_path"]).parent / "migrations")
@@ -485,11 +513,10 @@ upstream pool-2025 {
             "bytes_transferred": 9834729472,
             "nginx_state": "source",
         }
-        Path(os.path.join(migrations_dir, "migration-7.state.json")).write_text(
-            json.dumps(migration_state)
-        )
+        Path(os.path.join(migrations_dir, "migration-7.state.json")).write_text(json.dumps(migration_state))
 
         from nanio_orchestrator.db import set_db_path
+
         set_db_path(tmp_dirs["db_path"])
 
         if os.path.exists(tmp_dirs["db_path"]):
@@ -497,11 +524,13 @@ upstream pool-2025 {
 
         with patch("nanio_orchestrator.s3client.list_buckets", new_callable=AsyncMock, return_value=[]):
             from nanio_orchestrator.rebuild import rebuild_from_disk
+
             result = await rebuild_from_disk()
 
         assert result["migrations_imported"] == 1
 
         from nanio_orchestrator.db import get_db_ctx
+
         async with get_db_ctx() as db:
             migs = await db.execute_fetchall("SELECT * FROM migrations")
             assert len(migs) == 1
@@ -517,6 +546,7 @@ upstream pool-2025 {
         """Rebuild with no sidecar files recovers what it can."""
         import nanio_orchestrator.config as cfg_mod
         import nanio_orchestrator.db as db_mod
+
         cfg_mod.settings = None
         db_mod._db_path = None
 
@@ -535,6 +565,7 @@ upstream no-sidecar {
         Path(os.path.join(tmp_dirs["nginx_dir"], "pools", "no-sidecar.conf")).write_text(pool_conf)
 
         from nanio_orchestrator.db import set_db_path
+
         set_db_path(tmp_dirs["db_path"])
 
         if os.path.exists(tmp_dirs["db_path"]):
@@ -542,11 +573,13 @@ upstream no-sidecar {
 
         with patch("nanio_orchestrator.s3client.list_buckets", new_callable=AsyncMock, return_value=[]):
             from nanio_orchestrator.rebuild import rebuild_from_disk
+
             result = await rebuild_from_disk()
 
         assert result["pools_imported"] == 1
         # Type defaults to "nanio" without sidecar
         from nanio_orchestrator.db import get_db_ctx
+
         async with get_db_ctx() as db:
             pools = await db.execute_fetchall("SELECT type FROM pools WHERE name = 'no-sidecar'")
             assert pools[0]["type"] == "nanio"
@@ -559,6 +592,7 @@ upstream no-sidecar {
         """--dry-run reports what would be imported without writing."""
         import nanio_orchestrator.config as cfg_mod
         import nanio_orchestrator.db as db_mod
+
         cfg_mod.settings = None
         db_mod._db_path = None
 
@@ -566,10 +600,12 @@ upstream no-sidecar {
         os.environ["NANIO_ORCHESTRATOR_NGINX_CONFIG_DIR"] = tmp_dirs["nginx_dir"]
 
         from nanio_orchestrator.db import init_db, set_db_path
+
         set_db_path(tmp_dirs["db_path"])
         await init_db()
 
         from nanio_orchestrator.rebuild import rebuild_from_disk
+
         result = await rebuild_from_disk(dry_run=True)
 
         assert result["dry_run"] is True
@@ -580,6 +616,7 @@ upstream no-sidecar {
 
         # DB should NOT have been modified with data
         from nanio_orchestrator.db import get_db_ctx
+
         async with get_db_ctx() as db:
             pools = await db.execute_fetchall("SELECT COUNT(*) as cnt FROM pools")
             assert pools[0]["cnt"] == 0
@@ -592,6 +629,7 @@ upstream no-sidecar {
         """--force clears existing DB data before rebuild."""
         import nanio_orchestrator.config as cfg_mod
         import nanio_orchestrator.db as db_mod
+
         cfg_mod.settings = None
         db_mod._db_path = None
 
@@ -599,26 +637,32 @@ upstream no-sidecar {
         os.environ["NANIO_ORCHESTRATOR_NGINX_CONFIG_DIR"] = tmp_dirs["nginx_dir"]
 
         from nanio_orchestrator.db import get_db_ctx, init_db, set_db_path
+
         set_db_path(tmp_dirs["db_path"])
         await init_db()
 
         # Insert some existing data
         async with get_db_ctx() as db:
-            await db.execute(
-                "INSERT INTO pools (name, type) VALUES ('old-pool', 'nanio')"
-            )
+            await db.execute("INSERT INTO pools (name, type) VALUES ('old-pool', 'nanio')")
             await db.commit()
 
         # Rebuild via API (force mode)
         with patch("nanio_orchestrator.s3client.list_buckets", new_callable=AsyncMock, return_value=[]):
             from nanio_orchestrator.rebuild import rebuild_from_disk
+
             # First, clear existing data (simulating force)
             async with get_db_ctx() as db:
                 for table in [
-                    "migration_log", "migrations",
-                    "bucket_sync", "pool_credentials",
-                    "routes", "pool_members", "audit_log", "config_files",
-                    "vhosts", "pools",
+                    "migration_log",
+                    "migrations",
+                    "bucket_sync",
+                    "pool_credentials",
+                    "routes",
+                    "pool_members",
+                    "audit_log",
+                    "config_files",
+                    "vhosts",
+                    "pools",
                 ]:
                     await db.execute(f"DELETE FROM {table}")
                 await db.commit()
@@ -642,6 +686,7 @@ upstream no-sidecar {
         """Rebuild logs warning when nanio-default is unreachable."""
         import nanio_orchestrator.config as cfg_mod
         import nanio_orchestrator.db as db_mod
+
         cfg_mod.settings = None
         db_mod._db_path = None
 
@@ -649,14 +694,20 @@ upstream no-sidecar {
         os.environ["NANIO_ORCHESTRATOR_NGINX_CONFIG_DIR"] = tmp_dirs["nginx_dir"]
 
         from nanio_orchestrator.db import set_db_path
+
         set_db_path(tmp_dirs["db_path"])
 
         if os.path.exists(tmp_dirs["db_path"]):
             os.unlink(tmp_dirs["db_path"])
 
         # Make list_buckets raise an error
-        with patch("nanio_orchestrator.s3client.list_buckets", new_callable=AsyncMock, side_effect=ConnectionError("unreachable")):
+        with patch(
+            "nanio_orchestrator.s3client.list_buckets",
+            new_callable=AsyncMock,
+            side_effect=ConnectionError("unreachable"),
+        ):
             from nanio_orchestrator.rebuild import rebuild_from_disk
+
             result = await rebuild_from_disk()
 
         # Should still succeed, just with warnings
@@ -689,6 +740,7 @@ upstream no-sidecar {
         """Rebuild recomputes config_files sha256 records."""
         import nanio_orchestrator.config as cfg_mod
         import nanio_orchestrator.db as db_mod
+
         cfg_mod.settings = None
         db_mod._db_path = None
 
@@ -696,6 +748,7 @@ upstream no-sidecar {
         os.environ["NANIO_ORCHESTRATOR_NGINX_CONFIG_DIR"] = tmp_dirs["nginx_dir"]
 
         from nanio_orchestrator.db import set_db_path
+
         set_db_path(tmp_dirs["db_path"])
 
         if os.path.exists(tmp_dirs["db_path"]):
@@ -703,9 +756,11 @@ upstream no-sidecar {
 
         with patch("nanio_orchestrator.s3client.list_buckets", new_callable=AsyncMock, return_value=[]):
             from nanio_orchestrator.rebuild import rebuild_from_disk
+
             await rebuild_from_disk()
 
         from nanio_orchestrator.db import get_db_ctx
+
         async with get_db_ctx() as db:
             files = await db.execute_fetchall("SELECT * FROM config_files")
             assert len(files) >= 2  # pool + vhost config files
@@ -716,12 +771,12 @@ upstream no-sidecar {
         cfg_mod.settings = None
         db_mod._db_path = None
 
-
     @pytest.mark.asyncio
     async def test_rebuild_recovers_source_nanio_pool_id_from_sidecar(self, tmp_dirs, setup_nginx_configs):
         """source_nanio_pool_id on an http pool is recovered from the pool sidecar."""
         import nanio_orchestrator.config as cfg_mod
         import nanio_orchestrator.db as db_mod
+
         cfg_mod.settings = None
         db_mod._db_path = None
 
@@ -749,6 +804,7 @@ upstream http-cdn {
         Path(os.path.join(pools_dir, "http-cdn.meta.json")).write_text(json.dumps(http_sidecar))
 
         from nanio_orchestrator.db import set_db_path
+
         set_db_path(tmp_dirs["db_path"])
 
         if os.path.exists(tmp_dirs["db_path"]):
@@ -756,9 +812,11 @@ upstream http-cdn {
 
         with patch("nanio_orchestrator.s3client.list_buckets", new_callable=AsyncMock, return_value=[]):
             from nanio_orchestrator.rebuild import rebuild_from_disk
+
             await rebuild_from_disk()
 
         from nanio_orchestrator.db import get_db_ctx
+
         async with get_db_ctx() as db:
             pools = await db.execute_fetchall("SELECT * FROM pools WHERE name = 'http-cdn'")
             assert len(pools) == 1
@@ -786,6 +844,7 @@ class TestMigrationStateSidecar:
         """Migration phase change writes a state file."""
         import nanio_orchestrator.config as cfg_mod
         import nanio_orchestrator.db as db_mod
+
         cfg_mod.settings = None
         db_mod._db_path = None
 
@@ -795,6 +854,7 @@ class TestMigrationStateSidecar:
         os.makedirs(str(Path(tmp_dirs["db_path"]).parent / "migrations"), exist_ok=True)
 
         from nanio_orchestrator.db import get_db_ctx, init_db, set_db_path
+
         set_db_path(tmp_dirs["db_path"])
         await init_db()
 
@@ -810,6 +870,7 @@ class TestMigrationStateSidecar:
             await db.commit()
 
         from nanio_orchestrator.migration_engine import _set_phase
+
         await _set_phase(1, "copying")
 
         state_path = str(Path(tmp_dirs["db_path"]).parent / "migrations" / "migration-1.state.json")
@@ -826,6 +887,7 @@ class TestMigrationStateSidecar:
         """Completed migration deletes the state file."""
         import nanio_orchestrator.config as cfg_mod
         import nanio_orchestrator.db as db_mod
+
         cfg_mod.settings = None
         db_mod._db_path = None
 
@@ -835,6 +897,7 @@ class TestMigrationStateSidecar:
         os.makedirs(str(Path(tmp_dirs["db_path"]).parent / "migrations"), exist_ok=True)
 
         from nanio_orchestrator.db import get_db_ctx, init_db, set_db_path
+
         set_db_path(tmp_dirs["db_path"])
         await init_db()
 
@@ -849,6 +912,7 @@ class TestMigrationStateSidecar:
             await db.commit()
 
         from nanio_orchestrator.migration_engine import _set_phase
+
         # First write it
         await _set_phase(1, "copying")
         state_path = str(Path(tmp_dirs["db_path"]).parent / "migrations" / "migration-1.state.json")
@@ -869,16 +933,19 @@ class TestBackupRotation:
     async def test_backup_rotation_max_copies_1(self, tmp_dirs):
         """max_copies=1 keeps only the single .bak slot and never creates .bak.2."""
         import nanio_orchestrator.config as cfg_mod
+
         cfg_mod.settings = None
 
         os.environ["NANIO_ORCHESTRATOR_DB_PATH"] = tmp_dirs["db_path"]
         os.environ["NANIO_ORCHESTRATOR_DB_BACKUP_ROTATE"] = "1"
 
         from nanio_orchestrator.db import init_db, set_db_path
+
         set_db_path(tmp_dirs["db_path"])
         await init_db()
 
         from nanio_orchestrator.backup import backup_database
+
         bak_path = await backup_database()
         assert bak_path is not None
         assert os.path.exists(bak_path)
@@ -921,18 +988,19 @@ server {
 """
         Path(os.path.join(vhosts_dir, "s3.example.com.conf")).write_text(vhost_conf)
         Path(os.path.join(vhosts_dir, "s3.example.com.meta.json")).write_text(
-            json.dumps({"vhost_id": 1, "server_name": "s3.example.com",
-                        "default_pool_name": "pool-src"})
+            json.dumps({"vhost_id": 1, "server_name": "s3.example.com", "default_pool_name": "pool-src"})
         )
 
     def _setup_env(self, tmp_dirs):
         import nanio_orchestrator.config as cfg_mod
         import nanio_orchestrator.db as db_mod
+
         cfg_mod.settings = None
         db_mod._db_path = None
         os.environ["NANIO_ORCHESTRATOR_DB_PATH"] = tmp_dirs["db_path"]
         os.environ["NANIO_ORCHESTRATOR_NGINX_CONFIG_DIR"] = tmp_dirs["nginx_dir"]
         from nanio_orchestrator.db import set_db_path
+
         set_db_path(tmp_dirs["db_path"])
         if os.path.exists(tmp_dirs["db_path"]):
             os.unlink(tmp_dirs["db_path"])
@@ -960,17 +1028,17 @@ server {
             "orphaned_source_prefix": "/photos/",
             "orphaned_at": "2026-04-28T10:00:00Z",
         }
-        Path(os.path.join(migrations_dir, "migration-42.done.json")).write_text(
-            json.dumps(done_state)
-        )
+        Path(os.path.join(migrations_dir, "migration-42.done.json")).write_text(json.dumps(done_state))
 
         with patch("nanio_orchestrator.s3client.list_buckets", new_callable=AsyncMock, return_value=[]):
             from nanio_orchestrator.rebuild import rebuild_from_disk
+
             result = await rebuild_from_disk()
 
         assert result["completed_migrations_imported"] == 1
 
         from nanio_orchestrator.db import get_db_ctx
+
         async with get_db_ctx() as db:
             migs = await db.execute_fetchall("SELECT * FROM migrations")
             assert len(migs) == 1
@@ -982,6 +1050,7 @@ server {
 
         import nanio_orchestrator.config as cfg_mod
         import nanio_orchestrator.db as db_mod
+
         cfg_mod.settings = None
         db_mod._db_path = None
 
@@ -1010,23 +1079,24 @@ server {
             "bytes_transferred": 0,
             "bytes_total": 0,
         }
-        Path(os.path.join(migrations_dir, "migration-5.state.json")).write_text(
-            json.dumps(state)
-        )
+        Path(os.path.join(migrations_dir, "migration-5.state.json")).write_text(json.dumps(state))
 
         with patch("nanio_orchestrator.s3client.list_buckets", new_callable=AsyncMock, return_value=[]):
             from nanio_orchestrator.rebuild import rebuild_from_disk
+
             result = await rebuild_from_disk()
 
         assert result["migrations_imported"] == 1
 
         from nanio_orchestrator.db import get_db_ctx
+
         async with get_db_ctx() as db:
             migs = await db.execute_fetchall("SELECT * FROM migrations")
             assert migs[0]["phase"] == "switching"
 
         import nanio_orchestrator.config as cfg_mod
         import nanio_orchestrator.db as db_mod
+
         cfg_mod.settings = None
         db_mod._db_path = None
 
@@ -1054,17 +1124,17 @@ server {
             "bytes_transferred": 0,
             "bytes_total": 0,
         }
-        Path(os.path.join(migrations_dir, "migration-9.state.json")).write_text(
-            json.dumps(state)
-        )
+        Path(os.path.join(migrations_dir, "migration-9.state.json")).write_text(json.dumps(state))
 
         with patch("nanio_orchestrator.s3client.list_buckets", new_callable=AsyncMock, return_value=[]):
             from nanio_orchestrator.rebuild import rebuild_from_disk
+
             result = await rebuild_from_disk()
 
         assert result["migrations_imported"] == 1
 
         from nanio_orchestrator.db import get_db_ctx
+
         async with get_db_ctx() as db:
             migs = await db.execute_fetchall("SELECT * FROM migrations")
             m = dict(migs[0])
@@ -1073,6 +1143,7 @@ server {
 
         import nanio_orchestrator.config as cfg_mod
         import nanio_orchestrator.db as db_mod
+
         cfg_mod.settings = None
         db_mod._db_path = None
 
@@ -1082,6 +1153,7 @@ server {
         import inspect
 
         from nanio_orchestrator.rebuild import rebuild_from_disk
+
         src = inspect.getsource(rebuild_from_disk)
         assert "purge_source" not in src
         assert "needs_purge" not in src

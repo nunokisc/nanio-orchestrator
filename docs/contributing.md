@@ -57,8 +57,9 @@ make lint           # ruff check (errors only)
 make fmt            # ruff format (auto-fix)
 ```
 
-Rules: `ruff` with `E`, `F`, `I`, `W` (standard + import sorting). Line length 120.
-Target: Python 3.9+.
+Rules: `ruff` with `E`, `F`, `I`, `W`, `UP`, `B`, `SIM`, `RUF` — the same set nanio uses — on the
+package and on the tests. Line length 120. Target: Python 3.9+, which is why `Optional[X]` is
+kept instead of `X | None` (Pydantic evaluates annotations at runtime).
 
 ---
 

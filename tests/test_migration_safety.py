@@ -93,9 +93,7 @@ class TestClientWritesSurvive:
         assert mig["phase"] == "error"
         assert "diff count did not decrease" in mig["error_msg"]
 
-    async def test_object_missing_at_destination_fails_verification(
-        self, client, mock_nginx, mock_s3, rclone, mtimes
-    ):
+    async def test_object_missing_at_destination_fails_verification(self, client, mock_nginx, mock_s3, rclone, mtimes):
         src, dst, _ = await _setup(client, mock_s3)
         rclone.missing = ["never-arrived"]
         mtimes["10.0.0.2:9000"] = T0 + timedelta(minutes=5)
@@ -272,7 +270,6 @@ class TestSchemaUpgrade:
     async def test_existing_database_gains_split_routing(self, tmp_dirs):
         """A DB created before the column existed: the split used to be implied by the phase."""
         import aiosqlite
-
         import nanio_orchestrator.db as db_mod
 
         old_schema = db_mod.SCHEMA_SQL.replace("    split_routing           INTEGER NOT NULL DEFAULT 0,\n", "")
@@ -304,4 +301,3 @@ class TestSchemaUpgrade:
             ("write_routing", 1),
             ("done", 0),
         ]
-

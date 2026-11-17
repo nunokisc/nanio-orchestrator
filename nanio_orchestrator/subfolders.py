@@ -23,7 +23,7 @@ so the orchestrator does:
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Optional
 
 from nanio_orchestrator import s3client
 from nanio_orchestrator.credentials import get_pool_s3_params
@@ -61,11 +61,11 @@ async def parent_pool(db, vhost_id: int, path_prefix: str) -> Optional[dict]:
     return dict(rows[0]) if rows else None
 
 
-async def ensure_markers(vhost_id: int) -> List[str]:
+async def ensure_markers(vhost_id: int) -> list[str]:
     """(Re)write the marker of every sub-folder route of a vhost. Returns warnings."""
     from nanio_orchestrator.db import get_db_ctx
 
-    todo: List[Tuple[str, str, str, int, str, str]] = []
+    todo: list[tuple[str, str, str, int, str, str]] = []
     async with get_db_ctx() as db:
         routes = await db.execute_fetchall(
             """SELECT r.path_prefix, p.name AS pool_name FROM routes r JOIN pools p ON p.id = r.pool_id
@@ -82,7 +82,7 @@ async def ensure_markers(vhost_id: int) -> List[str]:
                 key = folder_key(route["path_prefix"]) + SUBFOLDER_MARKER
                 todo.append((address, bucket, key, parent["id"], parent["name"], route["pool_name"]))
 
-    warnings: List[str] = []
+    warnings: list[str] = []
     for address, bucket, key, parent_id, parent_name, target_name in todo:
         text = (
             f"The objects of this folder are stored on pool '{target_name}' "
@@ -106,7 +106,7 @@ async def ensure_markers(vhost_id: int) -> List[str]:
 
 async def sync_http_routes(
     db, bucket: str, path_prefix: str, parent_pool_id: int, target_pool_id: Optional[int]
-) -> Tuple[List[int], List[str]]:
+) -> tuple[list[int], list[str]]:
     """Make http vhosts that serve the bucket from the parent pool's files follow a sub-folder.
 
     With ``target_pool_id`` the folder route is added (or repointed) on each such vhost; with
@@ -120,12 +120,12 @@ async def sync_http_routes(
            WHERE r.path_prefix = ? AND p.type = 'http' AND p.source_nanio_pool_id = ?""",
         (f"/{bucket}/", parent_pool_id),
     )
-    changed: List[int] = []
-    warnings: List[str] = []
+    changed: list[int] = []
+    warnings: list[str] = []
     if not vhosts:
         return changed, warnings
 
-    http_target: Optional[Dict] = None
+    http_target: Optional[dict] = None
     if target_pool_id is not None:
         rows = await db.execute_fetchall(
             "SELECT id, name FROM pools WHERE type = 'http' AND source_nanio_pool_id = ? ORDER BY id LIMIT 1",

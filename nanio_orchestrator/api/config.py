@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List
 
 import aiofiles
 from fastapi import APIRouter, Body, HTTPException
@@ -23,11 +22,13 @@ from nanio_orchestrator.nginx.generator import (
 
 router = APIRouter(prefix="/api/config", tags=["config"])
 
+_restart_tasks: set = set()
+
 
 async def _sha256_file(filepath: str) -> str | None:
     """Read a file and return its SHA256 hash, or None if file doesn't exist."""
     try:
-        async with aiofiles.open(filepath, "r") as f:
+        async with aiofiles.open(filepath) as f:
             content = await f.read()
         return sha256_str(content)
     except FileNotFoundError:
@@ -42,7 +43,7 @@ async def config_status():
     """Drift status per file, last reload time + result."""
     async with get_db_ctx() as db:
         rows = await db.execute_fetchall("SELECT * FROM config_files ORDER BY path")
-        files: List[ConfigFileStatus] = []
+        files: list[ConfigFileStatus] = []
         for r in rows:
             disk_hash = await _sha256_file(r["path"])
             drifted = disk_hash is not None and r["sha256_db"] is not None and disk_hash != r["sha256_db"]
@@ -165,7 +166,7 @@ def _require_managed_config_path(path: str) -> None:
     try:
         resolved = Path(path).resolve()
     except (OSError, ValueError):
-        raise HTTPException(400, "Invalid path")
+        raise HTTPException(400, "Invalid path") from None
     allowed = {s.pools_dir.resolve(), s.vhosts_dir.resolve()}
     if resolved.suffix != ".conf" or resolved.parent not in allowed:
         raise HTTPException(400, "Not a managed nginx config file")
@@ -176,10 +177,10 @@ async def absorb_file(path: str = Body(..., embed=True)):
     """Accept a drifted file: read current disk state into the DB (sha256_db = sha256_disk)."""
     _require_managed_config_path(path)
     try:
-        async with aiofiles.open(path, "r") as f:
+        async with aiofiles.open(path) as f:
             content = await f.read()
     except FileNotFoundError:
-        raise HTTPException(404, f"File not found on disk: {path}")
+        raise HTTPException(404, f"File not found on disk: {path}") from None
 
     h = sha256_str(content)
     from datetime import datetime, timezone
@@ -254,7 +255,7 @@ async def preview_pool_config(pool_id: int):
     try:
         filepath, content = await generate_pool_config(pool_id)
     except ValueError:
-        raise HTTPException(404, "Pool not found")
+        raise HTTPException(404, "Pool not found") from None
     return {"filepath": filepath, "content": content}
 
 
@@ -264,7 +265,7 @@ async def preview_vhost_config(vhost_id: int):
     try:
         filepath, content = await generate_vhost_config(vhost_id)
     except ValueError:
-        raise HTTPException(404, "Vhost not found")
+        raise HTTPException(404, "Vhost not found") from None
     return {"filepath": filepath, "content": content}
 
 
@@ -427,12 +428,14 @@ async def restart_service():
 
     async def _do_restart() -> None:
         await asyncio.sleep(1.5)
-        subprocess.Popen(  # noqa: S603 — intentional privileged restart
+        subprocess.Popen(
             ["sudo", systemctl, "restart", "nanio-orchestrator"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             close_fds=True,
         )
 
-    asyncio.create_task(_do_restart())
+    # keep a reference: a task nobody holds can be garbage-collected before it runs
+    _restart_tasks.add(task := asyncio.create_task(_do_restart()))
+    task.add_done_callback(_restart_tasks.discard)
     return {"ok": True, "message": "Service restart scheduled"}

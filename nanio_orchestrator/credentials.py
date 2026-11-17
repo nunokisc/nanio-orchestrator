@@ -8,7 +8,7 @@ URL-safe base64-encoded).  Generate one with:
 from __future__ import annotations
 
 import logging
-from typing import Optional, Tuple
+from typing import Optional
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -51,7 +51,7 @@ def decrypt(token: str) -> str:
     try:
         return _get_fernet().decrypt(token.encode("utf-8")).decode("utf-8")
     except InvalidToken:
-        raise ValueError("Failed to decrypt credential — secret key may have changed")
+        raise ValueError("Failed to decrypt credential — secret key may have changed") from None
 
 
 async def store_pool_credentials(
@@ -60,7 +60,7 @@ async def store_pool_credentials(
     secret_key: str,
     endpoint_url: Optional[str] = None,
     region: str = "us-east-1",
-) -> Tuple[str, str]:
+) -> tuple[str, str]:
     """Encrypt and store credentials for a pool.
 
     Returns (access_key_enc, secret_key_enc) so callers can use the encrypted
@@ -114,7 +114,7 @@ async def delete_pool_credentials(pool_id: int) -> bool:
         return cursor.rowcount > 0
 
 
-async def get_pool_s3_params(pool_id: int) -> Tuple[Optional[str], Optional[str], str]:
+async def get_pool_s3_params(pool_id: int) -> tuple[Optional[str], Optional[str], str]:
     """Get (access_key, secret_key, region) for S3 operations against a pool.
 
     A pool without stored credentials yields (None, None, "us-east-1"): the request is sent

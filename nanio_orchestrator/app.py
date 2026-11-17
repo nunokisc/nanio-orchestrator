@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
@@ -62,24 +62,18 @@ async def lifespan(app: FastAPI):
     # Shutdown
     stop_drift()
     drift_task.cancel()
-    try:
+    with suppress(asyncio.CancelledError):
         await drift_task
-    except asyncio.CancelledError:
-        pass
 
     stop_bucket_sync()
     bucket_sync_task.cancel()
-    try:
+    with suppress(asyncio.CancelledError):
         await bucket_sync_task
-    except asyncio.CancelledError:
-        pass
 
     stop_backup()
     backup_task.cancel()
-    try:
+    with suppress(asyncio.CancelledError):
         await backup_task
-    except asyncio.CancelledError:
-        pass
 
     logger.info("nanio-orchestrator stopped")
 

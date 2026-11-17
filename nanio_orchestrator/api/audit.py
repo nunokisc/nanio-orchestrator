@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Query
 
@@ -12,7 +12,7 @@ from nanio_orchestrator.models import AuditEntry
 router = APIRouter(prefix="/api/audit", tags=["audit"])
 
 
-@router.get("", response_model=List[AuditEntry])
+@router.get("", response_model=list[AuditEntry])
 async def list_audit(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
@@ -43,6 +43,6 @@ async def list_audit(
     async with get_db_ctx() as db:
         rows = await db.execute_fetchall(
             f"SELECT * FROM audit_log WHERE {where} ORDER BY id DESC LIMIT ? OFFSET ?",
-            params + [per_page, offset],
+            [*params, per_page, offset],
         )
         return [dict(r) for r in rows]

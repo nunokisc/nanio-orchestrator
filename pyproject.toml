@@ -70,12 +70,26 @@ include = ["nanio_orchestrator*"]
 [tool.ruff]
 target-version = "py39"
 line-length = 120
+src = ["nanio_orchestrator", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "W"]
+# Same rule set as nanio.
+select = ["E", "F", "I", "W", "UP", "B", "SIM", "RUF"]
+ignore = [
+  "RUF001", "RUF002", "RUF003",  # arrows, dashes and box-drawing characters in text are intended
+]
+
+[tool.ruff.lint.pyupgrade]
+# Python 3.9 is supported and Pydantic evaluates annotations at runtime:
+# `X | None` and `list[int]` in a model would fail there.
+keep-runtime-typing = true
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI declares request parts through calls in argument defaults.
+extend-immutable-calls = ["fastapi.Body", "fastapi.Query", "fastapi.Depends"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["E501"]
+"tests/**/*.py" = ["E501", "B011"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

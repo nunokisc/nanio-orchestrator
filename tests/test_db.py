@@ -1,6 +1,5 @@
 """Tests for the database layer."""
 
-
 from nanio_orchestrator.db import get_db_ctx, init_db, set_db_path
 
 
@@ -10,16 +9,20 @@ class TestDatabase:
         await init_db()
 
         async with get_db_ctx() as db:
-            tables = await db.execute_fetchall(
-                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-            )
+            tables = await db.execute_fetchall("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
             table_names = {r["name"] for r in tables}
 
         expected = {
-            "pools", "pool_members", "vhosts", "routes",
-            "config_files", "audit_log",
+            "pools",
+            "pool_members",
+            "vhosts",
+            "routes",
+            "config_files",
+            "audit_log",
             "bucket_sync",
-            "pool_credentials", "migrations", "migration_log",
+            "pool_credentials",
+            "migrations",
+            "migration_log",
         }
         assert expected.issubset(table_names)
 

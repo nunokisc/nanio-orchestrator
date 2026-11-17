@@ -6,9 +6,10 @@ Handles the subset of nginx config the orchestrator generates.
 
 from __future__ import annotations
 
+import contextlib
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 MANAGED_MARKER = "# managed by nanio-orchestrator"
 
@@ -18,7 +19,7 @@ def is_managed_file(content: str) -> bool:
     return MANAGED_MARKER in content
 
 
-def parse_metadata_comment(line: str) -> Dict[str, str]:
+def parse_metadata_comment(line: str) -> dict[str, str]:
     """Parse a metadata comment like '# pool_id:4 name:pool-2025 type:nanio updated:...'"""
     meta = {}
     # Match key:value pairs (value can contain colons for timestamps)
@@ -27,7 +28,7 @@ def parse_metadata_comment(line: str) -> Dict[str, str]:
     return meta
 
 
-def parse_upstream_block(content: str) -> Optional[Dict[str, Any]]:
+def parse_upstream_block(content: str) -> Optional[dict[str, Any]]:
     """Parse an upstream config block.
 
     Returns dict with: name, lb_method, keepalive, members[], metadata.
@@ -35,7 +36,7 @@ def parse_upstream_block(content: str) -> Optional[Dict[str, Any]]:
     if not is_managed_file(content):
         return None
 
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         "name": None,
         "lb_method": "round_robin",
         "keepalive": 32,
@@ -69,10 +70,8 @@ def parse_upstream_block(content: str) -> Optional[Dict[str, Any]]:
         elif line.startswith("keepalive"):
             parts = line.split()
             if len(parts) >= 2:
-                try:
+                with contextlib.suppress(ValueError):
                     result["keepalive"] = int(parts[1])
-                except ValueError:
-                    pass
         elif line.startswith("server"):
             member = _parse_server_directive(line)
             if member:
@@ -81,14 +80,14 @@ def parse_upstream_block(content: str) -> Optional[Dict[str, Any]]:
     return result
 
 
-def _parse_server_directive(line: str) -> Optional[Dict[str, Any]]:
+def _parse_server_directive(line: str) -> Optional[dict[str, Any]]:
     """Parse a 'server <address> [options]' directive."""
     parts = line.split()
     if len(parts) < 2:
         return None
 
     address = parts[1].rstrip(";")
-    member: Dict[str, Any] = {
+    member: dict[str, Any] = {
         "address": address,
         "role": "active",
         "weight": 1,
@@ -117,7 +116,7 @@ def _parse_server_directive(line: str) -> Optional[Dict[str, Any]]:
     return member
 
 
-def parse_vhost_block(content: str) -> Optional[Dict[str, Any]]:
+def parse_vhost_block(content: str) -> Optional[dict[str, Any]]:
     """Parse a server (vhost) config block.
 
     Returns dict with: server_name, listen_port, ssl, ssl_cert_path, ssl_key_path,
@@ -126,7 +125,7 @@ def parse_vhost_block(content: str) -> Optional[Dict[str, Any]]:
     if not is_managed_file(content):
         return None
 
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         "server_name": None,
         "listen_port": 80,
         "ssl": False,
@@ -173,7 +172,7 @@ def parse_vhost_block(content: str) -> Optional[Dict[str, Any]]:
 
     # Parse location blocks
     # First collect route metadata comments
-    route_metas: Dict[str, Dict[str, str]] = {}
+    route_metas: dict[str, dict[str, str]] = {}
     for line in block.splitlines():
         line = line.strip()
         if line.startswith("# route_id:"):
@@ -195,7 +194,7 @@ def parse_vhost_block(content: str) -> Optional[Dict[str, Any]]:
             # route still belongs to the source pool until the migration switches.
             if meta.get("migration_src"):
                 pool_name = meta["migration_src"]
-            route: Dict[str, Any] = {
+            route: dict[str, Any] = {
                 "path_prefix": prefix,
                 "pool_name": pool_name,
                 "metadata": meta,
@@ -205,7 +204,7 @@ def parse_vhost_block(content: str) -> Optional[Dict[str, Any]]:
     return result
 
 
-def scan_managed_files(config_dir: str) -> List[Dict[str, Any]]:
+def scan_managed_files(config_dir: str) -> list[dict[str, Any]]:
     """Scan a directory tree for managed config files.
 
     Returns list of dicts with: path, type (upstream|vhost), parsed data.

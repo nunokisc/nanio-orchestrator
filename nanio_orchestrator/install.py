@@ -13,7 +13,7 @@ import subprocess
 import sys
 import urllib.request
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Optional
 
 from nanio_orchestrator.nginx.executor import detect_nginx
 
@@ -77,7 +77,7 @@ WantedBy=multi-user.target
 
 OK, WARN, FAIL = "ok", "warn", "fail"
 _SYMBOL = {OK: "✓", WARN: "!", FAIL: "✗"}
-Check = Tuple[str, str, str]  # (status, what, how to fix)
+Check = tuple[str, str, str]  # (status, what, how to fix)
 
 
 def _step(msg: str, ok: bool = True) -> None:
@@ -90,11 +90,11 @@ def _require_root() -> None:
         sys.exit(1)
 
 
-def _run(cmd: List[str], **kwargs) -> subprocess.CompletedProcess:
+def _run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, **kwargs)
 
 
-def _run_as_service_user(cmd: List[str]) -> subprocess.CompletedProcess:
+def _run_as_service_user(cmd: list[str]) -> subprocess.CompletedProcess:
     """Run a command exactly as the service would: its user, its group, no extra groups."""
     try:
         return _run(cmd, user=SERVICE_USER, group=SERVICE_USER, extra_groups=[], cwd="/", timeout=30)
@@ -110,9 +110,9 @@ def _systemd_running() -> bool:
     return Path("/run/systemd/system").is_dir() and shutil.which("systemctl") is not None
 
 
-def read_env_file(path: Path) -> Dict[str, str]:
+def read_env_file(path: Path) -> dict[str, str]:
     """Parse KEY=value lines of the config file (short keys, prefix stripped)."""
-    values: Dict[str, str] = {}
+    values: dict[str, str] = {}
     try:
         lines = path.read_text().splitlines()
     except OSError:
@@ -128,7 +128,7 @@ def read_env_file(path: Path) -> Dict[str, str]:
     return values
 
 
-def _paths(env: Dict[str, str]) -> Tuple[Path, Path]:
+def _paths(env: dict[str, str]) -> tuple[Path, Path]:
     """(database file, nginx managed dir) as configured."""
     return Path(env.get("db_path") or DEFAULT_DB_PATH), Path(env.get("nginx_config_dir") or DEFAULT_NGINX_DIR)
 
@@ -139,7 +139,7 @@ def _chown_tree(path: Path) -> None:
             shutil.chown(name, user=SERVICE_USER, group=SERVICE_USER)
 
 
-def _program_command() -> List[str]:
+def _program_command() -> list[str]:
     """The command systemd runs: this very interpreter, wherever the package was installed."""
     return [sys.executable, "-m", "nanio_orchestrator"]
 
@@ -227,9 +227,9 @@ def _install_sudoers(content: str) -> bool:
 # ── doctor ────────────────────────────────────────────────────────────────────
 
 
-def collect_checks() -> List[Check]:
+def collect_checks() -> list[Check]:
     """Everything that must be true for the service to work, each with its fix."""
-    checks: List[Check] = []
+    checks: list[Check] = []
 
     def add(ok: bool, what: str, fix: str = "", level: str = FAIL) -> bool:
         checks.append((OK if ok else level, what, "" if ok else fix))
@@ -264,7 +264,7 @@ def collect_checks() -> List[Check]:
     if not add(_user_exists(), f"Service user '{SERVICE_USER}' exists", "Run: nanio-orchestrator install"):
         return checks
 
-    probe = _run_as_service_user(_program_command()[:1] + ["-c", "import nanio_orchestrator"])
+    probe = _run_as_service_user([*_program_command()[:1], "-c", "import nanio_orchestrator"])
     add(
         probe.returncode == 0,
         "Service user can run the program",
@@ -310,7 +310,7 @@ def collect_checks() -> List[Check]:
     return checks
 
 
-def print_checks(checks: List[Check]) -> bool:
+def print_checks(checks: list[Check]) -> bool:
     """Print the checks; return False if any failed."""
     for status, what, fix in checks:
         print(f"  {_SYMBOL[status]} {what}")
@@ -345,7 +345,7 @@ def run_install(start: bool = True) -> None:
 
     # The service must be able to run this interpreter. A per-user install (pipx, uv tool)
     # lives under a home directory the service user cannot enter.
-    probe = _run_as_service_user(_program_command()[:1] + ["-c", "import nanio_orchestrator"])
+    probe = _run_as_service_user([*_program_command()[:1], "-c", "import nanio_orchestrator"])
     if probe.returncode != 0:
         _step(f"'{SERVICE_USER}' cannot run {sys.executable}", ok=False)
         print(

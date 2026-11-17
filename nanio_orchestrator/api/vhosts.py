@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio as _asyncio
 import json
 import logging
-from typing import List, Optional
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 
@@ -93,7 +93,7 @@ async def _prepare_subfolder_route(db, vhost: dict, body: RouteCreate, target_po
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(502, f"Could not check the pools before creating the route: {exc}")
+        raise HTTPException(502, f"Could not check the pools before creating the route: {exc}") from exc
     if not ok:
         raise HTTPException(
             502, f"Could not create bucket '{bucket}' on pool '{target_pool['name']}': {message}. Nothing was changed."
@@ -161,7 +161,7 @@ def _enrich_vhost(vhost: dict) -> dict:
 # ── Vhost CRUD ────────────────────────────────────────────────────────────────
 
 
-@router.get("", response_model=List[VhostOut])
+@router.get("", response_model=list[VhostOut])
 async def list_vhosts():
     async with get_db_ctx() as db:
         rows = await db.execute_fetchall("SELECT * FROM vhosts ORDER BY server_name")
@@ -200,7 +200,7 @@ async def create_vhost(body: VhostCreate):
             )
         except Exception as e:
             if "UNIQUE" in str(e):
-                raise HTTPException(409, f"Vhost '{body.server_name}' already exists")
+                raise HTTPException(409, f"Vhost '{body.server_name}' already exists") from e
             raise
 
         rows = await db.execute_fetchall("SELECT * FROM vhosts WHERE id = ?", (cursor.lastrowid,))
@@ -273,7 +273,7 @@ async def update_vhost(vhost_id: int, body: VhostUpdate):
             raise HTTPException(400, "ssl_cert_path and ssl_key_path are required when ssl is enabled")
 
         # Validate new default_pool type is consistent with existing routes
-        if "default_pool_id" in updates and updates["default_pool_id"]:
+        if updates.get("default_pool_id"):
             new_pool_type = await _get_pool_type(db, updates["default_pool_id"])
             if new_pool_type is None:
                 raise HTTPException(400, f"Pool {updates['default_pool_id']} not found")
@@ -311,8 +311,8 @@ async def update_vhost(vhost_id: int, body: VhostUpdate):
         if "enabled" in updates:
             updates["enabled"] = 1 if updates["enabled"] else 0
 
-        set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
-        values = list(updates.values()) + [vhost_id]
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = [*list(updates.values()), vhost_id]
         await db.execute(
             f"UPDATE vhosts SET {set_clause}, updated_at = datetime('now') WHERE id = ?",
             values,
@@ -374,7 +374,7 @@ async def delete_vhost(vhost_id: int):
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 
-@router.get("/{vhost_id}/routes", response_model=List[RouteOut])
+@router.get("/{vhost_id}/routes", response_model=list[RouteOut])
 async def list_routes(vhost_id: int):
     async with get_db_ctx() as db:
         rows = await db.execute_fetchall("SELECT * FROM vhosts WHERE id = ?", (vhost_id,))
@@ -450,7 +450,7 @@ async def create_route(vhost_id: int, body: RouteCreate):
             )
         except Exception as e:
             if "UNIQUE" in str(e):
-                raise HTTPException(409, f"Route with prefix '{body.path_prefix}' already exists for this vhost")
+                raise HTTPException(409, f"Route with prefix '{body.path_prefix}' already exists for this vhost") from e
             raise
 
         route_id = cursor.lastrowid
@@ -467,7 +467,7 @@ async def create_route(vhost_id: int, body: RouteCreate):
         await log_audit(db, "create", "route", route_id, after=route, reload_ok=ok, reload_output=output)
         await db.commit()
 
-    warnings: List[str] = []
+    warnings: list[str] = []
     if subfolder and ok:
         warnings += await subfolders.ensure_markers(vhost_id)
         # http vhosts serving this bucket from the parent pool's files follow the folder
@@ -615,8 +615,8 @@ async def update_route(vhost_id: int, route_id: int, body: RouteUpdate):
 
     async with get_db_ctx() as db:
         if updates:
-            set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
-            values = list(updates.values()) + [route_id]
+            set_clause = ", ".join(f"{k} = ?" for k in updates)
+            values = [*list(updates.values()), route_id]
             await db.execute(
                 f"UPDATE routes SET {set_clause}, updated_at = datetime('now') WHERE id = ?",
                 values,
@@ -644,7 +644,7 @@ async def update_route(vhost_id: int, route_id: int, body: RouteUpdate):
 @router.delete("/{vhost_id}/routes/{route_id}", status_code=204)
 async def delete_route(vhost_id: int, route_id: int, allow_orphan: bool = False):
     marker = None
-    http_changed: List[int] = []
+    http_changed: list[int] = []
     async with get_db_ctx() as db:
         rrows = await db.execute_fetchall("SELECT * FROM routes WHERE id = ? AND vhost_id = ?", (route_id, vhost_id))
         if not rrows:
@@ -669,7 +669,7 @@ async def delete_route(vhost_id: int, route_id: int, allow_orphan: bool = False)
                         target_addr, bucket, access_key=target_ak, secret_key=target_sk, prefix=folder
                     )
                 except Exception as exc:
-                    raise HTTPException(502, f"Could not check the folder before deleting its route: {exc}")
+                    raise HTTPException(502, f"Could not check the folder before deleting its route: {exc}") from exc
                 if has_objects:
                     raise HTTPException(
                         409,
@@ -715,5 +715,5 @@ async def preview_vhost_config(vhost_id: int):
     try:
         filepath, content = await generate_vhost_config(vhost_id)
     except ValueError:
-        raise HTTPException(404, "Vhost not found")
+        raise HTTPException(404, "Vhost not found") from None
     return {"filepath": filepath, "content": content}

@@ -81,9 +81,7 @@ def _make_rclone_mock(returncode: int = 0):
 class TestConvergenceLoop:
     """Tests for the copying-phase convergence loop."""
 
-    async def test_converged_migration_still_enters_split_routing(
-        self, client, mock_nginx, mock_rclone, mock_s3
-    ):
+    async def test_converged_migration_still_enters_split_routing(self, client, mock_nginx, mock_rclone, mock_s3):
         """Matching counts end the bulk passes, but the split is still entered: switching straight
         away would lose an object written between the last check and the switch."""
         src = await create_pool(client, "conv-src-1")
@@ -99,11 +97,14 @@ class TestConvergenceLoop:
         # Both pools report the same count → converged immediately
         mock_s3["count_objects"].return_value = 5
 
-        resp = await client.post("/api/migrations", json={
-            "bucket": "conv-bk1",
-            "src_pool_id": src["id"],
-            "dst_pool_id": dst["id"],
-        })
+        resp = await client.post(
+            "/api/migrations",
+            json={
+                "bucket": "conv-bk1",
+                "src_pool_id": src["id"],
+                "dst_pool_id": dst["id"],
+            },
+        )
         assert resp.status_code == 201
         mig_id = resp.json()["id"]
 
@@ -128,9 +129,7 @@ class TestConvergenceLoop:
         mig = (await client.get(f"/api/migrations/{mig_id}")).json()
         assert mig["phase"] == "done" and mig["split_routing"] is False
 
-    async def test_multiple_passes_before_convergence(
-        self, client, mock_nginx, mock_rclone, mock_s3
-    ):
+    async def test_multiple_passes_before_convergence(self, client, mock_nginx, mock_rclone, mock_s3):
         """When src != dst after pass 1 but equal after pass 2, engine runs exactly 2 copy passes."""
         src = await create_pool(client, "conv-src-2")
         await create_member(client, src["id"], "10.0.0.1:9000")
@@ -149,17 +148,20 @@ class TestConvergenceLoop:
 
         async def side_effect(addr, bucket, **_):
             call_num["n"] += 1
-            if call_num["n"] <= 2:        # pass 1: src=5 then dst=3
+            if call_num["n"] <= 2:  # pass 1: src=5 then dst=3
                 return 5 if call_num["n"] == 1 else 3
-            return 5                        # pass 2 and beyond: both 5
+            return 5  # pass 2 and beyond: both 5
 
         mock_s3["count_objects"].side_effect = side_effect
 
-        resp = await client.post("/api/migrations", json={
-            "bucket": "conv-bk2",
-            "src_pool_id": src["id"],
-            "dst_pool_id": dst["id"],
-        })
+        resp = await client.post(
+            "/api/migrations",
+            json={
+                "bucket": "conv-bk2",
+                "src_pool_id": src["id"],
+                "dst_pool_id": dst["id"],
+            },
+        )
         assert resp.status_code == 201
         mig_id = resp.json()["id"]
 
@@ -175,9 +177,7 @@ class TestConvergenceLoop:
         # Should converge on pass 2
         assert any("converged" in m.lower() for m in log_lines), f"No convergence: {log_lines}"
 
-    async def test_source_stable_triggers_write_routing(
-        self, client, mock_nginx, mock_rclone, mock_s3
-    ):
+    async def test_source_stable_triggers_write_routing(self, client, mock_nginx, mock_rclone, mock_s3):
         """When src count stays the same across two consecutive passes, write_routing is entered."""
         src = await create_pool(client, "conv-src-3")
         await create_member(client, src["id"], "10.0.0.1:9000")
@@ -199,11 +199,14 @@ class TestConvergenceLoop:
 
         mock_s3["count_objects"].side_effect = side_effect
 
-        resp = await client.post("/api/migrations", json={
-            "bucket": "conv-bk3",
-            "src_pool_id": src["id"],
-            "dst_pool_id": dst["id"],
-        })
+        resp = await client.post(
+            "/api/migrations",
+            json={
+                "bucket": "conv-bk3",
+                "src_pool_id": src["id"],
+                "dst_pool_id": dst["id"],
+            },
+        )
         assert resp.status_code == 201
         mig_id = resp.json()["id"]
 
@@ -213,8 +216,9 @@ class TestConvergenceLoop:
         log_lines = [e["message"] for e in log_resp.json()]
 
         # Engine should log "write-routing" or "stable" when it switches
-        assert any("write-routing" in m.lower() or "stable" in m.lower()
-                   for m in log_lines), f"Expected write-routing entry: {log_lines}"
+        assert any("write-routing" in m.lower() or "stable" in m.lower() for m in log_lines), (
+            f"Expected write-routing entry: {log_lines}"
+        )
 
     async def test_max_passes_respected(self, client, mock_nginx, mock_rclone, mock_s3):
         """Engine respects migration_max_copy_passes from settings."""
@@ -245,11 +249,14 @@ class TestConvergenceLoop:
 
             mock_s3["count_objects"].side_effect = side_effect
 
-            resp = await client.post("/api/migrations", json={
-                "bucket": "maxp-bk",
-                "src_pool_id": src["id"],
-                "dst_pool_id": dst["id"],
-            })
+            resp = await client.post(
+                "/api/migrations",
+                json={
+                    "bucket": "maxp-bk",
+                    "src_pool_id": src["id"],
+                    "dst_pool_id": dst["id"],
+                },
+            )
             assert resp.status_code == 201
             mig_id = resp.json()["id"]
 
@@ -259,11 +266,9 @@ class TestConvergenceLoop:
             log_lines = [e["message"] for e in log_resp.json()]
 
             # No "pass 3/" log line should appear since max is 2
-            assert not any("pass 3/" in m for m in log_lines), \
-                f"Unexpected pass 3 found: {log_lines}"
+            assert not any("pass 3/" in m for m in log_lines), f"Unexpected pass 3 found: {log_lines}"
             # "pass 2/" should appear
-            assert any("pass 2/" in m for m in log_lines), \
-                f"No pass 2 log: {log_lines}"
+            assert any("pass 2/" in m for m in log_lines), f"No pass 2 log: {log_lines}"
         finally:
             s.migration_max_copy_passes = original
 
@@ -297,11 +302,14 @@ class TestWriteRoutingPhase:
 
         reload_count_before = mock_nginx["reload_nginx"].call_count
 
-        resp = await client.post("/api/migrations", json={
-            "bucket": "wr-bk",
-            "src_pool_id": src["id"],
-            "dst_pool_id": dst["id"],
-        })
+        resp = await client.post(
+            "/api/migrations",
+            json={
+                "bucket": "wr-bk",
+                "src_pool_id": src["id"],
+                "dst_pool_id": dst["id"],
+            },
+        )
         assert resp.status_code == 201
         mig_id = resp.json()["id"]
 
@@ -313,12 +321,9 @@ class TestWriteRoutingPhase:
 
         log_resp = await client.get(f"/api/migrations/{mig_id}/log")
         log_lines = [e["message"] for e in log_resp.json()]
-        assert any("write-routing" in m.lower() for m in log_lines), \
-            f"No write-routing log: {log_lines}"
+        assert any("write-routing" in m.lower() for m in log_lines), f"No write-routing log: {log_lines}"
 
-    async def test_write_routing_phase_advances_to_done(
-        self, client, mock_nginx, mock_rclone, mock_s3
-    ):
+    async def test_write_routing_phase_advances_to_done(self, client, mock_nginx, mock_rclone, mock_s3):
         """Migration goes through write_routing → verifying → switching → done."""
         src = await create_pool(client, "wr2-src")
         await create_member(client, src["id"], "10.0.0.1:9000")
@@ -339,11 +344,14 @@ class TestWriteRoutingPhase:
 
         mock_s3["count_objects"].side_effect = side_effect
 
-        resp = await client.post("/api/migrations", json={
-            "bucket": "wr2-bk",
-            "src_pool_id": src["id"],
-            "dst_pool_id": dst["id"],
-        })
+        resp = await client.post(
+            "/api/migrations",
+            json={
+                "bucket": "wr2-bk",
+                "src_pool_id": src["id"],
+                "dst_pool_id": dst["id"],
+            },
+        )
         assert resp.status_code == 201
         mig_id = resp.json()["id"]
 
@@ -351,12 +359,9 @@ class TestWriteRoutingPhase:
 
         mig_resp = await client.get(f"/api/migrations/{mig_id}")
         data = mig_resp.json()
-        assert data["phase"] in ("done", "switching"), \
-            f"Unexpected phase: {data['phase']}"
+        assert data["phase"] in ("done", "switching"), f"Unexpected phase: {data['phase']}"
 
-    async def test_nginx_test_failure_aborts_write_routing(
-        self, client, mock_rclone, mock_s3
-    ):
+    async def test_nginx_test_failure_aborts_write_routing(self, client, mock_rclone, mock_s3):
         """If nginx test fails during write_routing, migration transitions to error (C4 fix)."""
         # nginx -t passes during setup and starts failing once the migration is created
         test_result_fail = MagicMock(ok=False, output="syntax error")
@@ -364,9 +369,10 @@ class TestWriteRoutingPhase:
         test_mock = AsyncMock(return_value=test_result_ok)
         reload_mock = AsyncMock(return_value=MagicMock(ok=True))
 
-        with patch("nanio_orchestrator.nginx.executor.test_config", test_mock), \
-             patch("nanio_orchestrator.nginx.executor.reload_nginx", reload_mock):
-
+        with (
+            patch("nanio_orchestrator.nginx.executor.test_config", test_mock),
+            patch("nanio_orchestrator.nginx.executor.reload_nginx", reload_mock),
+        ):
             src = await create_pool(client, "wr3-src")
             await create_member(client, src["id"], "10.0.0.1:9000")
             dst = await create_pool(client, "wr3-dst")
@@ -387,11 +393,14 @@ class TestWriteRoutingPhase:
             mock_s3["count_objects"].side_effect = count_side
             test_mock.return_value = test_result_fail
 
-            resp = await client.post("/api/migrations", json={
-                "bucket": "wr3-bk",
-                "src_pool_id": src["id"],
-                "dst_pool_id": dst["id"],
-            })
+            resp = await client.post(
+                "/api/migrations",
+                json={
+                    "bucket": "wr3-bk",
+                    "src_pool_id": src["id"],
+                    "dst_pool_id": dst["id"],
+                },
+            )
             assert resp.status_code == 201
             mig_id = resp.json()["id"]
 
@@ -399,10 +408,10 @@ class TestWriteRoutingPhase:
 
             # Migration should be in error phase due to nginx test failure
             mig_resp = await client.get(f"/api/migrations/{mig_id}")
-            assert mig_resp.json()["phase"] == "error", \
-                f"Expected error phase, got: {mig_resp.json()['phase']}"
+            assert mig_resp.json()["phase"] == "error", f"Expected error phase, got: {mig_resp.json()['phase']}"
             # The rejected split config must not be left on disk or reloaded
             from nanio_orchestrator.config import get_settings
+
             conf = get_settings().vhosts_dir / "wr3.example.com.conf"
             assert "LIVE MIGRATION" not in conf.read_text()
             reload_mock.assert_not_called()
@@ -426,8 +435,7 @@ class TestNginxStateSidecar:
         def capture(state):
             written["state"] = state
 
-        with patch("nanio_orchestrator.migration_engine.write_migration_state",
-                   side_effect=capture):
+        with patch("nanio_orchestrator.migration_engine.write_migration_state", side_effect=capture):
             async with get_db_ctx() as db:
                 await db.execute(
                     "UPDATE migrations SET phase=?, split_routing=? WHERE id=?",
@@ -448,20 +456,21 @@ class TestNginxStateSidecar:
         await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
         await create_route(client, vh["id"], "ns-bk", src["id"])
 
-        resp = await client.post("/api/migrations", json={
-            "bucket": "ns-bk",
-            "src_pool_id": src["id"],
-            "dst_pool_id": dst["id"],
-        })
+        resp = await client.post(
+            "/api/migrations",
+            json={
+                "bucket": "ns-bk",
+                "src_pool_id": src["id"],
+                "dst_pool_id": dst["id"],
+            },
+        )
         mig_id = resp.json()["id"]
         await asyncio.sleep(0.1)
 
         assert await self._get_nginx_state(mig_id, "pending") == "source"
         assert await self._get_nginx_state(mig_id, "copying") == "source"
 
-    async def test_nginx_state_split_for_write_routing(
-        self, client, mock_nginx, mock_rclone, mock_s3
-    ):
+    async def test_nginx_state_split_for_write_routing(self, client, mock_nginx, mock_rclone, mock_s3):
         src = await create_pool(client, "ns2-src")
         await create_member(client, src["id"], "10.0.0.1:9000")
         dst = await create_pool(client, "ns2-dst")
@@ -471,20 +480,21 @@ class TestNginxStateSidecar:
         await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
         await create_route(client, vh["id"], "ns2-bk", src["id"])
 
-        resp = await client.post("/api/migrations", json={
-            "bucket": "ns2-bk",
-            "src_pool_id": src["id"],
-            "dst_pool_id": dst["id"],
-        })
+        resp = await client.post(
+            "/api/migrations",
+            json={
+                "bucket": "ns2-bk",
+                "src_pool_id": src["id"],
+                "dst_pool_id": dst["id"],
+            },
+        )
         mig_id = resp.json()["id"]
         await asyncio.sleep(0.1)
 
         assert await self._get_nginx_state(mig_id, "write_routing") == "split"
         assert await self._get_nginx_state(mig_id, "verifying") == "split"
 
-    async def test_nginx_state_target_for_switching(
-        self, client, mock_nginx, mock_rclone, mock_s3
-    ):
+    async def test_nginx_state_target_for_switching(self, client, mock_nginx, mock_rclone, mock_s3):
         src = await create_pool(client, "ns3-src")
         await create_member(client, src["id"], "10.0.0.1:9000")
         dst = await create_pool(client, "ns3-dst")
@@ -494,11 +504,14 @@ class TestNginxStateSidecar:
         await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
         await create_route(client, vh["id"], "ns3-bk", src["id"])
 
-        resp = await client.post("/api/migrations", json={
-            "bucket": "ns3-bk",
-            "src_pool_id": src["id"],
-            "dst_pool_id": dst["id"],
-        })
+        resp = await client.post(
+            "/api/migrations",
+            json={
+                "bucket": "ns3-bk",
+                "src_pool_id": src["id"],
+                "dst_pool_id": dst["id"],
+            },
+        )
         mig_id = resp.json()["id"]
         await asyncio.sleep(0.1)
 
@@ -525,22 +538,23 @@ class TestGeneratorMigrationMap:
         # Create a bucket-specific route so the generator migration_map can
         # match the path_prefix against the migration's bucket name
         mock_s3["list_buckets"].return_value = [{"name": bucket_name, "created": "2025-01-01"}]
-        route_resp = await client.post(f"/api/vhosts/{vh['id']}/routes", json={
-            "path_prefix": f"/{bucket_name}/",
-            "pool_id": src["id"],
-            "enabled": True,
-        })
+        route_resp = await client.post(
+            f"/api/vhosts/{vh['id']}/routes",
+            json={
+                "path_prefix": f"/{bucket_name}/",
+                "pool_id": src["id"],
+                "enabled": True,
+            },
+        )
         assert route_resp.status_code == 201, route_resp.text
 
         return vh["id"], f"/{bucket_name}/", dst_name, src["id"], dst["id"]
 
-    async def test_no_migration_dst_pool_name_when_no_active_migration(
-        self, client, mock_nginx, mock_rclone, mock_s3
-    ):
+    async def test_no_migration_dst_pool_name_when_no_active_migration(self, client, mock_nginx, mock_rclone, mock_s3):
         """Routes without an active migration in write_routing/verifying have no migration_dst_pool_name."""
         from nanio_orchestrator.nginx.generator import generate_vhost_config
 
-        vhost_id, prefix, dst_name, src_id, dst_id = await self._setup(
+        vhost_id, _prefix, _dst_name, _src_id, _dst_id = await self._setup(
             client, mock_s3, "plain-bk", "plain-src", "plain-dst", "plain.example.com"
         )
 
@@ -556,7 +570,7 @@ class TestGeneratorMigrationMap:
         from nanio_orchestrator.db import get_db_ctx
         from nanio_orchestrator.nginx.generator import generate_vhost_config
 
-        vhost_id, prefix, dst_name, src_id, dst_id = await self._setup(
+        vhost_id, _prefix, dst_name, src_id, dst_id = await self._setup(
             client, mock_s3, "wr-bk2", "wr-gsrc", "wr-gdst", "wrgen.example.com"
         )
 
@@ -578,14 +592,12 @@ class TestGeneratorMigrationMap:
         # Source pool (read path) should also be in the location block
         assert "wr-gsrc" in content
 
-    async def test_migration_dst_pool_name_injected_for_verifying_phase(
-        self, client, mock_nginx, mock_rclone, mock_s3
-    ):
+    async def test_migration_dst_pool_name_injected_for_verifying_phase(self, client, mock_nginx, mock_rclone, mock_s3):
         """write_routing split config is also generated when migration phase is 'verifying'."""
         from nanio_orchestrator.db import get_db_ctx
         from nanio_orchestrator.nginx.generator import generate_vhost_config
 
-        vhost_id, prefix, dst_name, src_id, dst_id = await self._setup(
+        vhost_id, _prefix, dst_name, src_id, dst_id = await self._setup(
             client, mock_s3, "ver-bk", "ver-src", "ver-dst", "vergen.example.com"
         )
 
@@ -604,14 +616,12 @@ class TestGeneratorMigrationMap:
         assert "error_page 404 = @nanio_mig_" in content
         assert dst_name in content
 
-    async def test_no_split_for_copying_phase_migration(
-        self, client, mock_nginx, mock_rclone, mock_s3
-    ):
+    async def test_no_split_for_copying_phase_migration(self, client, mock_nginx, mock_rclone, mock_s3):
         """Migration in copying phase does NOT generate split routing (source not yet frozen)."""
         from nanio_orchestrator.db import get_db_ctx
         from nanio_orchestrator.nginx.generator import generate_vhost_config
 
-        vhost_id, prefix, dst_name, src_id, dst_id = await self._setup(
+        vhost_id, _prefix, _dst_name, src_id, dst_id = await self._setup(
             client, mock_s3, "copy-bk", "copy-src", "copy-dst", "copygen.example.com"
         )
 
@@ -626,8 +636,7 @@ class TestGeneratorMigrationMap:
 
         _, content = await generate_vhost_config(vhost_id)
 
-        assert "@nanio_mig_" not in content, \
-            f"Unexpected split block for copying phase:\n{content}"
+        assert "@nanio_mig_" not in content, f"Unexpected split block for copying phase:\n{content}"
         assert "error_page 418" not in content
 
 
@@ -654,30 +663,34 @@ class TestVhostTemplateSplitRouting:
         return render_vhost(vhost, routes)
 
     def test_normal_route_no_split_directives(self):
-        routes = [{
-            "id": 1,
-            "path_prefix": "/mybucket/",
-            "pool_name": "pool-a",
-            "enabled": True,
-            "key_prefix": None,
-            "extra_directives": None,
-            "migration_dst_pool_name": None,
-        }]
+        routes = [
+            {
+                "id": 1,
+                "path_prefix": "/mybucket/",
+                "pool_name": "pool-a",
+                "enabled": True,
+                "key_prefix": None,
+                "extra_directives": None,
+                "migration_dst_pool_name": None,
+            }
+        ]
         content = self._render(routes)
         assert "proxy_pass         http://pool-a" in content
         assert "@nanio_mig_" not in content
         assert "error_page 418" not in content
 
     def test_split_route_makes_destination_authoritative(self):
-        routes = [{
-            "id": 7,
-            "path_prefix": "/migbucket/",
-            "pool_name": "src-pool",
-            "enabled": True,
-            "key_prefix": None,
-            "extra_directives": None,
-            "migration_dst_pool_name": "dst-pool",
-        }]
+        routes = [
+            {
+                "id": 7,
+                "path_prefix": "/migbucket/",
+                "pool_name": "src-pool",
+                "enabled": True,
+                "key_prefix": None,
+                "extra_directives": None,
+                "migration_dst_pool_name": "dst-pool",
+            }
+        ]
         content = self._render(routes)
         main, fallback, mirror = (
             content.split("location /migbucket/ {")[1].split("}")[0],
@@ -705,10 +718,17 @@ class TestVhostTemplateSplitRouting:
 
     def test_host_header_keeps_the_port_the_client_signed(self):
         """SigV4 signs the Host header as sent; $host drops a non-default port and breaks it."""
-        routes = [{
-            "id": 1, "path_prefix": "/", "pool_name": "pool-a", "enabled": True,
-            "key_prefix": None, "extra_directives": None, "migration_dst_pool_name": None,
-        }]
+        routes = [
+            {
+                "id": 1,
+                "path_prefix": "/",
+                "pool_name": "pool-a",
+                "enabled": True,
+                "key_prefix": None,
+                "extra_directives": None,
+                "migration_dst_pool_name": None,
+            }
+        ]
         content = self._render(routes)
         assert "proxy_set_header   Host              $http_host;" in content
         assert "$host;" not in content
@@ -716,9 +736,15 @@ class TestVhostTemplateSplitRouting:
     def test_bucket_route_also_matches_requests_without_trailing_slash(self):
         """`GET /bucket?list-type=2` has no trailing slash; with only `location /bucket/` nginx
         answers it with a 301 instead of proxying (verified against real nginx)."""
+
         def route(i, prefix):
-            return {"id": i, "path_prefix": prefix, "pool_name": "pool-b", "enabled": True,
-                    "migration_dst_pool_name": None}
+            return {
+                "id": i,
+                "path_prefix": prefix,
+                "pool_name": "pool-b",
+                "enabled": True,
+                "migration_dst_pool_name": None,
+            }
 
         content = self._render([route(1, "/"), route(2, "/photos/")])
 
@@ -730,8 +756,17 @@ class TestVhostTemplateSplitRouting:
         assert content.count("location = ") == 2
 
     def test_bucket_exact_location_follows_split_routing(self):
-        routes = [{"id": 5, "path_prefix": "/moving/", "pool_name": "src-pool", "enabled": True,
-                   "key_prefix": None, "extra_directives": None, "migration_dst_pool_name": "dst-pool"}]
+        routes = [
+            {
+                "id": 5,
+                "path_prefix": "/moving/",
+                "pool_name": "src-pool",
+                "enabled": True,
+                "key_prefix": None,
+                "extra_directives": None,
+                "migration_dst_pool_name": "dst-pool",
+            }
+        ]
         content = self._render(routes)
         exact = content.split("location = /moving {")[1].split("}")[0]
         assert "proxy_pass         http://dst-pool;" in exact
@@ -741,8 +776,16 @@ class TestVhostTemplateSplitRouting:
     def test_multi_delete_is_mirrored_to_source_with_its_body(self):
         """`POST /bucket?delete` carries the keys in its body. Without mirroring it, objects
         deleted that way during the split came back through the 404 fallback."""
-        routes = [{"id": 5, "path_prefix": "/moving/", "pool_name": "src-pool", "enabled": True,
-                   "key_prefix": None, "migration_dst_pool_name": "dst-pool"}]
+        routes = [
+            {
+                "id": 5,
+                "path_prefix": "/moving/",
+                "pool_name": "src-pool",
+                "enabled": True,
+                "key_prefix": None,
+                "migration_dst_pool_name": "dst-pool",
+            }
+        ]
         content = self._render(routes)
 
         for exact_location in ("location = /moving {", "location = /moving/ {"):
@@ -789,28 +832,32 @@ class TestVhostTemplateSplitRouting:
         assert "location @nanio_mig_11 {" in content
 
     def test_disabled_route_not_rendered(self):
-        routes = [{
-            "id": 5,
-            "path_prefix": "/disabled-bk/",
-            "pool_name": "src-pool",
-            "enabled": False,
-            "key_prefix": None,
-            "extra_directives": None,
-            "migration_dst_pool_name": "dst-pool",
-        }]
+        routes = [
+            {
+                "id": 5,
+                "path_prefix": "/disabled-bk/",
+                "pool_name": "src-pool",
+                "enabled": False,
+                "key_prefix": None,
+                "extra_directives": None,
+                "migration_dst_pool_name": "dst-pool",
+            }
+        ]
         content = self._render(routes)
         assert "@nanio_mig_5" not in content
         assert "/disabled-bk/" not in content
 
     def test_split_comment_mentions_live_migration(self):
-        routes = [{
-            "id": 9,
-            "path_prefix": "/migbk/",
-            "pool_name": "src-pool",
-            "enabled": True,
-            "key_prefix": None,
-            "extra_directives": None,
-            "migration_dst_pool_name": "dst-pool",
-        }]
+        routes = [
+            {
+                "id": 9,
+                "path_prefix": "/migbk/",
+                "pool_name": "src-pool",
+                "enabled": True,
+                "key_prefix": None,
+                "extra_directives": None,
+                "migration_dst_pool_name": "dst-pool",
+            }
+        ]
         content = self._render(routes)
         assert "LIVE MIGRATION" in content
