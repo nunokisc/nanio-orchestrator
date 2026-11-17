@@ -77,6 +77,7 @@ credentials of every pool and can change what nginx serves.
 | [Configuration](docs/configuration.md) | Every setting, file layout, securing the panel |
 | [Operations manual](docs/operations.md) | Pools, vhosts, sharding, replicas, drift, CLI |
 | [Migrations](docs/migrations.md) | How a bucket is moved without losing writes, and how to finish an interrupted move |
+| [For applications](docs/clients.md) | What an S3 client must know: settings, limits and what to do instead |
 | [Disaster recovery](docs/disaster-recovery.md) | What to back up and how to recover each kind of loss |
 | [Troubleshooting](docs/troubleshooting.md) | Symptoms, causes, fixes |
 | [API reference](docs/api-reference.md) | Every endpoint |

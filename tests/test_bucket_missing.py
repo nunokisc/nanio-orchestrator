@@ -105,3 +105,69 @@ async def test_operator_removes_the_route(client, mock_nginx, tmp_dirs, s3):
     assert resp.status_code == 200, resp.text
     bucket = await _bucket(client, vhost)
     assert bucket["status"] == "unrouted" and bucket["missing_since"] is None
+
+
+class TestRoutedBucketsAreListed:
+    """ListBuckets comes from the default pool. A bucket living on another pool gets an empty
+    bucket of the same name there, so clients see it."""
+
+    async def _setup(self, client, monkeypatch, listed, exists_on_pool=True):
+        from nanio_orchestrator import s3client
+
+        calls = []
+
+        async def list_buckets(address, **kw):
+            return [{"name": n} for n in listed]
+
+        async def bucket_exists(address, bucket, **kw):
+            return exists_on_pool
+
+        async def create_bucket(address, bucket, **kw):
+            calls.append((address, bucket))
+            return True, "created"
+
+        async def put_object(*a, **kw):
+            return True
+
+        monkeypatch.setattr(bucket_sync, "list_buckets", list_buckets)
+        monkeypatch.setattr(bucket_sync, "bucket_exists", bucket_exists)
+        monkeypatch.setattr(s3client, "create_bucket", create_bucket)
+        monkeypatch.setattr(s3client, "put_object", put_object)
+        vhost = await _routed_bucket(client)  # default 10.0.0.1, /photos/ → 10.0.0.2
+        return vhost, calls
+
+    async def test_bucket_on_another_pool_is_created_empty_on_the_default_pool(self, client, mock_nginx, monkeypatch):
+        vhost, calls = await self._setup(client, monkeypatch, listed=[])
+
+        await bucket_sync.sync_vhost_buckets_once(vhost["id"])
+
+        assert calls == [("10.0.0.1:9000", "photos")]
+        bucket = await _bucket(client, vhost)
+        assert bucket["status"] == "routed" and bucket["pool_name"] == "big"
+
+    async def test_nothing_is_created_when_already_listed(self, client, mock_nginx, monkeypatch):
+        vhost, calls = await self._setup(client, monkeypatch, listed=["photos"])
+        await bucket_sync.sync_vhost_buckets_once(vhost["id"])
+        assert calls == []
+
+    async def test_nothing_is_created_for_a_route_whose_bucket_does_not_exist_yet(
+        self, client, mock_nginx, monkeypatch
+    ):
+        vhost, calls = await self._setup(client, monkeypatch, listed=[], exists_on_pool=False)
+        await bucket_sync.sync_vhost_buckets_once(vhost["id"])
+        assert calls == []
+
+    async def test_folder_routes_do_not_create_buckets_here(self, client, mock_nginx, monkeypatch):
+        from nanio_orchestrator import s3client
+
+        async def no_objects(*a, **kw):
+            return False
+
+        vhost, calls = await self._setup(client, monkeypatch, listed=["photos", "logs"])
+        monkeypatch.setattr(s3client, "bucket_has_objects", no_objects)
+        resp = await client.post(f"/api/vhosts/{vhost['id']}/routes", json={"path_prefix": "/logs/2025/", "pool_id": 2})
+        assert resp.status_code == 201, resp.text
+        calls.clear()
+
+        await bucket_sync.sync_vhost_buckets_once(vhost["id"])
+        assert calls == []

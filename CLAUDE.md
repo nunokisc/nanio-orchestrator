@@ -155,10 +155,11 @@ Schema upgrades live only in `db._run_migrations_async()`; `init_db_sync()` just
 7. **No new background tasks.** The only background tasks are `drift`, `bucket_sync` and `backup`.
    They're started in `app.py` startup. New recurring work should follow the same pattern.
 
-9. **Bucket creation is not the orchestrator's job**, with two exceptions where clients cannot do
-   it through the gateway: the migration engine creates the destination bucket before copying, and
-   a sub-folder route creates the bucket on the folder's pool. Bucket routes and `promote_bucket`
-   never create buckets.
+9. **Bucket creation is not the orchestrator's job**, except where clients cannot do it through
+   the gateway: the migration engine creates the destination bucket before copying; a sub-folder
+   route creates the bucket on the folder's pool; bucket sync creates an *empty* bucket on the
+   default pool for a bucket that lives on another pool, so that `ListBuckets` shows it. Bucket
+   routes and `promote_bucket` never create buckets.
 
 10. **Refuse rather than hide data.** An operation that would leave existing objects unreachable
     (routing over a non-empty folder, deleting the route of a non-empty folder, promoting without
@@ -234,4 +235,6 @@ Key settings:
 - The audit log — all mutations should call `log_audit()`
 - Migration convergence loop in `migration_engine.py`
 - The test suite (`make test`, run before every commit)
-- The docs: `docs/*.md` describe behaviour operators rely on — update them in the same change
+- The docs: `docs/*.md` describe behaviour operators rely on — update them in the same change.
+  `docs/clients.md` lists every limit an S3 application meets; a change that adds or removes one
+  must update it

@@ -195,6 +195,10 @@ def mock_s3():
         "delete_object": [
             "nanio_orchestrator.s3client.delete_object",
         ],
+        # bucket sync asks the routed pool whether a bucket exists there
+        "routed_bucket_exists": [
+            "nanio_orchestrator.bucket_sync.bucket_exists",
+        ],
     }
 
     defaults = {
@@ -211,6 +215,7 @@ def mock_s3():
         "put_object": True,
         "folder_has_objects": False,
         "delete_object": True,
+        "routed_bucket_exists": True,
     }
 
     active_patches = []

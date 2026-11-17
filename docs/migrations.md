@@ -80,9 +80,12 @@ them:
 | Situation | Effect |
 |-----------|--------|
 | Listing the bucket during the split | Shows what is already at the destination. An object not copied yet is readable by its key but missing from listings until the next verification pass copies it. |
-| Multipart upload started before the split | Fails when the split begins; the client has to retry the upload. |
+| Multipart upload started before the split | Fails when the split begins; the client has to retry the upload. This is accepted: the engine does not wait for uploads in progress. |
 | Clocks of the storage nodes out of sync | "Newer" is decided by `Last-Modified`. Keep NTP running on every node. |
 | `http` vhosts linked to the source pool | Follow the migration, split included, provided an `http` pool linked to the destination pool exists. Without one they keep reading from the source until you repoint them. |
+
+The listing and multipart rows cannot be removed without a component that processes S3
+traffic. [clients.md](clients.md) describes them from the application's side.
 
 ---
 

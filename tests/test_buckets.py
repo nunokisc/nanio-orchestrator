@@ -509,7 +509,9 @@ class TestRemoveBucketRoute:
             f"/api/vhosts/{vh['id']}/buckets/bye-bk/promote",
             json={"pool_id": dst["id"]},
         )
+        # The owner deleted the bucket: it is gone from the pool it was routed to as well
         mock_s3["list_buckets"].return_value = []
+        mock_s3["routed_bucket_exists"].return_value = False
         await client.post(f"/api/vhosts/{vh['id']}/buckets/sync")
 
         resp = await client.delete(f"/api/vhosts/{vh['id']}/buckets/bye-bk/route")
