@@ -752,7 +752,7 @@ async function createMigration(event) {
     const srcId = parseInt(form.src_pool_id.value, 10);
     const dstId = parseInt(form.dst_pool_id.value, 10);
 
-    if (srcId === dstId) {
+    if (srcId === dstId && !form.folder.value.trim()) {
         alert('Source and destination pools must be different.');
         return;
     }
@@ -762,6 +762,12 @@ async function createMigration(event) {
         src_pool_id: srcId,
         dst_pool_id: dstId,
     };
+    const folder = form.folder.value.trim();
+    if (folder) {
+        // For a folder the API works out where it lives now (its own route, or the bucket's pool)
+        body.folder = folder;
+        delete body.src_pool_id;
+    }
     try {
         const res = await fetch('/api/migrations', {
             method: 'POST',

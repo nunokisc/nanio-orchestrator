@@ -91,6 +91,14 @@ def serve(host, port, do_reload):
     bind_host = host or s.host
     bind_port = port or s.port
 
+    if not s.dev and s.api_key in ("", "changeme", "dev"):
+        print(
+            "NANIO_ORCHESTRATOR_API_KEY is not set. Refusing to start in production mode with a default "
+            "key: whoever reaches the panel would control the gateway.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     # Ensure directories exist
     s.ensure_dirs()
 

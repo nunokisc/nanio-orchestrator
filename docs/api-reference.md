@@ -247,16 +247,27 @@ See [migrations.md](migrations.md) for the behaviour.
 
 ```json
 {"bucket": "photos", "src_pool_id": 1, "dst_pool_id": 2}
+{"bucket": "photos", "folder": "2025/", "dst_pool_id": 2}
 ```
 
-Both pools must be `nanio` pools with at least one enabled member.
+| Field | |
+|-------|---|
+| `bucket` | Required |
+| `dst_pool_id` | Required |
+| `src_pool_id` | Required for a whole bucket: the pool its route points at. For a folder it is worked out; if sent it must agree. |
+| `folder` | Move only this folder of the bucket. A missing trailing slash is added. |
+| `vhost_id` | Folder moves only, when the bucket's vhost cannot be worked out |
+
+Both pools must be `nanio` pools with at least one enabled member. A second move of a bucket
+that is already being moved (itself or one of its folders) answers 409.
 
 Response fields worth knowing:
 
 | Field | Meaning |
 |-------|---------|
 | `phase` | `pending`, `copying`, `write_routing`, `verifying`, `switching`, `done`, `error`, `cancelled` |
-| `split_routing` | `true` while nginx serves the bucket through the live-migration split. Stays `true` after `error`/`cancelled` until a migration between the same pools completes. |
+| `folder` | Empty for a whole bucket, otherwise the folder being moved |
+| `split_routing` | `true` while nginx serves the bucket (or folder) through the live-migration split. Stays `true` after `error`/`cancelled` until a migration between the same pools completes. |
 | `objects_done` / `objects_total`, `bytes_done` / `bytes_total` | Progress reported by rclone |
 | `error_msg` | Why it stopped |
 | `orphaned_source_pool_id`, `orphaned_source_prefix`, `orphaned_at` | Where the old copy is, once `done` |

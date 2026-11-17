@@ -51,7 +51,10 @@ Requirements: Linux with systemd, Python 3.9+, nginx. rclone only if you will mi
 curl -fsSL https://raw.githubusercontent.com/nunokisc/nanio-orchestrator/main/install.sh | sudo bash
 ```
 
-That installs the program, creates the settings (API key and encryption secret), hooks the
+With Docker instead: [`compose.yaml`](compose.yaml) runs the gateway and the orchestrator as two
+containers of one image; see [docs/installation.md](docs/installation.md#docker).
+
+The install command installs the program, creates the settings (API key and encryption secret), hooks the
 managed config into nginx, starts the service and prints the Web UI address and the API key.
 Run it again to upgrade. `sudo nanio-orchestrator doctor` checks an installation and prints the
 fix for anything that is wrong.
@@ -102,6 +105,8 @@ make install-dev       # creates .venv and installs dependencies
 make run               # dev server at http://localhost:8080, API key "dev"
 make test              # pytest
 make lint              # ruff
+make stack             # full cluster in Docker: real nginx, two nanio servers, rclone
+make e2e               # end-to-end test against that cluster
 ```
 
 In dev mode the database and generated config live under `./dev-data/` and nginx commands are

@@ -25,6 +25,10 @@
                     <option value="">— select source pool first —</option>
                 </select>
             </label>
+            <label>Folder <span style="color:var(--text-muted)">(optional)</span>
+                <input type="text" name="folder" placeholder="whole bucket"
+                       title="Leave empty to move the whole bucket. Enter a folder such as 2025/ to move only that folder.">
+            </label>
             <label>Destination Pool
                 <select name="dst_pool_id">
                     {% for p in pools %}
@@ -56,7 +60,7 @@
     {% for m in migrations %}
     <tr>
         <td>#{{ m.id }}</td>
-        <td><code>{{ m.bucket }}</code></td>
+        <td><code>{{ m.bucket }}{% if m.folder %}/{{ m.folder }}{% endif %}</code></td>
         <td>{{ m.src_pool_name or m.src_pool_id }} → {{ m.dst_pool_name or m.dst_pool_id }}</td>
         <td>
             {% if m.phase == 'done' %}

@@ -29,12 +29,22 @@ The dev server runs at `http://localhost:8080` with API key `dev`.
 ## Running tests
 
 ```bash
-make test           # pytest -v (177 tests, ~2 s)
+make test           # pytest -v
 make test-cov       # with coverage report
 ```
 
 Tests use pytest-asyncio (`asyncio_mode = auto`) and httpx for API testing.
 No external services are required — nginx and S3 are mocked.
+
+Two more layers run against real software, in CI and locally:
+
+```bash
+make e2e            # Docker: real nginx, two nanio servers, rclone — pools, routes, migrations
+NANIO_TEST_ENDPOINT=127.0.0.1:9000 pytest tests/test_s3client_integration.py   # S3 client vs a real nanio
+```
+
+A change to routing, to the generated nginx config or to the migration engine should be
+checked with `make e2e`: mocks cannot tell you what nginx or nanio really do.
 
 **Tests must pass before every commit.** CI enforces this.
 

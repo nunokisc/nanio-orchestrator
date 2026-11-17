@@ -26,7 +26,7 @@ Reading, writing, deleting and listing objects, multipart uploads, multi-object 
 creating and deleting buckets, and `ListBuckets`, for buckets and folders on any pool.
 
 - A new bucket is created on the default pool. An operator can route it elsewhere before data is
-  written, or move it later without downtime.
+  written, or move it later without downtime. The same goes for a folder of a bucket.
 - A bucket that lives on another pool appears in `ListBuckets` a few minutes after it is created
   (the orchestrator lists it at its next bucket sync, every 5 minutes by default).
 
