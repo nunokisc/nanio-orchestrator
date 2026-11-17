@@ -302,6 +302,7 @@ class BucketEntry(BaseModel):
     routed_pool_id: Optional[int] = None
     object_count: Optional[int] = None
     discovered_at: Optional[str] = None
+    missing_since: Optional[str] = None  # routed, but the target pool says the bucket does not exist
 
 
 class BucketListOut(BaseModel):
@@ -487,3 +488,4 @@ class HealthOut(BaseModel):
     db_ok: bool
     nginx_config_dir: str
     drift_alerts: int = 0
+    missing_buckets: int = 0  # routed buckets their pool reports as not existing

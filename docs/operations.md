@@ -76,9 +76,8 @@ It does **not** reload nginx. You apply the pending changes when you are ready:
 - API: `POST /api/config/reload`
 - CLI: `nanio-orchestrator config reload`
 
-This lets you make several changes and apply them together. Two things reload on their own:
-the migration engine (it must apply its own routing steps) and the bucket-sync cleanup that
-removes a route whose bucket no longer exists on its pool.
+This lets you make several changes and apply them together. The only thing that reloads on its
+own is the migration engine, which must apply its own routing steps.
 
 ---
 
@@ -207,9 +206,19 @@ enabled member of each vhost's default pool. Bucket states:
 | `ignored` | Hidden by the operator |
 | `deleted` | No longer returned by `ListBuckets` |
 
-If a routed bucket no longer exists on its target pool, its route is removed and nginx is
-reloaded, so requests fall back to the default pool. This happens only on a definite "not
-found" answer; if the pool cannot be reached the route is left alone.
+If a routed bucket's target pool answers that the bucket does not exist, the bucket is marked
+**missing on pool** on the Buckets page, in `GET /api/vhosts/{id}/buckets` (`missing_since`) and
+in `GET /api/health` (`missing_buckets`). The route is **not** removed and nginx is not
+reloaded. Decide which case it is:
+
+| Cause | What to do |
+|-------|------------|
+| The bucket was deleted by its owner | Buckets page → *Remove Route* (or `DELETE /api/vhosts/{id}/buckets/{bucket}/route`), then reload nginx |
+| The pool's storage is not mounted, or the node points at an empty data directory | Fix the node. The mark clears by itself at the next sync. |
+
+The route is kept on purpose: a node with unmounted storage reports every bucket as missing, and
+removing the routes would send clients to the default pool, where an older copy of the bucket
+may still exist.
 
 ### After moving a bucket: the old copy
 
