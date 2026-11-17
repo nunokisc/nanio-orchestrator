@@ -87,7 +87,9 @@ Phases: `pending → copying → write_routing → verifying → switching → d
 Error exits: `error`, `cancelled`
 
 From `write_routing` on, nginx serves the bucket through split routing and the **destination is
-authoritative** (writes → dst, reads → dst with 404-fallback to src, DELETE mirrored to src). Rules:
+authoritative** (writes → dst, reads → dst with 404-fallback to src, DELETE and multi-object delete
+mirrored to src). `http` vhosts linked to the source pool get the same split, derived in
+`generate_vhost_config()`. Rules:
 
 - The split is recorded in `migrations.split_routing`, never derived from the phase. It survives
   error/cancel/restart/rebuild until a migration between the same two pools finishes the move.

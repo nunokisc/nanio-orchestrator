@@ -70,46 +70,6 @@ _active_tasks: Dict[int, asyncio.Task] = {}
 # ── HTTP cascade helpers ──────────────────────────────────────────────────────
 
 
-async def _generate_vhost_config_with_split(
-    vhost_id: int,
-    bucket: str,
-    migration_dst_pool_name: Optional[str],
-) -> tuple:
-    """Generate vhost config, forcing split-routing for a specific bucket route.
-
-    If migration_dst_pool_name is not None, injects migration_dst_pool_name into the
-    route for /{bucket}/, triggering the write-routing split in vhost.conf.j2.
-    If None, generates a plain (no-split) config — used after switching completes.
-    """
-    from nanio_orchestrator.config import get_settings as _get_settings
-    from nanio_orchestrator.nginx.generator import render_vhost
-
-    s = _get_settings()
-    async with get_db_ctx() as db:
-        row = await db.execute_fetchall("SELECT * FROM vhosts WHERE id = ?", (vhost_id,))
-        if not row:
-            raise ValueError(f"Vhost {vhost_id} not found")
-        vhost = dict(row[0])
-        routes_rows = await db.execute_fetchall(
-            """SELECT r.*, p.name as pool_name
-               FROM routes r JOIN pools p ON r.pool_id = p.id
-               WHERE r.vhost_id = ? ORDER BY length(r.path_prefix) DESC""",
-            (vhost_id,),
-        )
-        routes = [dict(r) for r in routes_rows]
-
-    for route in routes:
-        route.setdefault("key_prefix", None)
-        if migration_dst_pool_name and route["path_prefix"] == f"/{bucket}/":
-            route["migration_dst_pool_name"] = migration_dst_pool_name
-        else:
-            route["migration_dst_pool_name"] = None
-
-    content = render_vhost(vhost, routes)
-    filepath = str(s.vhosts_dir / f"{vhost['server_name']}.conf")
-    return filepath, content
-
-
 async def _cascade_http_write_routing(
     migration_id: int,
     bucket: str,
@@ -170,9 +130,8 @@ async def _cascade_http_write_routing(
                 continue
 
             try:
-                filepath_h, content_h = await _generate_vhost_config_with_split(
-                    vhost_id_h, bucket, http_dst_pool["name"]
-                )
+                # The split is derived from migrations.split_routing by the generator
+                filepath_h, content_h = await generate_vhost_config(vhost_id_h)
                 result_h = await apply_config_file(filepath_h, content_h, reload=True)
                 if result_h.ok:
                     async with get_db_ctx() as db:
@@ -259,7 +218,7 @@ async def _cascade_http_switching(
                     )
                     await db.commit()
 
-                filepath_h, content_h = await _generate_vhost_config_with_split(vhost_id_h, bucket, None)
+                filepath_h, content_h = await generate_vhost_config(vhost_id_h)
                 result_h = await apply_config_file(filepath_h, content_h, reload=True)
                 if result_h.ok:
                     async with get_db_ctx() as db:

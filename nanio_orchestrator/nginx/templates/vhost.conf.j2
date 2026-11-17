@@ -49,7 +49,7 @@ server {
     {{ block.content | indent(4) }}
 {% endfor %}
 {% endif %}
-{% macro route_location(route, location) %}
+{% macro route_location(route, location, bucket_level=False) %}
     location {{ location }} {
 {% if route.migration_dst_pool_name %}
         # Live migration split routing — the destination pool ({{ route.migration_dst_pool_name }}) is authoritative:
@@ -57,7 +57,14 @@ server {
         #   reads (GET/HEAD)  → destination, falling back to the source ({{ route.pool_name }}) on 404
         #   DELETE            → destination, mirrored to the source so the fallback cannot resurrect it
         mirror /__nanio_mig_{{ route.id }}_delete;
+{% if bucket_level %}
+        #   multi-delete      → destination, mirrored (with its body) to the source for the same reason.
+        #   Bodies are only buffered here, where requests are bucket-level and small.
+        mirror /__nanio_mig_{{ route.id }}_multidelete;
+        mirror_request_body on;
+{% else %}
         mirror_request_body off;
+{% endif %}
         proxy_intercept_errors on;
         error_page 404 = @nanio_mig_{{ route.id }};
         proxy_pass         http://{{ route.migration_dst_pool_name }};
@@ -85,9 +92,10 @@ server {
 {{ route_location(route, route.path_prefix) }}
 {%- if route.bucket_location %}
 
-    # Bucket-level requests (ListObjects, HeadBucket, multi-delete) have no trailing slash.
-    # Without this, nginx answers them with a 301 to {{ route.path_prefix }} instead of proxying.
-{{ route_location(route, "= " ~ route.bucket_location) }}
+    # Bucket-level requests (ListObjects, HeadBucket, multi-delete) address the bucket itself.
+    # Without the first one, nginx answers `{{ route.bucket_location }}` with a 301 instead of proxying.
+{{ route_location(route, "= " ~ route.bucket_location, True) }}
+{{ route_location(route, "= " ~ route.path_prefix, True) }}
 {%- endif %}
 {% endif %}
 {% endfor %}
@@ -117,6 +125,21 @@ server {
         proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header   Connection        "";
     }
+{% if route.bucket_location %}
+
+    # Multi-object delete mirror to the source during live migration route_id:{{ route.id }}
+    location = /__nanio_mig_{{ route.id }}_multidelete {
+        internal;
+        if ($request_method != POST) { return 204; }
+        if ($args !~ "(^|&)delete(=|&|$)") { return 204; }
+        proxy_pass         http://{{ route.pool_name }}$request_uri;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $http_host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   Connection        "";
+    }
+{% endif %}
 {% endif %}
 {% endfor %}
 {% if extra_blocks_end %}

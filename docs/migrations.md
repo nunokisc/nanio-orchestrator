@@ -56,6 +56,8 @@ While the split is active nginx handles the bucket like this:
 | Writes (`PUT`, `POST`) | The destination only |
 | Reads (`GET`, `HEAD`) | The destination; if it answers 404, the source |
 | `DELETE` | The destination, and mirrored to the source |
+| Multi-object delete (`POST /bucket?delete`) | The destination, and mirrored to the source |
+| Listings | The destination |
 
 So during the migration a client always reads its own latest write, an object that has not been
 copied yet is still served from the source, and a deleted object stays deleted.
@@ -77,10 +79,10 @@ them:
 
 | Situation | Effect |
 |-----------|--------|
-| Multi-object delete (`POST /bucket?delete`) during the split | Not mirrored to the source. Those objects can reappear until the migration finishes. Single `DELETE` requests are not affected. |
+| Listing the bucket during the split | Shows what is already at the destination. An object not copied yet is readable by its key but missing from listings until the next verification pass copies it. |
 | Multipart upload started before the split | Fails when the split begins; the client has to retry the upload. |
 | Clocks of the storage nodes out of sync | "Newer" is decided by `Last-Modified`. Keep NTP running on every node. |
-| `http` vhosts linked to the source pool | Their route follows the migration, but their split is applied only by the migration itself. |
+| `http` vhosts linked to the source pool | Follow the migration, split included, provided an `http` pool linked to the destination pool exists. Without one they keep reading from the source until you repoint them. |
 
 ---
 
